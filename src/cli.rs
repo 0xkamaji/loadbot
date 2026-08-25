@@ -11,19 +11,19 @@ pub struct Cli {
 pub enum Commands {
     /// Register a Git repository without cloning it.
     Add {
-        name: String,
-        git_url: String,
+        name: Option<String>,
+        git_url: Option<String>,
         #[arg(long)]
         revision: Option<String>,
     },
     /// Clone a registered repository.
-    Pull { name: String },
+    Pull { name: Option<String> },
     /// Fast-forward an installed repository.
-    Update { name: String },
+    Update { name: Option<String> },
     /// List configured tools.
     List,
     /// Print the absolute path assigned to a tool.
-    Path { name: String },
+    Path { name: Option<String> },
     /// Show local repository status.
-    Status { name: String },
+    Status { name: Option<String> },
 }

@@ -112,6 +112,42 @@ fn add_creates_round_trippable_configuration_in_loadbot_home() {
 }
 
 #[test]
+fn direct_add_is_noninteractive() {
+    let Some(fixture) = Fixture::new() else {
+        return;
+    };
+    let output = fixture.add("demo");
+
+    assert_success_ref(&output);
+    assert_eq!(stdout(&output), "registered tool 'demo'");
+    assert!(stderr(&output).is_empty());
+}
+
+#[test]
+fn incomplete_commands_fail_instead_of_waiting_without_a_tty() {
+    let Some(fixture) = Fixture::new() else {
+        return;
+    };
+
+    for arguments in [
+        vec!["add"],
+        vec!["add", "demo"],
+        vec!["pull"],
+        vec!["update"],
+        vec!["status"],
+        vec!["path"],
+    ] {
+        let output = fixture.loadbot(arguments);
+        assert!(!output.status.success());
+        assert!(
+            stderr(&output).contains("interactive terminal"),
+            "{}",
+            stderr(&output)
+        );
+    }
+}
+
+#[test]
 fn pull_clones_and_path_prints_the_absolute_destination() {
     let Some(fixture) = Fixture::new() else {
         return;
@@ -192,6 +228,32 @@ fn update_refuses_a_dirty_working_tree() {
     assert!(!output.status.success());
     assert!(stderr(&output).contains("working tree has local changes"));
     assert!(local_file.is_file());
+}
+
+#[test]
+fn direct_named_commands_remain_noninteractive() {
+    let Some(fixture) = Fixture::new() else {
+        return;
+    };
+    fixture.install("demo");
+
+    for arguments in [
+        ["pull", "demo"],
+        ["update", "demo"],
+        ["status", "demo"],
+        ["path", "demo"],
+    ] {
+        let output = fixture.loadbot(arguments);
+        assert_success_ref(&output);
+        assert!(!stderr(&output).contains("Select a tool"));
+        assert!(!stderr(&output).contains("Proceed?"));
+    }
+
+    let path = fixture.loadbot(["path", "demo"]);
+    assert_eq!(
+        stdout(&path),
+        fixture.home.join("tools/demo").display().to_string()
+    );
 }
 
 #[test]

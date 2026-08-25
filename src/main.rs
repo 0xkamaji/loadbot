@@ -1,6 +1,7 @@
 mod cli;
 mod config;
 mod git;
+mod interactive;
 mod paths;
 
 use std::fs;
@@ -29,13 +30,82 @@ fn run() -> Result<()> {
             name,
             git_url,
             revision,
-        } => add(&paths, &name, git_url, revision),
-        Commands::Pull { name } => pull(&paths, &name),
-        Commands::Update { name } => update(&paths, &name),
+        } => run_add(&paths, name, git_url, revision),
+        Commands::Pull { name } => run_named(&paths, name, "pull", pull),
+        Commands::Update { name } => run_named(&paths, name, "update", update),
         Commands::List => list(&paths),
-        Commands::Path { name } => print_path(&paths, &name),
-        Commands::Status { name } => status(&paths, &name),
+        Commands::Path { name } => run_named(&paths, name, "path", print_path),
+        Commands::Status { name } => run_named(&paths, name, "status", status),
     }
+}
+
+fn run_add(
+    paths: &Paths,
+    name: Option<String>,
+    url: Option<String>,
+    revision: Option<String>,
+) -> Result<()> {
+    if let (Some(name), Some(url)) = (name.as_deref(), url.as_ref()) {
+        return add(paths, name, url.clone(), revision);
+    }
+    require_interactive("add", "NAME URL")?;
+
+    let mut prompt = interactive::TerminalPrompt;
+    let outcome = interactive::run_add_flow(
+        &mut prompt,
+        name,
+        url,
+        revision,
+        |input| {
+            add(
+                paths,
+                &input.name,
+                input.url.clone(),
+                input.revision.clone(),
+            )
+        },
+        |name| pull(paths, name),
+    )?;
+    match outcome {
+        interactive::AddFlowOutcome::Cancelled => eprintln!("cancelled"),
+        interactive::AddFlowOutcome::RegisteredPullCancelled => {
+            eprintln!("pull cancelled; source remains registered");
+        }
+        interactive::AddFlowOutcome::Registered
+        | interactive::AddFlowOutcome::RegisteredAndPulled => {}
+    }
+    Ok(())
+}
+
+fn run_named(
+    paths: &Paths,
+    name: Option<String>,
+    command: &str,
+    operation: fn(&Paths, &str) -> Result<()>,
+) -> Result<()> {
+    if let Some(name) = name {
+        return operation(paths, &name);
+    }
+    require_interactive(command, "NAME")?;
+
+    let config = config::load(&paths.config())?;
+    let mut prompt = interactive::TerminalPrompt;
+    match interactive::select_tool(&mut prompt, config.tools.keys().cloned().collect())? {
+        Some(name) => operation(paths, &name),
+        None => {
+            eprintln!("cancelled");
+            Ok(())
+        }
+    }
+}
+
+fn require_interactive(command: &str, arguments: &str) -> Result<()> {
+    if !interactive::terminal_is_interactive() {
+        bail!(
+            "missing required argument for '{command}'; run it in an interactive terminal or supply: loadbot {command} {arguments}"
+        );
+    }
+    Ok(())
 }
 
 fn add(paths: &Paths, name: &str, url: String, revision: Option<String>) -> Result<()> {

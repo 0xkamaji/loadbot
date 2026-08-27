@@ -37,6 +37,9 @@ pub fn is_expected_repository(path: &Path, configured_url: &str) -> Result<bool>
 }
 
 pub fn is_repository(path: &Path) -> Result<bool> {
+    if fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+        return Ok(false);
+    }
     let output = raw_output([
         OsStr::new("-C"),
         path.as_os_str(),
@@ -101,7 +104,32 @@ pub fn update(path: &Path, configured_revision: Option<&str>) -> Result<(String,
     Ok((current.commit, new_commit))
 }
 
-fn origin_url(path: &Path) -> Result<Option<String>> {
+pub fn commit_file(path: &Path, file: &str, message: &str) -> Result<String> {
+    query(path, &["add", "--", file])?;
+    query(path, &["commit", "--only", "-m", message, "--", file])?;
+    query(path, &["rev-parse", "--short", "HEAD"])
+}
+
+pub fn path_has_changes(path: &Path, file: &str) -> Result<bool> {
+    Ok(!query(
+        path,
+        &[
+            "status",
+            "--porcelain",
+            "--untracked-files=normal",
+            "--",
+            file,
+        ],
+    )?
+    .is_empty())
+}
+
+pub fn push_origin(path: &Path) -> Result<()> {
+    query(path, &["push", "origin", "HEAD"])?;
+    Ok(())
+}
+
+pub fn origin_url(path: &Path) -> Result<Option<String>> {
     let output = raw_output([
         OsStr::new("-C"),
         path.as_os_str(),

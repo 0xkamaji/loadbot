@@ -28,6 +28,18 @@ impl Paths {
         self.root.join("tools")
     }
 
+    pub fn catalogs(&self) -> PathBuf {
+        self.root.join("catalogs")
+    }
+
+    pub fn catalog(&self, name: &str) -> PathBuf {
+        self.catalogs().join(name)
+    }
+
+    pub fn catalog_file(&self, name: &str) -> PathBuf {
+        self.catalog(name).join("catalog.toml")
+    }
+
     pub fn tool(&self, name: &str) -> PathBuf {
         self.tools().join(name)
     }
@@ -46,13 +58,26 @@ pub fn validate_name(name: &str) -> Result<()> {
     if name.is_empty()
         || name == "."
         || name == ".."
+        || name.ends_with('.')
         || !name
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+        || is_windows_reserved(name)
     {
         bail!("invalid tool name '{name}': use only ASCII letters, numbers, '_', '-', and '.'");
     }
     Ok(())
+}
+
+fn is_windows_reserved(name: &str) -> bool {
+    let stem = name.split('.').next().unwrap_or(name).to_ascii_uppercase();
+    matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || stem
+            .strip_prefix("COM")
+            .or_else(|| stem.strip_prefix("LPT"))
+            .is_some_and(|number| {
+                matches!(number, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9")
+            })
 }
 
 #[cfg(test)]
@@ -69,6 +94,10 @@ mod tests {
             "tool/name",
             "tool\\name",
             "/tmp/tool",
+            "tool.",
+            "CON",
+            "nul.txt",
+            "COM1",
         ] {
             assert!(validate_name(name).is_err(), "accepted {name:?}");
         }

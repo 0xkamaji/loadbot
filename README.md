@@ -112,6 +112,10 @@ loadbot catalog migrate NAME GIT_URL
 
 `catalog sync` refuses dirty worktrees, fetches only from `origin`, and merges only with `--ff-only`. `catalog status` reports Git state plus whether `catalog.toml` is present and valid. `catalog path NAME` prints only its absolute path to stdout.
 
+### Catalog Recovery
+
+If catalog registration succeeds but its clone fails, the local registration is preserved and appears as `missing`. Healthy catalogs remain usable, and tool listing skips unhealthy catalogs with a warning. Run `loadbot catalog status NAME` for local details, then rerun the original `loadbot catalog add NAME URL` command to retry the missing clone. Loadbot does not automatically delete registrations or perform destructive repairs.
+
 ## Tool Commands
 
 Tools are aggregated from every registered catalog:

@@ -60,11 +60,10 @@ pub fn catalog_add(paths: &Paths, name: &str, url: String, writable: bool) -> Re
         .with_context(|| format!("could not create {}", paths.catalogs().display()))?;
     if let Err(error) = git::clone_repository(&source.url, None, &destination) {
         cleanup_failed_clone(&destination);
-        let context = if registration_changed {
-            format!("catalog '{name}' was registered, but cloning it failed")
-        } else {
-            format!("could not clone catalog '{name}'")
-        };
+        let context = format!(
+            "catalog '{name}' was registered, but cloning it failed; the registration was preserved; rerun 'loadbot catalog add {name} {}' to retry installation",
+            source.url
+        );
         return Err(error).context(context);
     }
     println!("installed catalog '{name}' at {}", destination.display());
@@ -254,6 +253,13 @@ pub fn tool_add(
     let catalog_path = paths.catalog_file(catalog_name);
     let mut catalog_file = catalog::load_or_default(&catalog_path)?;
     let definition = ToolConfig::git(url, revision);
+    let catalog_has_changes = git::path_has_changes(&repository, "catalog.toml")?;
+    let exact_definition_exists = catalog_file.tools.get(name) == Some(&definition);
+    if catalog_has_changes && !exact_definition_exists {
+        bail!(
+            "catalog.toml already has uncommitted changes; refusing to combine them with a new tool addition; commit or otherwise handle those changes manually before retrying"
+        );
+    }
     let changed = if let Some(existing) = catalog_file.tools.get(name) {
         if existing == &definition {
             println!("tool '{name}' is already defined in catalog '{catalog_name}'");
@@ -436,13 +442,13 @@ pub fn all_tools(paths: &Paths) -> Result<Vec<ResolvedTool>> {
     let mut portable_names = BTreeMap::new();
     for (catalog_name, source) in &local.catalogs {
         if let Err(error) = checked_catalog_repository(paths, catalog_name, source) {
-            eprintln!("warning: skipping catalog '{catalog_name}': {error:#}");
+            warn_skipped_catalog(catalog_name, &error);
             continue;
         }
         let catalog_file = match catalog::load(&paths.catalog_file(catalog_name)) {
             Ok(catalog_file) => catalog_file,
             Err(error) => {
-                eprintln!("warning: skipping catalog '{catalog_name}': {error:#}");
+                warn_skipped_catalog(catalog_name, &error);
                 continue;
             }
         };
@@ -578,6 +584,12 @@ fn validate_url(url: &str) -> Result<()> {
         bail!("Git URL must not be empty");
     }
     Ok(())
+}
+
+fn warn_skipped_catalog(name: &str, error: &anyhow::Error) {
+    eprintln!(
+        "warning: skipping catalog '{name}': {error:#}; run 'loadbot catalog status {name}' for details"
+    );
 }
 
 fn cleanup_failed_clone(destination: &Path) {

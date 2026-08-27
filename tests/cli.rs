@@ -174,7 +174,7 @@ fn catalog_url_mismatch_is_refused() {
 }
 
 #[test]
-fn failed_catalog_registration_can_be_repaired_without_poisoning_other_catalogs() {
+fn failed_catalog_registration_is_preserved_and_same_command_retries_clone() {
     let Some(fixture) = Fixture::new() else {
         return;
     };
@@ -188,17 +188,36 @@ fn failed_catalog_registration_can_be_repaired_without_poisoning_other_catalogs(
         missing_remote.as_os_str(),
     ]);
     assert!(!failed.status.success());
+    let failure = stderr(&failed);
+    assert!(failure.contains("was registered, but cloning it failed"));
+    assert!(failure.contains("registration was preserved"));
+    assert!(failure.contains("rerun 'loadbot catalog add broken"));
+    let local = fs::read_to_string(fixture.home.join("config.toml")).unwrap();
+    assert!(local.contains("[catalogs.broken]"));
 
     let list = fixture.loadbot(["list"]);
     assert_success_ref(&list);
     assert!(stdout(&list).contains("demo\tpersonal"));
     assert!(stderr(&list).contains("skipping catalog 'broken'"));
+    assert!(
+        stderr(&list).contains("run 'loadbot catalog status broken'"),
+        "{}",
+        stderr(&list)
+    );
+    let qualified = fixture.loadbot(["pull", "demo", "--catalog", "broken"]);
+    assert!(!qualified.status.success());
+    assert!(stderr(&qualified).contains("catalog 'broken' is not installed"));
 
+    create_repository(
+        fixture._temporary.path(),
+        "missing",
+        Some("version = 1\n\n[tools]\n"),
+    );
     let repaired = fixture.loadbot([
         OsStr::new("catalog"),
         OsStr::new("add"),
         OsStr::new("broken"),
-        fixture.catalog.remote.as_os_str(),
+        missing_remote.as_os_str(),
     ]);
     assert_success_ref(&repaired);
     assert!(fixture.home.join("catalogs/broken/.git").is_dir());
@@ -272,6 +291,32 @@ fn tool_add_writes_only_writable_catalogs_and_never_pushes_implicitly() {
     let refused = readonly_fixture.add_tool("demo", "public", &[]);
     assert!(!refused.status.success());
     assert!(stderr(&refused).contains("read-only"));
+}
+
+#[test]
+fn preexisting_catalog_file_changes_refuse_new_definition_without_modifying_bytes() {
+    let Some(fixture) = Fixture::new() else {
+        return;
+    };
+    assert_success(fixture.add_catalog("personal", true));
+    fixture.configure_catalog_identity("personal");
+    let catalog_path = fixture.home.join("catalogs/personal/catalog.toml");
+    let mut contents = fs::read(&catalog_path).unwrap();
+    contents.extend_from_slice(b"\n# local work that Loadbot must preserve\n");
+    fs::write(&catalog_path, &contents).unwrap();
+    let before = fs::read(&catalog_path).unwrap();
+
+    let output = fixture.add_tool("demo", "personal", &["--commit"]);
+    assert!(!output.status.success());
+    let error = stderr(&output);
+    assert!(error.contains("catalog.toml already has uncommitted changes"));
+    assert!(error.contains("handle those changes manually before retrying"));
+    assert_eq!(fs::read(&catalog_path).unwrap(), before);
+    assert!(
+        !before
+            .windows(b"[tools.demo]".len())
+            .any(|window| window == b"[tools.demo]")
+    );
 }
 
 #[test]

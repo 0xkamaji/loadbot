@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
@@ -436,6 +436,34 @@ pub fn tool_path(paths: &Paths, name: &str, catalog_name: Option<&str>) -> Resul
     let tool = resolve_tool(paths, name, catalog_name)?;
     println!("{}", paths.tool(&tool.catalog, &tool.name)?.display());
     Ok(())
+}
+
+pub fn installed_tool_path(paths: &Paths, name: &str, catalog_name: &str) -> Result<PathBuf> {
+    let tool = resolve_tool(paths, name, Some(catalog_name))?;
+    let destination = paths.tool(&tool.catalog, &tool.name)?;
+    if !path_exists(&destination) {
+        bail!("tool '{name}' from catalog '{catalog_name}' is not installed");
+    }
+    if !git::is_repository(&destination)? {
+        bail!("installed tool destination is not a Git repository");
+    }
+    if !git::is_expected_repository(&destination, &tool.definition.url)? {
+        bail!("installed tool destination is not the configured Git repository");
+    }
+    Ok(destination)
+}
+
+pub fn installed_tools(paths: &Paths) -> Result<Vec<ResolvedTool>> {
+    let mut installed = Vec::new();
+    for tool in all_tools(paths)? {
+        let destination = paths.tool(&tool.catalog, &tool.name)?;
+        if path_exists(&destination)
+            && git::is_expected_repository(&destination, &tool.definition.url)?
+        {
+            installed.push(tool);
+        }
+    }
+    Ok(installed)
 }
 
 pub fn all_tools(paths: &Paths) -> Result<Vec<ResolvedTool>> {

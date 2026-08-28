@@ -27,6 +27,8 @@ LOADBOT_HOME/
 
 The default root is `~/.local/share/loadbot/` on Linux and `%LOCALAPPDATA%\loadbot\` on native Windows. `LOADBOT_HOME` overrides the root for portable or isolated use. Read-only commands do not create it.
 
+Personal launcher shortcuts are stored separately in the platform configuration directory at `loadbot/shortcuts.toml` (`~/.config/loadbot/shortcuts.toml` on Linux). They contain a catalog name, tool name, and repository-relative file path, never an absolute installation path. Shortcuts are not written to `config.toml`, catalog repositories, or `catalog.toml`.
+
 The Loadbot executable and Loadbot source repository do not have to live beneath `LOADBOT_HOME`.
 
 ## Build and Install
@@ -442,6 +444,41 @@ cd "$(loadbot path re-toolkit)"
 ```
 
 For an ambiguous name, supply `--catalog`. When the name is omitted in an interactive terminal, Loadbot presents catalog-qualified tool selection.
+
+### `loadbot run`
+
+```text
+loadbot run [SHORTCUT]
+```
+
+Without a shortcut name, opens an interactive navigator over installed catalogs and tools:
+
+```bash
+loadbot run
+```
+
+The navigator reads only the directory currently displayed. Directories descend into that directory, files may be selected for launch, and `../` choices navigate back to the previous directory, tool selection, or catalog selection. Symlinks are not shown. After a selected file exits successfully, Loadbot optionally offers to save it as a local shortcut; the default is No.
+
+Run a saved shortcut directly:
+
+```bash
+loadbot run print-strings
+```
+
+A shortcut stores logical location information:
+
+```toml
+version = 1
+
+[shortcuts.print-strings]
+catalog = "personal"
+tool = "re-toolkit"
+path = "recipes/BinaryNinja/print_strings.py"
+```
+
+At launch time Loadbot resolves the catalog-qualified tool through the current catalog definition and installation path. It rejects missing tools, missing files, origin mismatches, path traversal, and targets that resolve outside the tool repository. Duplicate shortcut names are not overwritten.
+
+Executable files are launched directly. Non-executable `.py`, `.sh`, and `.ps1` files use a small fixed set of common interpreters available in the user's `PATH`. The child inherits the normal environment and terminal. Loadbot does not discover entrypoints, install dependencies, create environments, or interpret repository metadata.
 
 ## Catalog Recovery
 

@@ -48,11 +48,35 @@ pub enum Commands {
         #[arg(long)]
         catalog: Option<String>,
     },
+    /// Launch an installed file or saved shortcut.
+    Run { shortcut: Option<String> },
     /// Manage Git-backed tool catalogs.
     Catalog {
         #[command(subcommand)]
         command: CatalogCommands,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_interactive_and_shortcut_run_forms() {
+        let interactive = Cli::try_parse_from(["loadbot", "run"]).unwrap();
+        assert!(matches!(
+            interactive.command,
+            Commands::Run { shortcut: None }
+        ));
+
+        let direct = Cli::try_parse_from(["loadbot", "run", "print-strings"]).unwrap();
+        assert!(matches!(
+            direct.command,
+            Commands::Run {
+                shortcut: Some(name)
+            } if name == "print-strings"
+        ));
+    }
 }
 
 #[derive(Debug, Subcommand)]

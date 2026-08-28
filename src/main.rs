@@ -3,8 +3,10 @@ mod cli;
 mod config;
 mod git;
 mod interactive;
+mod launcher;
 mod operations;
 mod paths;
+mod shortcuts;
 
 use anyhow::{Context, Result, bail};
 use clap::Parser;
@@ -16,6 +18,9 @@ use paths::Paths;
 fn main() {
     if let Err(error) = run() {
         eprintln!("error: {error:#}");
+        if let Some(exit) = error.downcast_ref::<launcher::ChildExit>() {
+            std::process::exit(exit.code());
+        }
         std::process::exit(1);
     }
 }
@@ -45,6 +50,14 @@ fn run() -> Result<()> {
         Commands::Status { name, catalog } => {
             run_tool_named(&paths, name, catalog, "status", operations::tool_status)
         }
+        Commands::Run { shortcut } => match shortcut {
+            Some(name) => launcher::run_shortcut(&paths, &name),
+            None => {
+                require_interactive("run", "SHORTCUT")?;
+                let mut prompt = interactive::TerminalPrompt;
+                launcher::run_interactive(&paths, &mut prompt)
+            }
+        },
         Commands::Catalog { command } => run_catalog(&paths, command),
     }
 }

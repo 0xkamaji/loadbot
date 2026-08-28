@@ -13,6 +13,7 @@ struct Repository {
 struct Fixture {
     _temporary: TempDir,
     home: PathBuf,
+    config_home: PathBuf,
     catalog: Repository,
     tool: Repository,
 }
@@ -32,6 +33,7 @@ impl Fixture {
         let tool = create_repository(temporary.path(), "tool", Some("initial\n"));
         Some(Self {
             home: temporary.path().join("loadbot-home"),
+            config_home: temporary.path().join("config-home"),
             _temporary: temporary,
             catalog,
             tool,
@@ -45,6 +47,8 @@ impl Fixture {
     {
         Command::new(env!("CARGO_BIN_EXE_loadbot"))
             .env("LOADBOT_HOME", &self.home)
+            .env("XDG_CONFIG_HOME", &self.config_home)
+            .env("APPDATA", &self.config_home)
             .args(arguments)
             .output()
             .unwrap()
@@ -84,6 +88,18 @@ impl Fixture {
             ["config", "user.email", "loadbot@example.test"],
             Some(&directory),
         );
+    }
+
+    fn save_shortcut(&self, name: &str, catalog: &str, tool: &str, path: &str) {
+        let destination = self.config_home.join("loadbot/shortcuts.toml");
+        fs::create_dir_all(destination.parent().unwrap()).unwrap();
+        fs::write(
+            destination,
+            format!(
+                "version = 1\n\n[shortcuts.{name}]\ncatalog = {catalog:?}\ntool = {tool:?}\npath = {path:?}\n"
+            ),
+        )
+        .unwrap();
     }
 }
 
@@ -601,6 +617,92 @@ fn unsafe_catalog_and_tool_names_cannot_escape_loadbot_home() {
 }
 
 #[test]
+fn run_shortcut_launches_from_the_current_catalog_scoped_tool_path() {
+    let Some(fixture) = Fixture::new() else {
+        return;
+    };
+    fs::create_dir(fixture.tool.source.join("recipes")).unwrap();
+    fs::write(
+        fixture.tool.source.join("recipes/launch.sh"),
+        "printf 'launched-personal\\n'\n",
+    )
+    .unwrap();
+    fs::write(fixture.tool.source.join("recipes/fail.sh"), "exit 7\n").unwrap();
+    commit_and_push(&fixture.tool.source, "add launcher script");
+    assert_success(fixture.add_catalog("personal", true));
+    assert_success(fixture.add_tool("demo", "personal", &[]));
+    assert_success(fixture.loadbot(["pull", "demo", "--catalog", "personal"]));
+
+    let second = create_repository(
+        fixture._temporary.path(),
+        "run-catalog",
+        Some(&format!(
+            "version = 1\n\n[tools.demo]\ntype = \"git\"\nurl = {:?}\nrevision = \"main\"\n",
+            fixture.tool.remote.display().to_string()
+        )),
+    );
+    assert_success(fixture.loadbot([
+        OsStr::new("catalog"),
+        OsStr::new("add"),
+        OsStr::new("public"),
+        second.remote.as_os_str(),
+    ]));
+    fixture.save_shortcut("launch-demo", "personal", "demo", "recipes/launch.sh");
+
+    let output = fixture.loadbot(["run", "launch-demo"]);
+    assert_success_ref(&output);
+    assert_eq!(stdout(&output), "launched-personal");
+    let shortcut = fs::read_to_string(fixture.config_home.join("loadbot/shortcuts.toml")).unwrap();
+    assert!(!shortcut.contains(fixture.home.to_str().unwrap()));
+
+    fixture.save_shortcut("failing-demo", "personal", "demo", "recipes/fail.sh");
+    let failed = fixture.loadbot(["run", "failing-demo"]);
+    assert_eq!(failed.status.code(), Some(7));
+    assert!(stderr(&failed).contains("exited with status 7"));
+}
+
+#[test]
+fn run_shortcut_reports_missing_shortcuts_tools_and_files() {
+    let Some(fixture) = Fixture::new() else {
+        return;
+    };
+    let missing = fixture.loadbot(["run", "unknown"]);
+    assert!(!missing.status.success());
+    assert!(stderr(&missing).contains("shortcut 'unknown' does not exist"));
+
+    assert_success(fixture.add_catalog("personal", true));
+    assert_success(fixture.add_tool("demo", "personal", &[]));
+    fixture.save_shortcut("missing-tool", "personal", "demo", "README.md");
+    let missing_tool = fixture.loadbot(["run", "missing-tool"]);
+    assert!(!missing_tool.status.success());
+    assert!(stderr(&missing_tool).contains("shortcut 'missing-tool' is broken"));
+    assert!(stderr(&missing_tool).contains("is not installed"));
+
+    assert_success(fixture.loadbot(["pull", "demo", "--catalog", "personal"]));
+    fixture.save_shortcut("missing-file", "personal", "demo", "removed.sh");
+    let missing_file = fixture.loadbot(["run", "missing-file"]);
+    assert!(!missing_file.status.success());
+    assert!(stderr(&missing_file).contains("shortcut 'missing-file' is broken"));
+    assert!(stderr(&missing_file).contains("missing or is not a file"));
+    assert!(stderr(&missing_file).contains("path: removed.sh"));
+}
+
+#[test]
+fn run_shortcut_rejects_traversal_and_run_without_a_tty_requires_a_name() {
+    let Some(fixture) = Fixture::new() else {
+        return;
+    };
+    fixture.save_shortcut("escape", "personal", "demo", "../../outside.sh");
+    let traversal = fixture.loadbot(["run", "escape"]);
+    assert!(!traversal.status.success());
+    assert!(stderr(&traversal).contains("unsafe path"));
+
+    let interactive = fixture.loadbot(["run"]);
+    assert!(!interactive.status.success());
+    assert!(stderr(&interactive).contains("interactive terminal"));
+}
+
+#[test]
 fn legacy_configuration_is_detected_and_explicitly_migrated() {
     let Some(fixture) = Fixture::new() else {
         return;
@@ -675,6 +777,7 @@ fn incomplete_noninteractive_commands_fail_without_waiting() {
         vec!["update"],
         vec!["status"],
         vec!["path"],
+        vec!["run"],
     ] {
         let output = fixture.loadbot(arguments);
         assert!(!output.status.success());

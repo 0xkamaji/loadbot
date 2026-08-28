@@ -24,6 +24,15 @@ impl Paths {
         self.root.join("config.toml")
     }
 
+    pub fn shortcuts(&self) -> Result<PathBuf> {
+        Ok(absolute(
+            dirs::config_dir()
+                .context("could not determine the operating system's configuration directory")?
+                .join("loadbot"),
+        )?
+        .join("shortcuts.toml"))
+    }
+
     pub fn tools(&self) -> PathBuf {
         self.root.join("tools")
     }

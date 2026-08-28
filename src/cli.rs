@@ -59,6 +59,19 @@ pub enum Commands {
         #[command(subcommand)]
         command: CatalogCommands,
     },
+    #[command(hide = true)]
+    Rot {
+        #[command(subcommand)]
+        command: RotCommands,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum RotCommands {
+    Complete {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        words: Vec<String>,
+    },
 }
 
 #[cfg(test)]

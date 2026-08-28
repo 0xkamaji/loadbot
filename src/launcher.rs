@@ -12,6 +12,7 @@ use crate::paths::{self, Paths};
 use crate::shortcuts::{self, Shortcut};
 
 const BROWSE_TOOLS: &str = "Browse installed tools...";
+const EXIT: &str = "Exit";
 
 #[derive(Debug)]
 pub struct ChildExit {
@@ -68,6 +69,7 @@ fn run_interactive_from<P: Prompt>(
             return run_shortcut_from(paths, shortcut_path, &name);
         }
         InitialAction::Browse => {}
+        InitialAction::Exit => return Ok(()),
         InitialAction::Cancelled => return cancelled(),
     }
     browse_installed_tools(paths, prompt)
@@ -121,18 +123,16 @@ fn browse_installed_tools<P: Prompt>(paths: &Paths, prompt: &mut P) -> Result<()
 }
 
 fn select_initial_action<P: Prompt>(prompt: &mut P, names: &[String]) -> Result<InitialAction> {
-    if names.is_empty() {
-        return Ok(InitialAction::Browse);
-    }
     let mut choices = names.to_vec();
     choices.push(BROWSE_TOOLS.to_owned());
+    choices.push(EXIT.to_owned());
     let Some(selection) = prompt.select("Select:", &choices)? else {
         return Ok(InitialAction::Cancelled);
     };
-    if selection == BROWSE_TOOLS {
-        Ok(InitialAction::Browse)
-    } else {
-        Ok(InitialAction::Shortcut(selection))
+    match selection.as_str() {
+        BROWSE_TOOLS => Ok(InitialAction::Browse),
+        EXIT => Ok(InitialAction::Exit),
+        _ => Ok(InitialAction::Shortcut(selection)),
     }
 }
 
@@ -364,6 +364,7 @@ struct BrowserEntry {
 enum InitialAction {
     Shortcut(String),
     Browse,
+    Exit,
     Cancelled,
 }
 
@@ -436,7 +437,7 @@ mod tests {
         );
         assert_eq!(
             shortcut_prompt.displayed[0],
-            ["bn-triage", "print-strings", BROWSE_TOOLS]
+            ["bn-triage", "print-strings", BROWSE_TOOLS, EXIT]
         );
 
         let mut browse_prompt = FakePrompt {
@@ -450,14 +451,26 @@ mod tests {
     }
 
     #[test]
-    fn zero_shortcuts_enters_browser_without_an_extra_prompt() {
-        let mut prompt = FakePrompt::default();
+    fn zero_shortcuts_offer_browse_and_exit() {
+        let mut prompt = FakePrompt {
+            selections: [Some(BROWSE_TOOLS.to_owned())].into(),
+            ..FakePrompt::default()
+        };
 
         assert_eq!(
             select_initial_action(&mut prompt, &[]).unwrap(),
             InitialAction::Browse
         );
-        assert!(prompt.displayed.is_empty());
+        assert_eq!(prompt.displayed[0], [BROWSE_TOOLS, EXIT]);
+
+        let mut exit_prompt = FakePrompt {
+            selections: [Some(EXIT.to_owned())].into(),
+            ..FakePrompt::default()
+        };
+        assert_eq!(
+            select_initial_action(&mut exit_prompt, &[]).unwrap(),
+            InitialAction::Exit
+        );
     }
 
     #[test]

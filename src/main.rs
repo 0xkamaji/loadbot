@@ -12,7 +12,7 @@ mod shortcuts;
 use anyhow::{Context, Result, bail};
 use clap::Parser;
 
-use cli::{CatalogCommands, Cli, Commands};
+use cli::{CatalogCommands, Cli, Commands, RotCommands};
 use interactive::Prompt;
 use paths::Paths;
 
@@ -29,6 +29,12 @@ fn main() {
 
 fn run() -> Result<()> {
     let cli = Cli::parse();
+    if let Commands::Rot {
+        command: RotCommands::Complete { words },
+    } = &cli.command
+    {
+        return completion::rot_complete(words);
+    }
     let paths = Paths::discover()?;
     match cli.command {
         Commands::Add {
@@ -61,6 +67,7 @@ fn run() -> Result<()> {
             }
         },
         Commands::Catalog { command } => run_catalog(&paths, command),
+        Commands::Rot { .. } => unreachable!(),
     }
 }
 

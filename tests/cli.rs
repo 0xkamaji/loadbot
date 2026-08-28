@@ -733,6 +733,60 @@ fn run_completion_only_returns_matching_shortcut_names() {
 }
 
 #[test]
+fn rot_completion_is_parseable_deterministic_and_context_aware() {
+    let temporary = TempDir::new().unwrap();
+    let home = temporary.path().join("loadbot-home");
+    let config_home = temporary.path().join("config-home");
+    let shortcuts = config_home.join("loadbot/shortcuts.toml");
+    fs::create_dir_all(shortcuts.parent().unwrap()).unwrap();
+    fs::write(
+        shortcuts,
+        r#"version = 1
+
+[shortcuts.print-strings]
+catalog = "personal"
+tool = "demo"
+path = "print.py"
+
+[shortcuts.bn-triage]
+catalog = "personal"
+tool = "demo"
+path = "triage.py"
+"#,
+    )
+    .unwrap();
+    let complete = |words: &[&str]| {
+        let output = Command::new(env!("CARGO_BIN_EXE_loadbot"))
+            .env("LOADBOT_HOME", &home)
+            .env("XDG_CONFIG_HOME", &config_home)
+            .env("APPDATA", &config_home)
+            .args(["rot", "complete"])
+            .args(words)
+            .output()
+            .unwrap();
+        assert_success_ref(&output);
+        assert!(stderr(&output).is_empty());
+        serde_json::from_slice::<Vec<String>>(&output.stdout).unwrap()
+    };
+
+    let root = complete(&[""]);
+    assert_eq!(
+        root,
+        [
+            "add", "catalog", "list", "path", "pull", "run", "status", "update"
+        ]
+    );
+    assert_eq!(complete(&["p"]), ["path", "pull"]);
+    assert_eq!(
+        complete(&["catalog", ""]),
+        ["add", "list", "migrate", "path", "status", "sync"]
+    );
+    assert_eq!(complete(&["run", ""]), ["bn-triage", "print-strings"]);
+    assert_eq!(complete(&["run", "pri"]), ["print-strings"]);
+    assert_eq!(complete(&[""]), root);
+}
+
+#[test]
 fn legacy_configuration_is_detected_and_explicitly_migrated() {
     let Some(fixture) = Fixture::new() else {
         return;

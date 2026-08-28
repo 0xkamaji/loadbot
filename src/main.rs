@@ -12,7 +12,7 @@ mod shortcuts;
 use anyhow::{Context, Result, bail};
 use clap::Parser;
 
-use cli::{CatalogCommands, Cli, Commands, RotCommands};
+use cli::{CatalogCommands, Cli, Commands, RotCommands, ShortcutCommands};
 use interactive::Prompt;
 use paths::Paths;
 
@@ -66,6 +66,13 @@ fn run() -> Result<()> {
                 launcher::run_interactive(&paths, &mut prompt)
             }
         },
+        Commands::Shortcut {
+            command: ShortcutCommands::Add,
+        } => {
+            require_interactive("shortcut add", "")?;
+            let mut prompt = interactive::TerminalPrompt;
+            launcher::add_shortcut(&paths, &mut prompt)
+        }
         Commands::Catalog { command } => run_catalog(&paths, command),
         Commands::Rot { .. } => unreachable!(),
     }
@@ -228,9 +235,13 @@ fn run_tool_named(
 
 fn require_interactive(command: &str, arguments: &str) -> Result<()> {
     if !interactive::terminal_is_interactive() {
-        bail!(
-            "missing required argument for '{command}'; run it in an interactive terminal or supply: loadbot {command} {arguments}"
-        );
+        if arguments.is_empty() {
+            bail!("'{command}' requires an interactive terminal");
+        } else {
+            bail!(
+                "missing required argument for '{command}'; run it in an interactive terminal or supply: loadbot {command} {arguments}"
+            );
+        }
     }
     Ok(())
 }

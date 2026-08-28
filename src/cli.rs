@@ -54,6 +54,11 @@ pub enum Commands {
         #[arg(add = ArgValueCompleter::new(crate::completion::shortcut_candidates))]
         shortcut: Option<String>,
     },
+    /// Manage saved shortcuts.
+    Shortcut {
+        #[command(subcommand)]
+        command: ShortcutCommands,
+    },
     /// Manage Git-backed tool catalogs.
     Catalog {
         #[command(subcommand)]
@@ -74,6 +79,12 @@ pub enum RotCommands {
     },
 }
 
+#[derive(Debug, Subcommand)]
+pub enum ShortcutCommands {
+    /// Save an installed file as a shortcut without running it.
+    Add,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -92,6 +103,14 @@ mod tests {
             Commands::Run {
                 shortcut: Some(name)
             } if name == "print-strings"
+        ));
+
+        let add = Cli::try_parse_from(["loadbot", "shortcut", "add"]).unwrap();
+        assert!(matches!(
+            add.command,
+            Commands::Shortcut {
+                command: ShortcutCommands::Add
+            }
         ));
     }
 }

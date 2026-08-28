@@ -700,6 +700,10 @@ fn run_shortcut_rejects_traversal_and_run_without_a_tty_requires_a_name() {
     let interactive = fixture.loadbot(["run"]);
     assert!(!interactive.status.success());
     assert!(stderr(&interactive).contains("interactive terminal"));
+
+    let shortcut_add = fixture.loadbot(["shortcut", "add"]);
+    assert!(!shortcut_add.status.success());
+    assert!(stderr(&shortcut_add).contains("interactive terminal"));
 }
 
 #[test]
@@ -773,7 +777,7 @@ path = "triage.py"
     assert_eq!(
         root,
         [
-            "add", "catalog", "list", "path", "pull", "run", "status", "update"
+            "add", "catalog", "list", "path", "pull", "run", "shortcut", "status", "update"
         ]
     );
     assert_eq!(complete(&["p"]), ["path", "pull"]);
@@ -783,6 +787,7 @@ path = "triage.py"
     );
     assert_eq!(complete(&["run", ""]), ["bn-triage", "print-strings"]);
     assert_eq!(complete(&["run", "pri"]), ["print-strings"]);
+    assert_eq!(complete(&["shortcut", ""]), ["add"]);
     assert_eq!(complete(&[""]), root);
 }
 

@@ -72,10 +72,51 @@ fn run_interactive_from<P: Prompt>(
         InitialAction::Exit => return Ok(()),
         InitialAction::Cancelled => return cancelled(),
     }
-    browse_installed_tools(paths, prompt)
+    run_selected_file(paths, prompt, shortcut_path)
 }
 
-fn browse_installed_tools<P: Prompt>(paths: &Paths, prompt: &mut P) -> Result<()> {
+pub fn add_shortcut<P: Prompt>(paths: &Paths, prompt: &mut P) -> Result<()> {
+    let shortcut_path = paths.shortcuts()?;
+    let Some(selected) = select_installed_file(paths, prompt)? else {
+        return Ok(());
+    };
+    if let Some(name) = save_shortcut(
+        prompt,
+        &shortcut_path,
+        &selected.catalog,
+        &selected.tool,
+        &selected.relative,
+    )? {
+        prompt.message(&format!("Shortcut '{name}' saved."))?;
+    }
+    Ok(())
+}
+
+fn run_selected_file<P: Prompt>(paths: &Paths, prompt: &mut P, shortcut_path: &Path) -> Result<()> {
+    let Some(selected) = select_installed_file(paths, prompt)? else {
+        return Ok(());
+    };
+    let target = safe_target(&selected.root, &selected.relative)?;
+    prompt.message(&format!(
+        "Selected:\n{}",
+        shortcuts::portable_path(&selected.relative)?
+    ))?;
+    launch_file(&target)?;
+    if prompt.confirm("Save as a Loadbot shortcut?", false)? == Some(true)
+        && let Some(name) = save_shortcut(
+            prompt,
+            shortcut_path,
+            &selected.catalog,
+            &selected.tool,
+            &selected.relative,
+        )?
+    {
+        prompt.message(&format!("saved shortcut '{name}'"))?;
+    }
+    Ok(())
+}
+
+fn select_installed_file<P: Prompt>(paths: &Paths, prompt: &mut P) -> Result<Option<SelectedFile>> {
     let tools = operations::installed_tools(paths)?;
     if tools.is_empty() {
         bail!("no installed tools are available; run 'loadbot pull TOOL' first");
@@ -89,7 +130,7 @@ fn browse_installed_tools<P: Prompt>(paths: &Paths, prompt: &mut P) -> Result<()
 
     loop {
         let Some(catalog) = prompt.select("Select catalog:", &catalogs)? else {
-            return cancelled();
+            return cancelled().map(|()| None);
         };
         let mut tool_choices = vec!["../ Back".to_owned()];
         tool_choices.extend(
@@ -99,7 +140,7 @@ fn browse_installed_tools<P: Prompt>(paths: &Paths, prompt: &mut P) -> Result<()
                 .map(|tool| tool.name.clone()),
         );
         let Some(tool) = prompt.select("Select tool:", &tool_choices)? else {
-            return cancelled();
+            return cancelled().map(|()| None);
         };
         if tool == "../ Back" {
             continue;
@@ -109,16 +150,12 @@ fn browse_installed_tools<P: Prompt>(paths: &Paths, prompt: &mut P) -> Result<()
         let Some(relative) = browse(prompt, &tool, &root)? else {
             continue;
         };
-        let target = safe_target(&root, &relative)?;
-        prompt.message(&format!(
-            "Selected:\n{}",
-            shortcuts::portable_path(&relative)?
-        ))?;
-        launch_file(&target)?;
-        if prompt.confirm("Save as a Loadbot shortcut?", false)? == Some(true) {
-            save_shortcut(prompt, paths, &catalog, &tool, &relative)?;
-        }
-        return Ok(());
+        return Ok(Some(SelectedFile {
+            catalog,
+            tool,
+            root,
+            relative,
+        }));
     }
 }
 
@@ -209,11 +246,11 @@ fn browse<P: Prompt>(prompt: &mut P, tool: &str, root: &Path) -> Result<Option<P
 
 fn save_shortcut<P: Prompt>(
     prompt: &mut P,
-    paths: &Paths,
+    shortcut_path: &Path,
     catalog: &str,
     tool: &str,
     relative: &Path,
-) -> Result<()> {
+) -> Result<Option<String>> {
     let default = relative
         .file_stem()
         .and_then(|name| name.to_str())
@@ -223,7 +260,8 @@ fn save_shortcut<P: Prompt>(
         None => "Shortcut name:".to_owned(),
     };
     let Some(name) = prompt.input(&label, default)? else {
-        return cancelled();
+        cancelled()?;
+        return Ok(None);
     };
     paths::validate_name(&name).context("invalid shortcut name")?;
     let shortcut = Shortcut::new(
@@ -231,8 +269,8 @@ fn save_shortcut<P: Prompt>(
         tool.to_owned(),
         shortcuts::portable_path(relative)?,
     )?;
-    shortcuts::save(&paths.shortcuts()?, &name, shortcut)?;
-    prompt.message(&format!("saved shortcut '{name}'"))
+    shortcuts::save(shortcut_path, &name, shortcut)?;
+    Ok(Some(name))
 }
 
 fn resolve_target(paths: &Paths, shortcut: &Shortcut) -> Result<PathBuf> {
@@ -360,6 +398,13 @@ struct BrowserEntry {
     is_directory: bool,
 }
 
+struct SelectedFile {
+    catalog: String,
+    tool: String,
+    root: PathBuf,
+    relative: PathBuf,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum InitialAction {
     Shortcut(String),
@@ -376,13 +421,18 @@ mod tests {
 
     #[derive(Default)]
     struct FakePrompt {
+        inputs: VecDeque<Option<String>>,
         selections: VecDeque<Option<String>>,
         displayed: Vec<Vec<String>>,
+        input_requests: Vec<(String, Option<String>)>,
+        messages: Vec<String>,
     }
 
     impl Prompt for FakePrompt {
-        fn input(&mut self, _label: &str, _default: Option<&str>) -> Result<Option<String>> {
-            unreachable!()
+        fn input(&mut self, label: &str, default: Option<&str>) -> Result<Option<String>> {
+            self.input_requests
+                .push((label.to_owned(), default.map(str::to_owned)));
+            Ok(self.inputs.pop_front().flatten())
         }
 
         fn confirm(&mut self, _label: &str, _default: bool) -> Result<Option<bool>> {
@@ -394,7 +444,8 @@ mod tests {
             Ok(self.selections.pop_front().flatten())
         }
 
-        fn message(&mut self, _message: &str) -> Result<()> {
+        fn message(&mut self, message: &str) -> Result<()> {
+            self.messages.push(message.to_owned());
             Ok(())
         }
     }
@@ -422,6 +473,46 @@ mod tests {
         assert!(!prompt.displayed[0].contains(&"run.sh".to_owned()));
         assert!(prompt.displayed[1].contains(&"run.sh".to_owned()));
         assert_eq!(prompt.displayed[2], prompt.displayed[0]);
+    }
+
+    #[test]
+    fn shortcut_save_uses_file_stem_and_portable_relative_path() {
+        let temporary = tempfile::TempDir::new().unwrap();
+        let shortcut_path = temporary.path().join("shortcuts.toml");
+        let mut prompt = FakePrompt {
+            inputs: [Some("dotfiles".to_owned())].into(),
+            ..FakePrompt::default()
+        };
+
+        let name = save_shortcut(
+            &mut prompt,
+            &shortcut_path,
+            "personal",
+            "dotfiles",
+            Path::new("recipes/install_dotfiles.sh"),
+        )
+        .unwrap();
+
+        assert_eq!(name.as_deref(), Some("dotfiles"));
+        assert_eq!(
+            prompt.input_requests,
+            [(
+                "Shortcut name [install_dotfiles]:".to_owned(),
+                Some("install_dotfiles".to_owned())
+            )]
+        );
+        let saved = shortcuts::load(&shortcut_path).unwrap();
+        assert_eq!(saved.shortcuts["dotfiles"].catalog, "personal");
+        assert_eq!(saved.shortcuts["dotfiles"].tool, "dotfiles");
+        assert_eq!(
+            saved.shortcuts["dotfiles"].path,
+            "recipes/install_dotfiles.sh"
+        );
+        assert!(
+            !fs::read_to_string(shortcut_path)
+                .unwrap()
+                .contains(temporary.path().to_str().unwrap())
+        );
     }
 
     #[test]

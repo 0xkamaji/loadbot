@@ -135,13 +135,17 @@ path = "triage.py"
         assert_eq!(
             rot_candidates(&[String::new()]),
             [
-                "add", "catalog", "list", "path", "pull", "run", "status", "update"
+                "add", "catalog", "list", "path", "pull", "run", "shortcut", "status", "update"
             ]
         );
         assert_eq!(rot_candidates(&["p".to_owned()]), ["path", "pull"]);
         assert_eq!(
             rot_candidates(&["catalog".to_owned(), String::new()]),
             ["add", "list", "migrate", "path", "status", "sync"]
+        );
+        assert_eq!(
+            rot_candidates(&["shortcut".to_owned(), String::new()]),
+            ["add"]
         );
     }
 }

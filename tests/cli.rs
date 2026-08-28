@@ -411,8 +411,101 @@ fn tool_listing_aggregates_catalogs_and_requires_qualification_for_duplicates() 
     assert_success_ref(&qualified);
     assert_eq!(
         stdout(&qualified),
-        fixture.home.join("tools/demo").display().to_string()
+        fixture
+            .home
+            .join("tools/personal/demo")
+            .display()
+            .to_string()
     );
+}
+
+#[test]
+fn duplicate_tools_install_and_operate_independently_by_catalog() {
+    let Some(fixture) = Fixture::new() else {
+        return;
+    };
+    assert_success(fixture.add_catalog("personal", true));
+    assert_success(fixture.add_tool("demo", "personal", &[]));
+
+    let public_tool = create_repository(fixture._temporary.path(), "public-tool", Some("public\n"));
+    git(["checkout", "-b", "release"], Some(&public_tool.source));
+    git(
+        ["push", "-u", "origin", "release"],
+        Some(&public_tool.source),
+    );
+    let public_catalog = create_repository(
+        fixture._temporary.path(),
+        "public-catalog",
+        Some(&format!(
+            "version = 1\n\n[tools.demo]\ntype = \"git\"\nurl = {:?}\nrevision = \"release\"\n",
+            public_tool.remote.display().to_string()
+        )),
+    );
+    assert_success(fixture.loadbot([
+        OsStr::new("catalog"),
+        OsStr::new("add"),
+        OsStr::new("public"),
+        public_catalog.remote.as_os_str(),
+    ]));
+
+    assert_success(fixture.loadbot(["pull", "demo", "--catalog", "personal"]));
+    assert_success(fixture.loadbot(["pull", "demo", "--catalog", "public"]));
+    let personal = fixture.home.join("tools/personal/demo");
+    let public = fixture.home.join("tools/public/demo");
+    assert!(personal.join("README.md").is_file());
+    assert!(public.join("README.md").is_file());
+    let list = fixture.loadbot(["list"]);
+    assert_success_ref(&list);
+    assert_eq!(stdout(&list).matches("\tinstalled\t").count(), 2);
+    assert_eq!(
+        git_text(["remote", "get-url", "origin"], Some(&personal)),
+        fixture.tool.remote.display().to_string()
+    );
+    assert_eq!(
+        git_text(["remote", "get-url", "origin"], Some(&public)),
+        public_tool.remote.display().to_string()
+    );
+    assert_eq!(
+        git_text(["branch", "--show-current"], Some(&personal)),
+        "main"
+    );
+    assert_eq!(
+        git_text(["branch", "--show-current"], Some(&public)),
+        "release"
+    );
+
+    let personal_path = fixture.loadbot(["path", "demo", "--catalog", "personal"]);
+    assert_success_ref(&personal_path);
+    assert_eq!(stdout(&personal_path), personal.display().to_string());
+    let public_path = fixture.loadbot(["path", "demo", "--catalog", "public"]);
+    assert_success_ref(&public_path);
+    assert_eq!(stdout(&public_path), public.display().to_string());
+
+    fs::write(personal.join("local.txt"), "keep personal changes\n").unwrap();
+    fs::write(public_tool.source.join("public-update.txt"), "updated\n").unwrap();
+    git(["add", "."], Some(&public_tool.source));
+    git(["commit", "-m", "public update"], Some(&public_tool.source));
+    git(["push", "origin", "release"], Some(&public_tool.source));
+    let update_public = fixture.loadbot(["update", "demo", "--catalog", "public"]);
+    assert_success_ref(&update_public);
+    assert!(public.join("public-update.txt").is_file());
+    assert!(personal.join("local.txt").is_file());
+
+    git(
+        [
+            "remote",
+            "set-url",
+            "origin",
+            public_tool.remote.to_str().unwrap(),
+        ],
+        Some(&personal),
+    );
+    let mismatched = fixture.loadbot(["update", "demo", "--catalog", "personal"]);
+    assert!(!mismatched.status.success());
+    assert!(stderr(&mismatched).contains("not the configured Git repository"));
+    let public_status = fixture.loadbot(["status", "demo", "--catalog", "public"]);
+    assert_success_ref(&public_status);
+    assert!(stdout(&public_status).contains("Installed: yes"));
 }
 
 #[test]
@@ -433,9 +526,14 @@ fn tool_clone_status_update_and_dirty_refusal_remain_safe() {
     commit_and_push(&fixture.tool.source, "tool update");
     let update = fixture.loadbot(["update", "demo"]);
     assert_success_ref(&update);
-    assert!(fixture.home.join("tools/demo/update.txt").is_file());
+    assert!(
+        fixture
+            .home
+            .join("tools/personal/demo/update.txt")
+            .is_file()
+    );
 
-    let local = fixture.home.join("tools/demo/local.txt");
+    let local = fixture.home.join("tools/personal/demo/local.txt");
     fs::write(&local, "keep\n").unwrap();
     let dirty = fixture.loadbot(["update", "demo"]);
     assert!(!dirty.status.success());
@@ -450,7 +548,7 @@ fn unrelated_tool_destination_is_never_overwritten() {
     };
     assert_success(fixture.add_catalog("personal", true));
     assert_success(fixture.add_tool("demo", "personal", &[]));
-    let destination = fixture.home.join("tools/demo");
+    let destination = fixture.home.join("tools/personal/demo");
     fs::create_dir_all(&destination).unwrap();
     fs::write(destination.join("keep.txt"), "keep\n").unwrap();
 
@@ -461,6 +559,45 @@ fn unrelated_tool_destination_is_never_overwritten() {
         fs::read_to_string(destination.join("keep.txt")).unwrap(),
         "keep\n"
     );
+}
+
+#[test]
+fn unsafe_catalog_and_tool_names_cannot_escape_loadbot_home() {
+    let Some(fixture) = Fixture::new() else {
+        return;
+    };
+    let escaped_catalog = fixture.home.join("escape-catalog");
+    let catalog = fixture.loadbot([
+        OsStr::new("catalog"),
+        OsStr::new("add"),
+        OsStr::new("../escape-catalog"),
+        fixture.catalog.remote.as_os_str(),
+    ]);
+    assert!(!catalog.status.success());
+    assert!(!escaped_catalog.exists());
+
+    assert_success(fixture.add_catalog("personal", true));
+    let escaped_tool = fixture.home.join("tools/escape-tool");
+    let tool = fixture.loadbot(["pull", "../escape-tool", "--catalog", "personal"]);
+    assert!(!tool.status.success());
+    assert!(!escaped_tool.exists());
+
+    let unsafe_catalog = fixture.loadbot(["path", "demo", "--catalog", "../escape-catalog"]);
+    assert!(!unsafe_catalog.status.success());
+    assert!(!escaped_catalog.exists());
+
+    fs::write(
+        fixture.home.join("config.toml"),
+        format!(
+            "version = 1\n\n[catalogs.\"../escape-catalog\"]\nurl = {:?}\n",
+            fixture.catalog.remote.display().to_string()
+        ),
+    )
+    .unwrap();
+    let unsafe_configuration = fixture.loadbot(["catalog", "list"]);
+    assert!(!unsafe_configuration.status.success());
+    assert!(stderr(&unsafe_configuration).contains("unsafe catalog name"));
+    assert!(!escaped_catalog.exists());
 }
 
 #[test]

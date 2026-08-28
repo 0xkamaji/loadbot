@@ -314,7 +314,7 @@ pub fn tool_list(paths: &Paths) -> Result<()> {
 
     println!("NAME\tCATALOG\tTYPE\tSTATE\tREVISION\tAMBIGUOUS");
     for tool in tools {
-        let destination = paths.tool(&tool.name);
+        let destination = paths.tool(&tool.catalog, &tool.name)?;
         let installed = if path_exists(&destination) {
             git::is_expected_repository(&destination, &tool.definition.url)?
         } else {
@@ -335,7 +335,7 @@ pub fn tool_list(paths: &Paths) -> Result<()> {
 
 pub fn tool_pull(paths: &Paths, name: &str, catalog_name: Option<&str>) -> Result<()> {
     let tool = resolve_tool(paths, name, catalog_name)?;
-    let destination = paths.tool(name);
+    let destination = paths.tool(&tool.catalog, &tool.name)?;
     if path_exists(&destination) {
         if git::is_expected_repository(&destination, &tool.definition.url)? {
             println!("tool '{name}' is already installed");
@@ -347,8 +347,10 @@ pub fn tool_pull(paths: &Paths, name: &str, catalog_name: Option<&str>) -> Resul
         bail!("destination exists but is not a Git repository");
     }
 
-    fs::create_dir_all(paths.tools())
-        .with_context(|| format!("could not create {}", paths.tools().display()))?;
+    let parent = destination
+        .parent()
+        .context("tool destination has no parent directory")?;
+    fs::create_dir_all(parent).with_context(|| format!("could not create {}", parent.display()))?;
     if let Err(error) = git::clone_repository(
         &tool.definition.url,
         tool.definition.revision.as_deref(),
@@ -363,7 +365,7 @@ pub fn tool_pull(paths: &Paths, name: &str, catalog_name: Option<&str>) -> Resul
 
 pub fn tool_update(paths: &Paths, name: &str, catalog_name: Option<&str>) -> Result<()> {
     let tool = resolve_tool(paths, name, catalog_name)?;
-    let destination = paths.tool(name);
+    let destination = paths.tool(&tool.catalog, &tool.name)?;
     if !path_exists(&destination) {
         bail!("tool '{name}' is not installed; run 'loadbot pull {name}' first");
     }
@@ -386,7 +388,7 @@ pub fn tool_update(paths: &Paths, name: &str, catalog_name: Option<&str>) -> Res
 
 pub fn tool_status(paths: &Paths, name: &str, catalog_name: Option<&str>) -> Result<()> {
     let tool = resolve_tool(paths, name, catalog_name)?;
-    let destination = paths.tool(name);
+    let destination = paths.tool(&tool.catalog, &tool.name)?;
     println!("Name: {name}");
     println!("Catalog: {}", tool.catalog);
     println!("Path: {}", destination.display());
@@ -431,8 +433,8 @@ pub fn tool_status(paths: &Paths, name: &str, catalog_name: Option<&str>) -> Res
 }
 
 pub fn tool_path(paths: &Paths, name: &str, catalog_name: Option<&str>) -> Result<()> {
-    resolve_tool(paths, name, catalog_name)?;
-    println!("{}", paths.tool(name).display());
+    let tool = resolve_tool(paths, name, catalog_name)?;
+    println!("{}", paths.tool(&tool.catalog, &tool.name)?.display());
     Ok(())
 }
 

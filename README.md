@@ -15,13 +15,15 @@ LOADBOT_HOME/
 │   └── public/
 │       └── catalog.toml
 └── tools/
-    ├── re-toolkit/
-    └── other-tool/
+    ├── personal/
+    │   └── re-toolkit/
+    └── public/
+        └── other-tool/
 ```
 
 - `config.toml` is machine-local. It registers catalog Git URLs, writable/read-only settings, and the default catalog.
 - `catalogs/<name>/` is a complete Git clone. Its versioned `catalog.toml` is authoritative for portable tool definitions.
-- `tools/<name>/` is the local clone of an installed tool repository.
+- `tools/<catalog>/<name>/` is the local clone of a tool installed from that catalog. Catalog namespaces allow the same tool name to be installed independently from multiple catalogs.
 
 The default root is `~/.local/share/loadbot/` on Linux and `%LOCALAPPDATA%\loadbot\` on native Windows. `LOADBOT_HOME` overrides the root for portable or isolated use. Read-only commands do not create it.
 
@@ -331,7 +333,7 @@ If the same tool name appears in multiple catalogs, every definition is shown an
 loadbot pull [NAME] [--catalog CATALOG]
 ```
 
-Clones a configured tool repository into `LOADBOT_HOME/tools/<name>/`.
+Clones a configured tool repository into `LOADBOT_HOME/tools/<catalog>/<name>/`.
 
 ```bash
 loadbot pull re-toolkit
@@ -430,7 +432,7 @@ loadbot path re-toolkit
 Example output:
 
 ```text
-/home/kamaji/.local/share/loadbot/tools/re-toolkit
+/home/kamaji/.local/share/loadbot/tools/personal/re-toolkit
 ```
 
 The tool may be defined but not yet cloned. This makes the command suitable for scripts:

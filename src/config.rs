@@ -7,6 +7,7 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::catalog::ToolConfig;
+use crate::paths;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LocalConfig {
@@ -73,6 +74,10 @@ pub fn load(path: &Path) -> Result<LocalConfig> {
         .try_into()
         .with_context(|| format!("could not parse {}", path.display()))?;
     validate_version(config.version, path)?;
+    for name in config.catalogs.keys() {
+        paths::validate_name(name)
+            .with_context(|| format!("configuration contains an unsafe catalog name '{name}'"))?;
+    }
     Ok(config)
 }
 

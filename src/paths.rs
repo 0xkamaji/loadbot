@@ -40,8 +40,10 @@ impl Paths {
         self.catalog(name).join("catalog.toml")
     }
 
-    pub fn tool(&self, name: &str) -> PathBuf {
-        self.tools().join(name)
+    pub fn tool(&self, catalog: &str, name: &str) -> Result<PathBuf> {
+        validate_name(catalog).context("invalid catalog name")?;
+        validate_name(name)?;
+        Ok(self.tools().join(catalog).join(name))
     }
 }
 
@@ -108,5 +110,19 @@ mod tests {
         for name in ["re-toolbox", "tool_name", "tool.name", "Tool123"] {
             assert!(validate_name(name).is_ok(), "rejected {name:?}");
         }
+    }
+
+    #[test]
+    fn tool_paths_require_safe_catalog_and_tool_names() {
+        let paths = Paths {
+            root: PathBuf::from("/loadbot"),
+        };
+
+        assert_eq!(
+            paths.tool("personal", "re-toolkit").unwrap(),
+            PathBuf::from("/loadbot/tools/personal/re-toolkit")
+        );
+        assert!(paths.tool("../outside", "re-toolkit").is_err());
+        assert!(paths.tool("personal", "../outside").is_err());
     }
 }

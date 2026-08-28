@@ -54,6 +54,11 @@ impl Paths {
         validate_name(name)?;
         Ok(self.tools().join(catalog).join(name))
     }
+
+    #[cfg(test)]
+    pub fn with_root(root: PathBuf) -> Self {
+        Self { root }
+    }
 }
 
 fn absolute(path: PathBuf) -> Result<PathBuf> {

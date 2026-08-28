@@ -11,6 +11,8 @@ use crate::operations;
 use crate::paths::{self, Paths};
 use crate::shortcuts::{self, Shortcut};
 
+const BROWSE_TOOLS: &str = "Browse installed tools...";
+
 #[derive(Debug)]
 pub struct ChildExit {
     code: i32,
@@ -37,8 +39,12 @@ impl fmt::Display for ChildExit {
 impl std::error::Error for ChildExit {}
 
 pub fn run_shortcut(paths: &Paths, name: &str) -> Result<()> {
+    run_shortcut_from(paths, &paths.shortcuts()?, name)
+}
+
+fn run_shortcut_from(paths: &Paths, shortcut_path: &Path, name: &str) -> Result<()> {
     paths::validate_name(name).context("invalid shortcut name")?;
-    let shortcut_file = shortcuts::load(&paths.shortcuts()?)?;
+    let shortcut_file = shortcuts::load(shortcut_path)?;
     let shortcut = shortcut_file
         .shortcuts
         .get(name)
@@ -48,6 +54,26 @@ pub fn run_shortcut(paths: &Paths, name: &str) -> Result<()> {
 }
 
 pub fn run_interactive<P: Prompt>(paths: &Paths, prompt: &mut P) -> Result<()> {
+    run_interactive_from(paths, prompt, &paths.shortcuts()?)
+}
+
+fn run_interactive_from<P: Prompt>(
+    paths: &Paths,
+    prompt: &mut P,
+    shortcut_path: &Path,
+) -> Result<()> {
+    let names = shortcuts::shortcut_names(shortcut_path)?;
+    match select_initial_action(prompt, &names)? {
+        InitialAction::Shortcut(name) => {
+            return run_shortcut_from(paths, shortcut_path, &name);
+        }
+        InitialAction::Browse => {}
+        InitialAction::Cancelled => return cancelled(),
+    }
+    browse_installed_tools(paths, prompt)
+}
+
+fn browse_installed_tools<P: Prompt>(paths: &Paths, prompt: &mut P) -> Result<()> {
     let tools = operations::installed_tools(paths)?;
     if tools.is_empty() {
         bail!("no installed tools are available; run 'loadbot pull TOOL' first");
@@ -91,6 +117,22 @@ pub fn run_interactive<P: Prompt>(paths: &Paths, prompt: &mut P) -> Result<()> {
             save_shortcut(prompt, paths, &catalog, &tool, &relative)?;
         }
         return Ok(());
+    }
+}
+
+fn select_initial_action<P: Prompt>(prompt: &mut P, names: &[String]) -> Result<InitialAction> {
+    if names.is_empty() {
+        return Ok(InitialAction::Browse);
+    }
+    let mut choices = names.to_vec();
+    choices.push(BROWSE_TOOLS.to_owned());
+    let Some(selection) = prompt.select("Select:", &choices)? else {
+        return Ok(InitialAction::Cancelled);
+    };
+    if selection == BROWSE_TOOLS {
+        Ok(InitialAction::Browse)
+    } else {
+        Ok(InitialAction::Shortcut(selection))
     }
 }
 
@@ -318,6 +360,13 @@ struct BrowserEntry {
     is_directory: bool,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum InitialAction {
+    Shortcut(String),
+    Browse,
+    Cancelled,
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::VecDeque;
@@ -372,6 +421,70 @@ mod tests {
         assert!(!prompt.displayed[0].contains(&"run.sh".to_owned()));
         assert!(prompt.displayed[1].contains(&"run.sh".to_owned()));
         assert_eq!(prompt.displayed[2], prompt.displayed[0]);
+    }
+
+    #[test]
+    fn initial_menu_shows_shortcuts_and_keeps_browser_reachable() {
+        let names = vec!["bn-triage".to_owned(), "print-strings".to_owned()];
+        let mut shortcut_prompt = FakePrompt {
+            selections: [Some("print-strings".to_owned())].into(),
+            ..FakePrompt::default()
+        };
+        assert_eq!(
+            select_initial_action(&mut shortcut_prompt, &names).unwrap(),
+            InitialAction::Shortcut("print-strings".to_owned())
+        );
+        assert_eq!(
+            shortcut_prompt.displayed[0],
+            ["bn-triage", "print-strings", BROWSE_TOOLS]
+        );
+
+        let mut browse_prompt = FakePrompt {
+            selections: [Some(BROWSE_TOOLS.to_owned())].into(),
+            ..FakePrompt::default()
+        };
+        assert_eq!(
+            select_initial_action(&mut browse_prompt, &names).unwrap(),
+            InitialAction::Browse
+        );
+    }
+
+    #[test]
+    fn zero_shortcuts_enters_browser_without_an_extra_prompt() {
+        let mut prompt = FakePrompt::default();
+
+        assert_eq!(
+            select_initial_action(&mut prompt, &[]).unwrap(),
+            InitialAction::Browse
+        );
+        assert!(prompt.displayed.is_empty());
+    }
+
+    #[test]
+    fn broken_shortcuts_remain_visible_and_use_normal_execution_errors() {
+        let temporary = tempfile::TempDir::new().unwrap();
+        let shortcut_path = temporary.path().join("shortcuts.toml");
+        fs::write(
+            &shortcut_path,
+            r#"version = 1
+
+[shortcuts.broken-tool]
+catalog = "missing-catalog"
+tool = "demo"
+path = "run.sh"
+"#,
+        )
+        .unwrap();
+        let paths = Paths::with_root(temporary.path().join("loadbot-home"));
+        let mut prompt = FakePrompt {
+            selections: [Some("broken-tool".to_owned())].into(),
+            ..FakePrompt::default()
+        };
+
+        let error = run_interactive_from(&paths, &mut prompt, &shortcut_path).unwrap_err();
+        assert!(prompt.displayed[0].contains(&"broken-tool".to_owned()));
+        assert!(format!("{error:#}").contains("shortcut 'broken-tool' is broken"));
+        assert!(format!("{error:#}").contains("catalog 'missing-catalog' is not configured"));
     }
 
     #[cfg(unix)]

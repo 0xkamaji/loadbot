@@ -25,6 +25,7 @@ if ($env:CARGO_HOME) {
 }
 $InstallBin = Join-Path $InstallRoot "bin"
 $LoadbotExe = Join-Path $InstallBin "loadbot.exe"
+$CompletionDir = Join-Path $InstallRoot "completions"
 
 Write-Host "Installing Loadbot from source..."
 & cargo install --path $ProjectDir --root $InstallRoot --locked --force
@@ -40,8 +41,30 @@ if ($LASTEXITCODE -ne 0) {
     throw "Loadbot was installed but failed its verification check"
 }
 
+Write-Host "Generating shell completion scripts..."
+New-Item -ItemType Directory -Force -Path $CompletionDir | Out-Null
+$PreviousComplete = $env:COMPLETE
+try {
+    foreach ($Shell in @("bash", "zsh", "fish", "powershell")) {
+        $env:COMPLETE = $Shell
+        $Extension = if ($Shell -eq "powershell") { "ps1" } else { $Shell }
+        $Destination = Join-Path $CompletionDir "loadbot.$Extension"
+        & $LoadbotExe | Set-Content -Encoding utf8 $Destination
+        if ($LASTEXITCODE -ne 0) {
+            throw "Loadbot failed to generate $Shell completions"
+        }
+    }
+} finally {
+    $env:COMPLETE = $PreviousComplete
+}
+
 Write-Host "Loadbot installed successfully:"
 Write-Host "  $LoadbotExe"
+Write-Host "Completion scripts generated in:"
+Write-Host "  $CompletionDir"
+Write-Host "Dot-source the PowerShell script for this session:"
+Write-Host "  . `"$(Join-Path $CompletionDir 'loadbot.ps1')`""
+Write-Host "Loadbot did not modify your PowerShell profile."
 
 $PathEntries = $env:PATH -split ";"
 if ($PathEntries -contains $InstallBin) {

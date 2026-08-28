@@ -480,6 +480,29 @@ At launch time Loadbot resolves the catalog-qualified tool through the current c
 
 Executable files are launched directly. Non-executable `.py`, `.sh`, and `.ps1` files use a small fixed set of common interpreters available in the user's `PATH`. The child inherits the normal environment and terminal. Loadbot does not discover entrypoints, install dependencies, create environments, or interpret repository metadata.
 
+Saved shortcut names are available as dynamic completions for the positional argument to `loadbot run`. Completion never scans installed repositories or suggests tool names and files. Enable it for the current shell with:
+
+```bash
+# Bash
+source <(COMPLETE=bash loadbot)
+
+# Zsh
+source <(COMPLETE=zsh loadbot)
+
+# Fish
+COMPLETE=fish loadbot | source
+```
+
+PowerShell:
+
+```powershell
+$env:COMPLETE = "powershell"
+loadbot | Out-String | Invoke-Expression
+Remove-Item Env:COMPLETE
+```
+
+`setup.sh` and `setup.ps1` also generate Bash, Zsh, Fish, and PowerShell registration scripts beneath Cargo's `completions` install directory and print commands for sourcing them. They do not modify shell startup files or PowerShell profiles.
+
 ## Catalog Recovery
 
 If catalog registration succeeds but its clone fails, the local registration is preserved and appears as `missing`.

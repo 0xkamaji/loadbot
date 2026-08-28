@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+use clap_complete::engine::ArgValueCompleter;
 
 #[derive(Debug, Parser)]
 #[command(name = "loadbot", version, about)]
@@ -49,7 +50,10 @@ pub enum Commands {
         catalog: Option<String>,
     },
     /// Launch an installed file or saved shortcut.
-    Run { shortcut: Option<String> },
+    Run {
+        #[arg(add = ArgValueCompleter::new(crate::completion::shortcut_candidates))]
+        shortcut: Option<String>,
+    },
     /// Manage Git-backed tool catalogs.
     Catalog {
         #[command(subcommand)]

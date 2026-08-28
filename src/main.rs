@@ -1,5 +1,6 @@
 mod catalog;
 mod cli;
+mod completion;
 mod config;
 mod git;
 mod interactive;
@@ -16,6 +17,7 @@ use interactive::Prompt;
 use paths::Paths;
 
 fn main() {
+    completion::complete();
     if let Err(error) = run() {
         eprintln!("error: {error:#}");
         if let Some(exit) = error.downcast_ref::<launcher::ChildExit>() {

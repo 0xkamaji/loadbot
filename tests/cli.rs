@@ -703,6 +703,36 @@ fn run_shortcut_rejects_traversal_and_run_without_a_tty_requires_a_name() {
 }
 
 #[test]
+fn run_completion_only_returns_matching_shortcut_names() {
+    let Some(fixture) = Fixture::new() else {
+        return;
+    };
+    fixture.save_shortcut(
+        "print-strings",
+        "personal",
+        "demo-tool",
+        "recipes/arbitrary-file.py",
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_loadbot"))
+        .env("LOADBOT_HOME", &fixture.home)
+        .env("XDG_CONFIG_HOME", &fixture.config_home)
+        .env("APPDATA", &fixture.config_home)
+        .env("COMPLETE", "bash")
+        .env("_CLAP_IFS", "\u{b}")
+        .env("_CLAP_COMPLETE_INDEX", "2")
+        .env("_CLAP_COMPLETE_COMP_TYPE", "9")
+        .env("_CLAP_COMPLETE_SPACE", "false")
+        .args(["--", "loadbot", "run", "pri"])
+        .output()
+        .unwrap();
+    assert_success_ref(&output);
+    assert_eq!(stdout(&output), "print-strings");
+    assert!(!stdout(&output).contains("demo-tool"));
+    assert!(!stdout(&output).contains("arbitrary-file.py"));
+}
+
+#[test]
 fn legacy_configuration_is_detected_and_explicitly_migrated() {
     let Some(fixture) = Fixture::new() else {
         return;

@@ -92,6 +92,10 @@ pub fn save(path: &Path, name: &str, shortcut: Shortcut) -> Result<()> {
     config::save_toml(path, &shortcuts)
 }
 
+pub fn shortcut_names(path: &Path) -> Result<Vec<String>> {
+    Ok(load(path)?.shortcuts.into_keys().collect())
+}
+
 pub fn relative_path(value: &str) -> Result<PathBuf> {
     if value.is_empty() || value.starts_with('/') || value.contains(['\\', ':']) {
         bail!("shortcut path must be a portable relative path inside its tool repository");
@@ -176,5 +180,32 @@ mod tests {
         .unwrap();
         save(&path, "demo", shortcut.clone()).unwrap();
         assert!(save(&path, "demo", shortcut).is_err());
+    }
+
+    #[test]
+    fn shortcut_names_are_alphabetical() {
+        let temporary = tempfile::TempDir::new().unwrap();
+        let path = temporary.path().join("shortcuts.toml");
+        fs::write(
+            &path,
+            r#"version = 1
+
+[shortcuts.print-strings]
+catalog = "personal"
+tool = "demo"
+path = "print.py"
+
+[shortcuts.bn-triage]
+catalog = "personal"
+tool = "demo"
+path = "triage.py"
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            shortcut_names(&path).unwrap(),
+            ["bn-triage", "print-strings"]
+        );
     }
 }

@@ -173,8 +173,15 @@ fn run_tool_add(
         input.push,
     )?;
     match prompt.confirm("Pull it now?", true)? {
-        Some(true) => operations::tool_pull(paths, &input.name, Some(&input.catalog))
-            .context("tool definition was added, but pulling it now failed"),
+        Some(true) => {
+            operations::tool_pull(paths, &input.name, Some(&input.catalog))
+                .context("tool definition was added, but pulling it now failed")?;
+            prompt.message(&format!("Tool installed: {}", input.name))?;
+            if prompt.confirm("Add shortcuts for this tool now?", false)? == Some(true) {
+                launcher::add_shortcuts_for_tool(paths, &mut prompt, &input.catalog, &input.name)?;
+            }
+            Ok(())
+        }
         Some(false) => Ok(()),
         None => {
             eprintln!("pull cancelled; tool definition remains in the catalog");

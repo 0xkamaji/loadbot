@@ -80,16 +80,44 @@ pub fn add_shortcut<P: Prompt>(paths: &Paths, prompt: &mut P) -> Result<()> {
     let Some(selected) = select_installed_file(paths, prompt)? else {
         return Ok(());
     };
-    if let Some(name) = save_shortcut(
+    create_shortcut(
         prompt,
         &shortcut_path,
         &selected.catalog,
         &selected.tool,
         &selected.relative,
-    )? {
-        prompt.message(&format!("Shortcut '{name}' saved."))?;
-    }
+    )?;
     Ok(())
+}
+
+pub fn add_shortcuts_for_tool<P: Prompt>(
+    paths: &Paths,
+    prompt: &mut P,
+    catalog: &str,
+    tool: &str,
+) -> Result<()> {
+    let root = operations::installed_tool_path(paths, tool, catalog)?;
+    add_shortcuts_for_tool_from(prompt, &paths.shortcuts()?, catalog, tool, &root)
+}
+
+fn add_shortcuts_for_tool_from<P: Prompt>(
+    prompt: &mut P,
+    shortcut_path: &Path,
+    catalog: &str,
+    tool: &str,
+    root: &Path,
+) -> Result<()> {
+    loop {
+        let Some(relative) = browse(prompt, root, "Select file:")? else {
+            return Ok(());
+        };
+        if !create_shortcut(prompt, shortcut_path, catalog, tool, &relative)? {
+            return Ok(());
+        }
+        if prompt.confirm("Add another shortcut?", false)? != Some(true) {
+            return Ok(());
+        }
+    }
 }
 
 fn run_selected_file<P: Prompt>(paths: &Paths, prompt: &mut P, shortcut_path: &Path) -> Result<()> {
@@ -147,7 +175,7 @@ fn select_installed_file<P: Prompt>(paths: &Paths, prompt: &mut P) -> Result<Opt
         }
 
         let root = operations::installed_tool_path(paths, &tool, &catalog)?;
-        let Some(relative) = browse(prompt, &tool, &root)? else {
+        let Some(relative) = browse(prompt, &root, &format!("Browse {tool}:"))? else {
             continue;
         };
         return Ok(Some(SelectedFile {
@@ -173,7 +201,7 @@ fn select_initial_action<P: Prompt>(prompt: &mut P, names: &[String]) -> Result<
     }
 }
 
-fn browse<P: Prompt>(prompt: &mut P, tool: &str, root: &Path) -> Result<Option<PathBuf>> {
+fn browse<P: Prompt>(prompt: &mut P, root: &Path, root_label: &str) -> Result<Option<PathBuf>> {
     let mut relative = PathBuf::new();
     loop {
         let directory = root.join(&relative);
@@ -214,7 +242,7 @@ fn browse<P: Prompt>(prompt: &mut P, tool: &str, root: &Path) -> Result<Option<P
         let mut choices = vec![back.to_owned()];
         choices.extend(entries.iter().map(|entry| entry.label.clone()));
         let label = if relative.as_os_str().is_empty() {
-            format!("Browse {tool}:")
+            root_label.to_owned()
         } else {
             format!("Browse {}:", shortcuts::portable_path(&relative)?)
         };
@@ -271,6 +299,20 @@ fn save_shortcut<P: Prompt>(
     )?;
     shortcuts::save(shortcut_path, &name, shortcut)?;
     Ok(Some(name))
+}
+
+fn create_shortcut<P: Prompt>(
+    prompt: &mut P,
+    shortcut_path: &Path,
+    catalog: &str,
+    tool: &str,
+    relative: &Path,
+) -> Result<bool> {
+    let Some(name) = save_shortcut(prompt, shortcut_path, catalog, tool, relative)? else {
+        return Ok(false);
+    };
+    prompt.message(&format!("Shortcut '{name}' saved."))?;
+    Ok(true)
 }
 
 fn resolve_target(paths: &Paths, shortcut: &Shortcut) -> Result<PathBuf> {
@@ -422,9 +464,12 @@ mod tests {
     #[derive(Default)]
     struct FakePrompt {
         inputs: VecDeque<Option<String>>,
+        confirmations: VecDeque<Option<bool>>,
         selections: VecDeque<Option<String>>,
         displayed: Vec<Vec<String>>,
         input_requests: Vec<(String, Option<String>)>,
+        confirmation_requests: Vec<(String, bool)>,
+        selection_labels: Vec<String>,
         messages: Vec<String>,
     }
 
@@ -435,11 +480,13 @@ mod tests {
             Ok(self.inputs.pop_front().flatten())
         }
 
-        fn confirm(&mut self, _label: &str, _default: bool) -> Result<Option<bool>> {
-            unreachable!()
+        fn confirm(&mut self, label: &str, default: bool) -> Result<Option<bool>> {
+            self.confirmation_requests.push((label.to_owned(), default));
+            Ok(self.confirmations.pop_front().flatten())
         }
 
-        fn select(&mut self, _label: &str, choices: &[String]) -> Result<Option<String>> {
+        fn select(&mut self, label: &str, choices: &[String]) -> Result<Option<String>> {
+            self.selection_labels.push(label.to_owned());
             self.displayed.push(choices.to_vec());
             Ok(self.selections.pop_front().flatten())
         }
@@ -468,7 +515,7 @@ mod tests {
             ..FakePrompt::default()
         };
 
-        let selected = browse(&mut prompt, "demo", root).unwrap().unwrap();
+        let selected = browse(&mut prompt, root, "Browse demo:").unwrap().unwrap();
         assert_eq!(selected, PathBuf::from("recipes/run.sh"));
         assert!(!prompt.displayed[0].contains(&"run.sh".to_owned()));
         assert!(prompt.displayed[1].contains(&"run.sh".to_owned()));
@@ -513,6 +560,57 @@ mod tests {
                 .unwrap()
                 .contains(temporary.path().to_str().unwrap())
         );
+    }
+
+    #[test]
+    fn known_tool_flow_saves_multiple_shortcuts_without_running_files() {
+        let temporary = tempfile::TempDir::new().unwrap();
+        let root = temporary.path().join("tool");
+        let marker = temporary.path().join("executed");
+        fs::create_dir(&root).unwrap();
+        fs::write(
+            root.join("install_dotfiles.sh"),
+            format!("touch {:?}\n", marker),
+        )
+        .unwrap();
+        fs::write(root.join("update.sh"), format!("touch {:?}\n", marker)).unwrap();
+        let shortcut_path = temporary.path().join("shortcuts.toml");
+        let mut prompt = FakePrompt {
+            inputs: [Some("dotfiles".to_owned()), Some("update".to_owned())].into(),
+            confirmations: [Some(true), Some(false)].into(),
+            selections: [
+                Some("install_dotfiles.sh".to_owned()),
+                Some("update.sh".to_owned()),
+            ]
+            .into(),
+            ..FakePrompt::default()
+        };
+
+        add_shortcuts_for_tool_from(&mut prompt, &shortcut_path, "personal", "dotfiles", &root)
+            .unwrap();
+
+        let saved = shortcuts::load(&shortcut_path).unwrap();
+        assert_eq!(saved.shortcuts["dotfiles"].path, "install_dotfiles.sh");
+        assert_eq!(saved.shortcuts["update"].path, "update.sh");
+        assert!(
+            saved
+                .shortcuts
+                .values()
+                .all(|shortcut| shortcut.catalog == "personal" && shortcut.tool == "dotfiles")
+        );
+        assert_eq!(prompt.selection_labels, ["Select file:", "Select file:"]);
+        assert_eq!(
+            prompt.confirmation_requests,
+            [
+                ("Add another shortcut?".to_owned(), false),
+                ("Add another shortcut?".to_owned(), false)
+            ]
+        );
+        assert_eq!(
+            prompt.messages,
+            ["Shortcut 'dotfiles' saved.", "Shortcut 'update' saved."]
+        );
+        assert!(!marker.exists());
     }
 
     #[test]

@@ -213,7 +213,7 @@ fn failed_catalog_registration_is_preserved_and_same_command_retries_clone() {
 
     let list = fixture.loadbot(["list"]);
     assert_success_ref(&list);
-    assert!(stdout(&list).contains("demo\tpersonal"));
+    assert!(stdout(&list).contains("demo\n  catalog  personal"));
     assert!(stderr(&list).contains("skipping catalog 'broken'"));
     assert!(
         stderr(&list).contains("run 'loadbot catalog status broken'"),
@@ -417,8 +417,17 @@ fn tool_listing_aggregates_catalogs_and_requires_qualification_for_duplicates() 
 
     let list = fixture.loadbot(["list"]);
     assert_success_ref(&list);
-    assert_eq!(stdout(&list).matches("demo\t").count(), 2);
-    assert_eq!(stdout(&list).matches("\tyes").count(), 2);
+    assert_eq!(
+        stdout(&list).lines().filter(|line| *line == "demo").count(),
+        2
+    );
+    assert!(
+        stdout(&list).contains("demo\n  catalog  personal\n  type     git\n  state    missing")
+    );
+    assert!(stdout(&list).contains("demo\n  catalog  public\n  type     git\n  state    missing"));
+    assert!(!stdout(&list).contains('\t'));
+    assert!(!stdout(&list).contains("revision"));
+    assert!(!stdout(&list).contains("ambiguous"));
 
     let ambiguous = fixture.loadbot(["path", "demo"]);
     assert!(!ambiguous.status.success());
@@ -472,7 +481,7 @@ fn duplicate_tools_install_and_operate_independently_by_catalog() {
     assert!(public.join("README.md").is_file());
     let list = fixture.loadbot(["list"]);
     assert_success_ref(&list);
-    assert_eq!(stdout(&list).matches("\tinstalled\t").count(), 2);
+    assert_eq!(stdout(&list).matches("  state    installed").count(), 2);
     assert_eq!(
         git_text(["remote", "get-url", "origin"], Some(&personal)),
         fixture.tool.remote.display().to_string()

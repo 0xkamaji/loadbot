@@ -307,27 +307,22 @@ pub fn tool_list(paths: &Paths) -> Result<()> {
         println!("no tools configured in registered catalogs");
         return Ok(());
     }
-    let mut counts = BTreeMap::new();
-    for tool in &tools {
-        *counts.entry(tool.name.clone()).or_insert(0usize) += 1;
-    }
-
-    println!("NAME\tCATALOG\tTYPE\tSTATE\tREVISION\tAMBIGUOUS");
-    for tool in tools {
+    for (index, tool) in tools.into_iter().enumerate() {
         let destination = paths.tool(&tool.catalog, &tool.name)?;
         let installed = if path_exists(&destination) {
             git::is_expected_repository(&destination, &tool.definition.url)?
         } else {
             false
         };
+        if index > 0 {
+            println!();
+        }
+        println!("{}", tool.name);
+        println!("  catalog  {}", tool.catalog);
+        println!("  type     {}", tool.definition.source_type.as_str());
         println!(
-            "{}\t{}\t{}\t{}\t{}\t{}",
-            tool.name,
-            tool.catalog,
-            tool.definition.source_type.as_str(),
-            if installed { "installed" } else { "missing" },
-            tool.definition.revision.as_deref().unwrap_or("-"),
-            if counts[&tool.name] > 1 { "yes" } else { "no" }
+            "  state    {}",
+            if installed { "installed" } else { "missing" }
         );
     }
     Ok(())

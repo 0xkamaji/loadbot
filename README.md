@@ -152,14 +152,14 @@ The first choice displays and confirms this preset before changing anything:
 
 ```text
 Name:      personal
-URL:       git@github.com:0xkamaji/loadbot-catalog.git
+URL:       https://github.com/0xkamaji/loadbot-catalog.git
 Writable:  yes
 ```
 
 It delegates to the normal safe catalog-add operation. The equivalent noninteractive command for automation is:
 
 ```bash
-loadbot catalog add personal git@github.com:0xkamaji/loadbot-catalog.git --writable
+loadbot catalog add personal https://github.com/0xkamaji/loadbot-catalog.git --writable
 ```
 
 After registration, catalog and tool repositories use separate catalog namespaces:
@@ -223,7 +223,7 @@ Writable personal catalog:
 
 ```bash
 loadbot catalog add personal \
-  git@github.com:0xkamaji/loadbot-catalog.git \
+  https://github.com/0xkamaji/loadbot-catalog.git \
   --writable
 ```
 
@@ -364,7 +364,7 @@ Migrates the legacy Loadbot format, where authoritative `[tools]` entries lived 
 
 ```bash
 loadbot catalog migrate personal \
-  git@github.com:0xkamaji/loadbot-catalog.git
+  https://github.com/0xkamaji/loadbot-catalog.git
 ```
 
 Behavior:
@@ -668,7 +668,7 @@ loadbot pull re-toolkit
 
 ```bash
 loadbot catalog add personal \
-  git@github.com:0xkamaji/loadbot-catalog.git \
+  https://github.com/0xkamaji/loadbot-catalog.git \
   --writable
 
 loadbot list

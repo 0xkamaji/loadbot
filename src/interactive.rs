@@ -30,7 +30,7 @@ pub struct CatalogInitializeInput {
 }
 
 const KAMAJI_CATALOG_NAME: &str = "personal";
-const KAMAJI_CATALOG_URL: &str = "git@github.com:0xkamaji/loadbot-catalog.git";
+const KAMAJI_CATALOG_URL: &str = "https://github.com/0xkamaji/loadbot-catalog.git";
 
 pub fn collect_catalog_menu<P: Prompt>(prompt: &mut P) -> Result<Option<CatalogMenuAction>> {
     let choices = [
@@ -494,7 +494,7 @@ mod tests {
             confirm_kamaji_catalog(&mut confirmed).unwrap(),
             Some(CatalogAddInput {
                 name: "personal".to_owned(),
-                url: "git@github.com:0xkamaji/loadbot-catalog.git".to_owned(),
+                url: "https://github.com/0xkamaji/loadbot-catalog.git".to_owned(),
                 writable: true,
             })
         );

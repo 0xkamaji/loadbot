@@ -384,7 +384,7 @@ mod tests {
             received.into_inner(),
             Some((
                 "personal".to_owned(),
-                "git@github.com:0xkamaji/loadbot-catalog.git".to_owned(),
+                "https://github.com/0xkamaji/loadbot-catalog.git".to_owned(),
                 true,
             ))
         );

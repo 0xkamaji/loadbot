@@ -33,7 +33,7 @@ The Loadbot executable and Loadbot source repository do not have to live beneath
 
 ## Build and Install
 
-Rust, Cargo, and Git must be installed and available in `PATH`.
+Loadbot requires Git, Rust, and Cargo. Cargo downloads the crate dependencies declared by `Cargo.toml` and `Cargo.lock`; the setup scripts do not install individual Rust crates.
 
 ```bash
 cargo build --release
@@ -51,7 +51,69 @@ Native Windows PowerShell users can run:
 .\setup.ps1
 ```
 
-Both scripts install with Cargo, verify the executable, report its exact location, and print PATH guidance when needed. They do not modify shell startup files, PowerShell profiles, or PATH.
+The setup scripts display a consolidated plan before changing PATH, a profile, or system prerequisites. Automatic prerequisite installation is limited to `apt-get` on Ubuntu/Debian, `pacman` on Arch/CachyOS, and Winget on native Windows. The exact package command, package list, and elevation behavior are displayed first, and package installation always requires an explicit `Install these prerequisites? [y/N]` confirmation. A noninteractive setup with missing prerequisites prints the required command and exits. Unsupported package managers receive manual guidance and are never guessed.
+
+Linux setup installs beneath `${CARGO_HOME:-$HOME/.cargo}`, adds its `bin` directory and the appropriate generated completion to one of these login-shell files, and leaves other shells untouched:
+
+```text
+Bash: ~/.bashrc
+Zsh:  ~/.zshrc
+Fish: ~/.config/fish/config.fish
+```
+
+Windows setup installs beneath `$env:CARGO_HOME` or `$HOME\.cargo`, adds its `bin` directory once to the current-user PATH (never machine PATH), and configures the current-user/current-host `$PROFILE` to dot-source the generated PowerShell completion. Existing profiles must be normal user files, not symlinks or reparse points. Before a real profile change, setup creates a timestamped backup beside the profile and atomically replaces only a clearly marked Loadbot block. Exact existing blocks require no edit or backup; malformed or duplicate markers stop setup safely, so repeated setup does not grow PATH or profile content.
+
+Both scripts run `--version` and `--help` through the absolute installed executable path. The terminal that launched setup does not inherit a child process's environment changes: open a new terminal after setup, or run the reload command it prints (`source ~/.bashrc`, `source ~/.zshrc`, `source ~/.config/fish/config.fish`, or dot-source `$PROFILE`). PowerShell setup reports restrictive execution policy but never changes it.
+
+Users who decline automatic prerequisite installation can run the displayed command themselves. The supported commands are:
+
+```bash
+# Ubuntu/Debian (the displayed package list is reduced to missing prerequisites)
+sudo apt-get update
+sudo apt-get install -y git cargo rustc
+
+# Arch/CachyOS (the displayed package list is reduced to missing prerequisites)
+sudo pacman -S --needed git rust cargo
+```
+
+```powershell
+# Run only the missing package installation(s).
+winget install --id Git.Git --exact --source winget --scope user --accept-package-agreements --accept-source-agreements
+winget install --id Rustlang.Rustup --exact --source winget --scope user --accept-package-agreements --accept-source-agreements
+rustup toolchain install stable
+rustup default stable
+```
+
+The complete manual Loadbot installation remains:
+
+```bash
+INSTALL_ROOT="${CARGO_HOME:-$HOME/.cargo}"
+cargo install --path . --root "$INSTALL_ROOT" --locked --force
+mkdir -p "$INSTALL_ROOT/completions"
+COMPLETE=bash "$INSTALL_ROOT/bin/loadbot" >"$INSTALL_ROOT/completions/loadbot.bash"
+COMPLETE=zsh "$INSTALL_ROOT/bin/loadbot" >"$INSTALL_ROOT/completions/loadbot.zsh"
+COMPLETE=fish "$INSTALL_ROOT/bin/loadbot" >"$INSTALL_ROOT/completions/loadbot.fish"
+```
+
+```powershell
+$InstallRoot = if ($env:CARGO_HOME) { $env:CARGO_HOME } else { Join-Path $HOME ".cargo" }
+cargo install --path . --root $InstallRoot --locked --force
+$CompletionDir = Join-Path $InstallRoot "completions"
+New-Item -ItemType Directory -Force $CompletionDir | Out-Null
+$env:COMPLETE = "powershell"
+& (Join-Path $InstallRoot "bin\loadbot.exe") | Set-Content (Join-Path $CompletionDir "loadbot.ps1")
+Remove-Item Env:COMPLETE
+```
+
+Installer tests use isolated temporary homes and mocked/fake external commands:
+
+```bash
+./tests/setup_sh_test.sh
+```
+
+```powershell
+Invoke-Pester .\tests\setup_ps1.Tests.ps1
+```
 
 Private repositories and pushes use the user's existing Git configuration, SSH keys, credential helpers, and identity. Loadbot does not manage credentials or Git accounts.
 
@@ -501,7 +563,7 @@ loadbot | Out-String | Invoke-Expression
 Remove-Item Env:COMPLETE
 ```
 
-`setup.sh` and `setup.ps1` also generate Bash, Zsh, Fish, and PowerShell registration scripts beneath Cargo's `completions` install directory and print commands for sourcing them. They do not modify shell startup files or PowerShell profiles.
+`setup.sh` generates Bash, Zsh, Fish, and PowerShell registration scripts beneath Cargo's `completions` install directory and configures the detected Bash, Zsh, or Fish profile. `setup.ps1` generates the PowerShell registration script and configures the current-user/current-host PowerShell profile. The setup scripts use one idempotent managed block and back up an existing profile before changing it.
 
 ## Catalog Recovery
 
@@ -600,7 +662,7 @@ Loadbot:
 - Cleans up only a destination newly created by its own failed clone.
 - Passes URLs and names directly as process arguments without a shell.
 - Never executes repository scripts.
-- Never modifies shell configuration.
+- The runtime CLI never modifies shell configuration; the setup scripts modify only the user profile described above after confirmation.
 - Never manages SSH keys, credentials, or Git accounts.
 - Preserves unknown TOML fields when reading and writing catalog and local configuration.
 

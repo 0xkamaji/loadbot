@@ -190,6 +190,32 @@ fn catalog_url_mismatch_is_refused() {
 }
 
 #[test]
+fn correctly_registered_personal_catalog_retries_idempotently_and_refuses_origin_mismatch() {
+    let Some(fixture) = Fixture::new() else {
+        return;
+    };
+    assert_success(fixture.add_catalog("personal", true));
+    let repeated = fixture.add_catalog("personal", true);
+    assert_success_ref(&repeated);
+    assert!(stdout(&repeated).contains("already registered"));
+    assert!(stdout(&repeated).contains("already installed"));
+
+    let installed = fixture.home.join("catalogs/personal");
+    git(
+        [
+            "remote",
+            "set-url",
+            "origin",
+            "https://example.test/unrelated.git",
+        ],
+        Some(&installed),
+    );
+    let mismatched = fixture.add_catalog("personal", true);
+    assert!(!mismatched.status.success());
+    assert!(stderr(&mismatched).contains("not the configured Git repository"));
+}
+
+#[test]
 fn failed_catalog_registration_is_preserved_and_same_command_retries_clone() {
     let Some(fixture) = Fixture::new() else {
         return;
@@ -389,6 +415,27 @@ fn direct_tool_add_uses_a_writable_default_catalog() {
             .unwrap()
             .contains("[tools.demo]")
     );
+}
+
+#[test]
+fn personal_catalog_tools_resolve_immediately_into_personal_namespace() {
+    let Some(fixture) = Fixture::new() else {
+        return;
+    };
+    fs::write(
+        fixture.catalog.source.join("catalog.toml"),
+        format!(
+            "version = 1\n\n[tools.rot-tools]\ntype = \"git\"\nurl = {:?}\nrevision = \"main\"\n",
+            fixture.tool.remote.display().to_string()
+        ),
+    )
+    .unwrap();
+    commit_and_push(&fixture.catalog.source, "add rot-tools");
+
+    assert_success(fixture.add_catalog("personal", true));
+    let pulled = fixture.loadbot(["pull", "rot-tools"]);
+    assert_success_ref(&pulled);
+    assert!(fixture.home.join("tools/personal/rot-tools/.git").is_dir());
 }
 
 #[test]
@@ -867,6 +914,7 @@ fn incomplete_noninteractive_commands_fail_without_waiting() {
     };
     for arguments in [
         vec!["catalog", "add"],
+        vec!["catalog"],
         vec!["catalog", "sync"],
         vec!["catalog", "status"],
         vec!["catalog", "path"],

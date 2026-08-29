@@ -131,11 +131,71 @@ Running `loadbot` without a subcommand does not currently open a top-level menu.
 
 ## New Machine Bootstrap
 
-Register and clone a personal writable catalog:
+Open the interactive catalog onboarding and management menu:
 
 ```bash
-loadbot catalog add personal git@github.com:USER/loadbot-catalog.git --writable
+loadbot catalog
 ```
+
+```text
+1. Use 0xkamaji's catalog
+2. Add an existing catalog
+3. Create or initialize a catalog
+4. List catalogs
+5. Sync a catalog
+6. Show catalog status
+7. Show catalog path
+8. Cancel
+```
+
+The first choice displays and confirms this preset before changing anything:
+
+```text
+Name:      personal
+URL:       git@github.com:0xkamaji/loadbot-catalog.git
+Writable:  yes
+```
+
+It delegates to the normal safe catalog-add operation. The equivalent noninteractive command for automation is:
+
+```bash
+loadbot catalog add personal git@github.com:0xkamaji/loadbot-catalog.git --writable
+```
+
+After registration, catalog and tool repositories use separate catalog namespaces:
+
+```text
+LOADBOT_HOME/
+├── config.toml
+├── catalogs/
+│   └── personal/
+│       └── catalog.toml
+└── tools/
+    └── personal/
+        └── rot-tools/
+```
+
+The first registered catalog becomes `default_catalog`. Because the preset is writable, unambiguous tool lookup and direct tool addition can use `personal` without another catalog-selection prompt.
+
+Fresh-machine workflow:
+
+```bash
+# Select "Use 0xkamaji's catalog" and confirm the displayed values.
+loadbot catalog
+
+# Resolves rot-tools from the newly registered personal catalog.
+loadbot pull rot-tools
+
+# Add and publish another definition.
+loadbot add rot-infra \
+  git@github.com:0xkamaji/rot-infra.git \
+  --revision main \
+  --catalog personal \
+  --commit \
+  --push
+```
+
+`Add an existing catalog` asks for a name, Git URL, writable/read-only access, and confirmation, then clones the existing catalog without changing its repository contents. `Create or initialize a catalog` is only for an existing empty Git remote: it safely registers and clones the remote, refuses existing or conflicting data, and creates an empty version-1 `catalog.toml`. It asks separately before committing and before pushing. Loadbot never creates a GitHub repository, calls the GitHub API, manages credentials, or pushes implicitly.
 
 Optional public catalogs should normally be registered read-only by omitting `--writable`:
 
@@ -143,9 +203,13 @@ Optional public catalogs should normally be registered read-only by omitting `--
 loadbot catalog add community https://github.com:ORG/loadbot-catalog.git
 ```
 
-The first registered catalog becomes `default_catalog` in local configuration. Catalog definitions are loaded from each clone's `catalog.toml`.
-
 ## Complete Command Reference
+
+### `loadbot catalog`
+
+In an interactive terminal, bare `loadbot catalog` opens the onboarding and management menu shown above. Add, list, sync, status, and path choices delegate to the same operations used by their direct commands. In redirected or otherwise noninteractive use, bare `loadbot catalog` fails immediately and directs the user to run it in an interactive terminal.
+
+The create/initialize choice requires a writable existing empty Git remote. It refuses a nonempty remote, a dirty working tree, unrelated tracked files, conflicting `catalog.toml` data, origin mismatches, and unsafe destinations. Creating `catalog.toml`, committing it, and pushing its initial commit are distinct steps; commit and push require separate confirmations, and the push is a normal non-force `git push origin HEAD`.
 
 ### `loadbot catalog add`
 

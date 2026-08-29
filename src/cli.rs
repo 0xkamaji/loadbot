@@ -62,7 +62,7 @@ pub enum Commands {
     /// Manage Git-backed tool catalogs.
     Catalog {
         #[command(subcommand)]
-        command: CatalogCommands,
+        command: Option<CatalogCommands>,
     },
     #[command(hide = true)]
     Rot {
@@ -95,6 +95,12 @@ mod tests {
         assert!(matches!(
             interactive.command,
             Commands::Run { shortcut: None }
+        ));
+
+        let catalog = Cli::try_parse_from(["loadbot", "catalog"]).unwrap();
+        assert!(matches!(
+            catalog.command,
+            Commands::Catalog { command: None }
         ));
 
         let direct = Cli::try_parse_from(["loadbot", "run", "print-strings"]).unwrap();

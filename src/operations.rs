@@ -70,6 +70,193 @@ pub fn catalog_add(paths: &Paths, name: &str, url: String, writable: bool) -> Re
     Ok(())
 }
 
+pub fn catalog_initialize(
+    paths: &Paths,
+    name: &str,
+    url: String,
+    writable: bool,
+    commit: bool,
+    push: bool,
+) -> Result<()> {
+    paths::validate_name(name)?;
+    validate_url(&url)?;
+    if !writable {
+        bail!("a catalog initialized by Loadbot must be writable");
+    }
+    if push && !commit {
+        bail!("pushing the initial catalog requires committing it first");
+    }
+
+    let mut local = config::load(&paths.config())?;
+    let source = CatalogSource::new(url, true);
+    let destination = paths.catalog(name);
+    let existing_differs = local
+        .catalogs
+        .get(name)
+        .is_some_and(|existing| existing.url != source.url || !existing.writable);
+    if existing_differs && path_exists(&destination) {
+        bail!("catalog '{name}' is already configured with different settings");
+    }
+    for existing_name in local.catalogs.keys() {
+        if existing_name != name && existing_name.eq_ignore_ascii_case(name) {
+            bail!("catalog name '{name}' conflicts with configured catalog '{existing_name}'");
+        }
+    }
+
+    let mut created_clone = false;
+    if path_exists(&destination) {
+        if !git::is_repository(&destination)? {
+            bail!("catalog destination exists but is not a Git repository");
+        }
+        if !git::is_expected_repository(&destination, &source.url)? {
+            bail!("catalog destination exists but is not the configured Git repository");
+        }
+    } else {
+        fs::create_dir_all(paths.catalogs())
+            .with_context(|| format!("could not create {}", paths.catalogs().display()))?;
+        if let Err(error) = git::clone_repository(&source.url, None, &destination) {
+            cleanup_failed_clone(&destination);
+            return Err(error).context("could not clone the catalog to initialize");
+        }
+        created_clone = true;
+    }
+
+    let catalog_path = paths.catalog_file(name);
+    let catalog_exists = path_exists(&catalog_path);
+    let preparation = (|| -> Result<(bool, bool)> {
+        let changes = git::working_tree_changes(&destination)?;
+        let only_catalog_changes = changes
+            .lines()
+            .all(|line| line.get(3..).is_some_and(|path| path == "catalog.toml"));
+        if !changes.is_empty() && !only_catalog_changes {
+            bail!("refusing to initialize catalog '{name}': working tree has unrelated changes");
+        }
+
+        let refs = git::origin_refs(&destination)?;
+        let head = git::head_commit(&destination)?;
+        let branch = git::current_branch(&destination)?;
+        let tracked = git::tracked_files(&destination)?;
+        if catalog_exists {
+            let existing = catalog::load(&catalog_path).context(
+                "refusing initialization because catalog.toml contains conflicting data",
+            )?;
+            if existing != CatalogFile::default() {
+                bail!("refusing initialization because catalog.toml contains conflicting data");
+            }
+        }
+
+        if !refs.is_empty() {
+            let branch = branch
+                .as_deref()
+                .context("refusing initialization because the repository is detached")?;
+            let head = head
+                .as_deref()
+                .context("refusing initialization because the repository has no local commit")?;
+            let expected_ref = format!("refs/heads/{branch}");
+            let exact_initial_remote = catalog_exists
+                && changes.is_empty()
+                && tracked == ["catalog.toml"]
+                && refs.len() == 1
+                && refs[0].0 == head
+                && refs[0].1 == expected_ref;
+            if !exact_initial_remote {
+                bail!(
+                    "refusing to initialize catalog '{name}': the repository is not an empty or already initialized Loadbot catalog"
+                );
+            }
+            return Ok((true, false));
+        }
+
+        branch.context("refusing to initialize catalog: repository has no checked-out branch")?;
+        if head.is_some() && (!catalog_exists || tracked != ["catalog.toml"] || !changes.is_empty())
+        {
+            bail!("refusing initialization because the local repository contains other data");
+        }
+        if head.is_none() && !catalog_exists && (!changes.is_empty() || !tracked.is_empty()) {
+            bail!("refusing to initialize catalog '{name}': repository contains existing data");
+        }
+        if head.is_none() && catalog_exists && changes.is_empty() {
+            bail!("refusing initialization because Git does not detect catalog.toml as a change");
+        }
+        Ok((false, !catalog_exists))
+    })();
+    let (already_initialized, create_catalog) = match preparation {
+        Ok(state) => state,
+        Err(error) => {
+            if created_clone {
+                cleanup_failed_clone(&destination);
+            }
+            return Err(error);
+        }
+    };
+
+    if create_catalog && let Err(error) = catalog::save(&catalog_path, &CatalogFile::default()) {
+        if created_clone {
+            cleanup_failed_clone(&destination);
+        }
+        return Err(error).context("could not create initial catalog.toml");
+    }
+
+    let registration_changed = !local.catalogs.contains_key(name) || existing_differs;
+    if registration_changed {
+        local.catalogs.insert(name.to_owned(), source);
+        if local.default_catalog.is_none() {
+            local.default_catalog = Some(name.to_owned());
+        }
+        if let Err(error) = config::save(&paths.config(), &local) {
+            if create_catalog {
+                let _ = fs::remove_file(&catalog_path);
+            }
+            if created_clone {
+                cleanup_failed_clone(&destination);
+            }
+            return Err(error).context("catalog was validated, but registration failed");
+        }
+        println!("registered catalog '{name}'");
+    } else {
+        println!("catalog '{name}' is already registered");
+    }
+    if created_clone {
+        println!("installed catalog '{name}' at {}", destination.display());
+    } else {
+        println!("catalog '{name}' is already installed");
+    }
+    if create_catalog {
+        println!("created initial catalog.toml for catalog '{name}'");
+    }
+    if already_initialized {
+        println!("catalog '{name}' is already initialized");
+        return Ok(());
+    }
+
+    if commit {
+        if git::path_has_changes(&destination, "catalog.toml")? {
+            let commit_hash =
+                git::commit_file(&destination, "catalog.toml", "Initialize Loadbot catalog")
+                    .context("catalog.toml was created, but committing it failed")?;
+            println!("committed initial catalog at {commit_hash}");
+        } else if git::head_commit(&destination)?.is_some() {
+            println!("initial catalog is already committed");
+        } else {
+            bail!("catalog.toml exists but Git did not detect it as an initial change");
+        }
+    } else {
+        println!("initial catalog.toml was not committed or pushed");
+    }
+
+    if push {
+        if git::origin_has_refs(&destination)? {
+            bail!("refusing to push because the remote is no longer empty");
+        }
+        git::push_origin(&destination)
+            .context("initial catalog was committed locally, but pushing it failed")?;
+        println!("pushed initial catalog '{name}' to origin");
+    } else if commit {
+        println!("initial catalog commit was not pushed");
+    }
+    Ok(())
+}
+
 pub fn catalog_list(paths: &Paths) -> Result<()> {
     let local = config::load(&paths.config())?;
     if local.catalogs.is_empty() {
@@ -136,7 +323,10 @@ pub fn catalog_status(paths: &Paths, name: &str) -> Result<()> {
             "Current branch: {}",
             repository.branch.as_deref().unwrap_or("(detached)")
         );
-        println!("Current commit: {}", repository.commit);
+        println!(
+            "Current commit: {}",
+            repository.commit.as_deref().unwrap_or("(none)")
+        );
         println!(
             "Working tree: {}",
             if repository.dirty { "dirty" } else { "clean" }
@@ -409,7 +599,10 @@ pub fn tool_status(paths: &Paths, name: &str, catalog_name: Option<&str>) -> Res
             "Current branch: {}",
             repository.branch.as_deref().unwrap_or("(detached)")
         );
-        println!("Current commit: {}", repository.commit);
+        println!(
+            "Current commit: {}",
+            repository.commit.as_deref().unwrap_or("(none)")
+        );
         println!(
             "Working tree: {}",
             if repository.dirty { "dirty" } else { "clean" }
@@ -630,4 +823,215 @@ fn cleanup_failed_clone(destination: &Path) {
 
 fn path_exists(path: &Path) -> bool {
     fs::symlink_metadata(path).is_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsStr;
+    use std::process::Command;
+
+    use tempfile::TempDir;
+
+    use super::*;
+
+    fn git<I, S>(arguments: I, directory: Option<&Path>)
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        let mut command = Command::new("git");
+        command.args(arguments);
+        if let Some(directory) = directory {
+            command.current_dir(directory);
+        }
+        let output = command.output().unwrap();
+        assert!(
+            output.status.success(),
+            "Git failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn empty_remote(base: &Path, name: &str) -> PathBuf {
+        let remote = base.join(format!("{name}.git"));
+        git(
+            [
+                OsStr::new("init"),
+                OsStr::new("--bare"),
+                OsStr::new("--initial-branch"),
+                OsStr::new("main"),
+                remote.as_os_str(),
+            ],
+            None,
+        );
+        remote
+    }
+
+    fn populated_remote(base: &Path, name: &str) -> PathBuf {
+        let remote = empty_remote(base, name);
+        let source = base.join(format!("{name}-source"));
+        git(
+            [
+                OsStr::new("init"),
+                OsStr::new("--initial-branch"),
+                OsStr::new("main"),
+                source.as_os_str(),
+            ],
+            None,
+        );
+        git(["config", "user.name", "Loadbot Tests"], Some(&source));
+        git(
+            ["config", "user.email", "loadbot@example.test"],
+            Some(&source),
+        );
+        fs::write(source.join("README.md"), "existing data\n").unwrap();
+        git(["add", "README.md"], Some(&source));
+        git(["commit", "-m", "initial"], Some(&source));
+        git(
+            [
+                OsStr::new("remote"),
+                OsStr::new("add"),
+                OsStr::new("origin"),
+                remote.as_os_str(),
+            ],
+            Some(&source),
+        );
+        git(["push", "origin", "main"], Some(&source));
+        remote
+    }
+
+    #[test]
+    fn catalog_initialization_requires_explicit_commit_and_push() {
+        let temporary = TempDir::new().unwrap();
+        let paths = Paths::with_root(temporary.path().join("loadbot"));
+        let remote = empty_remote(temporary.path(), "new-catalog");
+        let url = remote.display().to_string();
+
+        catalog_initialize(&paths, "personal", url.clone(), true, false, false).unwrap();
+        assert_eq!(
+            catalog::load(&paths.catalog_file("personal")).unwrap(),
+            CatalogFile::default()
+        );
+        assert_eq!(git::head_commit(&paths.catalog("personal")).unwrap(), None);
+        assert!(!git::origin_has_refs(&paths.catalog("personal")).unwrap());
+        catalog_status(&paths, "personal").unwrap();
+        assert_eq!(
+            paths.tool("personal", "demo").unwrap(),
+            paths.tools().join("personal/demo")
+        );
+
+        git(
+            ["config", "user.name", "Loadbot Tests"],
+            Some(&paths.catalog("personal")),
+        );
+        git(
+            ["config", "user.email", "loadbot@example.test"],
+            Some(&paths.catalog("personal")),
+        );
+        catalog_initialize(&paths, "personal", url.clone(), true, true, true).unwrap();
+        assert!(
+            git::head_commit(&paths.catalog("personal"))
+                .unwrap()
+                .is_some()
+        );
+        assert!(git::origin_has_refs(&paths.catalog("personal")).unwrap());
+
+        let before = git::head_commit(&paths.catalog("personal")).unwrap();
+        catalog_initialize(&paths, "personal", url, true, true, true).unwrap();
+        assert_eq!(
+            git::head_commit(&paths.catalog("personal")).unwrap(),
+            before
+        );
+    }
+
+    #[test]
+    fn catalog_initialization_refuses_nonempty_remote_and_conflicting_data() {
+        let temporary = TempDir::new().unwrap();
+        let paths = Paths::with_root(temporary.path().join("loadbot"));
+        let populated = populated_remote(temporary.path(), "populated");
+        let error = catalog_initialize(
+            &paths,
+            "populated",
+            populated.display().to_string(),
+            true,
+            false,
+            false,
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("not an empty"));
+        assert!(!paths.catalog_file("populated").exists());
+        assert!(!paths.config().exists());
+        assert!(!paths.catalog("populated").exists());
+
+        let populated_source = temporary.path().join("populated-source");
+        fs::write(
+            populated_source.join("catalog.toml"),
+            "version = 1\n\n[tools]\n",
+        )
+        .unwrap();
+        git(["add", "catalog.toml"], Some(&populated_source));
+        git(
+            ["commit", "-m", "add empty catalog"],
+            Some(&populated_source),
+        );
+        git(["push", "origin", "main"], Some(&populated_source));
+        let error = catalog_initialize(
+            &paths,
+            "populated",
+            populated.display().to_string(),
+            true,
+            false,
+            false,
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("not an empty or already initialized"));
+        assert!(!paths.config().exists());
+        assert!(!paths.catalog("populated").exists());
+
+        let empty = empty_remote(temporary.path(), "conflicting");
+        catalog_initialize(
+            &paths,
+            "conflicting",
+            empty.display().to_string(),
+            true,
+            false,
+            false,
+        )
+        .unwrap();
+        fs::write(
+            paths.catalog_file("conflicting"),
+            "version = 1\nnote = 'do not overwrite'\n",
+        )
+        .unwrap();
+        let before = fs::read(paths.catalog_file("conflicting")).unwrap();
+        let error = catalog_initialize(
+            &paths,
+            "conflicting",
+            empty.display().to_string(),
+            true,
+            false,
+            false,
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("conflicting data"));
+        assert_eq!(fs::read(paths.catalog_file("conflicting")).unwrap(), before);
+    }
+
+    #[test]
+    fn catalog_initialization_refuses_unrelated_worktree_changes() {
+        let temporary = TempDir::new().unwrap();
+        let paths = Paths::with_root(temporary.path().join("loadbot"));
+        let remote = empty_remote(temporary.path(), "dirty");
+        let url = remote.display().to_string();
+        catalog_initialize(&paths, "dirty", url.clone(), true, false, false).unwrap();
+        fs::write(paths.catalog("dirty").join("unrelated.txt"), "keep\n").unwrap();
+
+        let error = catalog_initialize(&paths, "dirty", url, true, true, false).unwrap_err();
+        assert!(format!("{error:#}").contains("unrelated changes"));
+        assert_eq!(
+            fs::read_to_string(paths.catalog("dirty").join("unrelated.txt")).unwrap(),
+            "keep\n"
+        );
+        assert_eq!(git::head_commit(&paths.catalog("dirty")).unwrap(), None);
+    }
 }

@@ -78,7 +78,12 @@ fn run() -> Result<()> {
     }
 }
 
-fn run_catalog(paths: &Paths, command: CatalogCommands) -> Result<()> {
+fn run_catalog(paths: &Paths, command: Option<CatalogCommands>) -> Result<()> {
+    let Some(command) = command else {
+        require_interactive("catalog", "")?;
+        let mut prompt = interactive::TerminalPrompt;
+        return run_catalog_menu(paths, &mut prompt);
+    };
     match command {
         CatalogCommands::Add {
             name,
@@ -99,6 +104,69 @@ fn run_catalog(paths: &Paths, command: CatalogCommands) -> Result<()> {
             operations::catalog_migrate(paths, &name, git_url)
         }
     }
+}
+
+fn run_catalog_menu<P: Prompt>(paths: &Paths, prompt: &mut P) -> Result<()> {
+    let Some(action) = interactive::collect_catalog_menu(prompt)? else {
+        return cancelled();
+    };
+    match action {
+        interactive::CatalogMenuAction::UseKamajiCatalog => {
+            run_kamaji_catalog(paths, prompt, operations::catalog_add)
+        }
+        interactive::CatalogMenuAction::AddExisting => {
+            let Some(input) = interactive::collect_catalog_add(prompt, None, None, false)? else {
+                return cancelled();
+            };
+            operations::catalog_add(paths, &input.name, input.url, input.writable)
+        }
+        interactive::CatalogMenuAction::Initialize => {
+            let Some(input) = interactive::collect_catalog_initialize(prompt)? else {
+                return cancelled();
+            };
+            operations::catalog_initialize(
+                paths,
+                &input.catalog.name,
+                input.catalog.url,
+                input.catalog.writable,
+                input.commit,
+                input.push,
+            )
+        }
+        interactive::CatalogMenuAction::List => operations::catalog_list(paths),
+        interactive::CatalogMenuAction::Sync => run_catalog_named_with_prompt(
+            paths,
+            None,
+            "catalog sync",
+            operations::catalog_sync,
+            prompt,
+        ),
+        interactive::CatalogMenuAction::Status => run_catalog_named_with_prompt(
+            paths,
+            None,
+            "catalog status",
+            operations::catalog_status,
+            prompt,
+        ),
+        interactive::CatalogMenuAction::Path => run_catalog_named_with_prompt(
+            paths,
+            None,
+            "catalog path",
+            operations::catalog_path,
+            prompt,
+        ),
+    }
+}
+
+fn run_kamaji_catalog<P, F>(paths: &Paths, prompt: &mut P, add_catalog: F) -> Result<()>
+where
+    P: Prompt,
+    F: FnOnce(&Paths, &str, String, bool) -> Result<()>,
+{
+    let Some(input) = interactive::confirm_kamaji_catalog(prompt)? else {
+        return cancelled();
+    };
+    add_catalog(paths, &input.name, input.url, input.writable)
 }
 
 fn run_catalog_add(
@@ -200,11 +268,24 @@ fn run_catalog_named(
         return operation(paths, &name);
     }
     require_interactive(command, "NAME")?;
+    let mut prompt = interactive::TerminalPrompt;
+    run_catalog_named_with_prompt(paths, None, command, operation, &mut prompt)
+}
+
+fn run_catalog_named_with_prompt<P: Prompt>(
+    paths: &Paths,
+    name: Option<String>,
+    _command: &str,
+    operation: fn(&Paths, &str) -> Result<()>,
+    prompt: &mut P,
+) -> Result<()> {
+    if let Some(name) = name {
+        return operation(paths, &name);
+    }
     let choices = operations::catalog_names(paths)?;
     if choices.is_empty() {
         bail!("No catalogs are configured.\nRun 'loadbot catalog add' to add one.");
     }
-    let mut prompt = interactive::TerminalPrompt;
     match prompt.select("Select a catalog:\n", &choices)? {
         Some(name) => operation(paths, &name),
         None => cancelled(),
@@ -256,4 +337,65 @@ fn require_interactive(command: &str, arguments: &str) -> Result<()> {
 fn cancelled() -> Result<()> {
     eprintln!("cancelled");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+    use std::path::PathBuf;
+
+    use super::*;
+
+    struct ConfirmPrompt(bool);
+
+    impl Prompt for ConfirmPrompt {
+        fn input(&mut self, _: &str, _: Option<&str>) -> Result<Option<String>> {
+            unreachable!()
+        }
+
+        fn confirm(&mut self, _: &str, _: bool) -> Result<Option<bool>> {
+            Ok(Some(self.0))
+        }
+
+        fn select(&mut self, _: &str, _: &[String]) -> Result<Option<String>> {
+            unreachable!()
+        }
+
+        fn message(&mut self, _: &str) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn kamaji_preset_delegates_exact_catalog_add_values() {
+        let paths = Paths::with_root(PathBuf::from("/tmp/loadbot-menu-test"));
+        let received = RefCell::new(None);
+        run_kamaji_catalog(
+            &paths,
+            &mut ConfirmPrompt(true),
+            |_, name, url, writable| {
+                received.replace(Some((name.to_owned(), url, writable)));
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            received.into_inner(),
+            Some((
+                "personal".to_owned(),
+                "git@github.com:0xkamaji/loadbot-catalog.git".to_owned(),
+                true,
+            ))
+        );
+    }
+
+    #[test]
+    fn refusing_kamaji_preset_never_calls_catalog_add() {
+        let paths = Paths::with_root(PathBuf::from("/tmp/loadbot-menu-test"));
+        run_kamaji_catalog(&paths, &mut ConfirmPrompt(false), |_, _, _, _| {
+            panic!("catalog add must not run after confirmation refusal")
+        })
+        .unwrap();
+    }
 }

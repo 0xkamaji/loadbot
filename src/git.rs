@@ -8,7 +8,7 @@ use anyhow::{Context, Result, bail};
 #[derive(Debug)]
 pub struct RepositoryStatus {
     pub branch: Option<String>,
-    pub commit: String,
+    pub commit: Option<String>,
     pub dirty: bool,
     pub origin: Option<String>,
 }
@@ -70,7 +70,9 @@ pub fn status(path: &Path) -> Result<RepositoryStatus> {
         .status
         .success()
         .then(|| stdout_text(&branch_output));
-    let commit = query(path, &["rev-parse", "--short", "HEAD"])?;
+    let commit = head_commit(path)?
+        .map(|_| query(path, &["rev-parse", "--short", "HEAD"]))
+        .transpose()?;
     let porcelain = query(path, &["status", "--porcelain", "--untracked-files=normal"])?;
 
     Ok(RepositoryStatus {
@@ -79,6 +81,64 @@ pub fn status(path: &Path) -> Result<RepositoryStatus> {
         dirty: !porcelain.is_empty(),
         origin: origin_url(path)?,
     })
+}
+
+pub fn current_branch(path: &Path) -> Result<Option<String>> {
+    let output = raw_output([
+        OsStr::new("-C"),
+        path.as_os_str(),
+        OsStr::new("symbolic-ref"),
+        OsStr::new("--quiet"),
+        OsStr::new("--short"),
+        OsStr::new("HEAD"),
+    ])?;
+    Ok(output.status.success().then(|| stdout_text(&output)))
+}
+
+pub fn head_commit(path: &Path) -> Result<Option<String>> {
+    let output = raw_output([
+        OsStr::new("-C"),
+        path.as_os_str(),
+        OsStr::new("rev-parse"),
+        OsStr::new("--verify"),
+        OsStr::new("--quiet"),
+        OsStr::new("HEAD^{commit}"),
+    ])?;
+    if output.status.success() {
+        Ok(Some(stdout_text(&output)))
+    } else if output.status.code() == Some(1) {
+        Ok(None)
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        bail!("could not inspect repository HEAD: {stderr}")
+    }
+}
+
+pub fn working_tree_changes(path: &Path) -> Result<String> {
+    query(path, &["status", "--porcelain", "--untracked-files=normal"])
+}
+
+pub fn tracked_files(path: &Path) -> Result<Vec<String>> {
+    Ok(query(path, &["ls-files"])?
+        .lines()
+        .map(str::to_owned)
+        .collect())
+}
+
+pub fn origin_refs(path: &Path) -> Result<Vec<(String, String)>> {
+    query(path, &["ls-remote", "--refs", "origin"])?
+        .lines()
+        .map(|line| {
+            let (commit, reference) = line
+                .split_once(char::is_whitespace)
+                .context("Git returned an invalid origin ref")?;
+            Ok((commit.to_owned(), reference.trim().to_owned()))
+        })
+        .collect()
+}
+
+pub fn origin_has_refs(path: &Path) -> Result<bool> {
+    Ok(!origin_refs(path)?.is_empty())
 }
 
 pub fn update(path: &Path, configured_revision: Option<&str>) -> Result<(String, String)> {
@@ -101,7 +161,12 @@ pub fn update(path: &Path, configured_revision: Option<&str>) -> Result<(String,
     let target = format!("origin/{branch}");
     query(path, &["merge", "--ff-only", "--", &target])?;
     let new_commit = query(path, &["rev-parse", "--short", "HEAD"])?;
-    Ok((current.commit, new_commit))
+    Ok((
+        current
+            .commit
+            .context("repository has no commits and cannot be updated")?,
+        new_commit,
+    ))
 }
 
 pub fn commit_file(path: &Path, file: &str, message: &str) -> Result<String> {

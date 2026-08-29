@@ -11,6 +11,115 @@ pub struct CatalogAddInput {
     pub writable: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CatalogMenuAction {
+    UseKamajiCatalog,
+    AddExisting,
+    Initialize,
+    List,
+    Sync,
+    Status,
+    Path,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct CatalogInitializeInput {
+    pub catalog: CatalogAddInput,
+    pub commit: bool,
+    pub push: bool,
+}
+
+const KAMAJI_CATALOG_NAME: &str = "personal";
+const KAMAJI_CATALOG_URL: &str = "git@github.com:0xkamaji/loadbot-catalog.git";
+
+pub fn collect_catalog_menu<P: Prompt>(prompt: &mut P) -> Result<Option<CatalogMenuAction>> {
+    let choices = [
+        "Use 0xkamaji's catalog",
+        "Add an existing catalog",
+        "Create or initialize a catalog",
+        "List catalogs",
+        "Sync a catalog",
+        "Show catalog status",
+        "Show catalog path",
+        "Cancel",
+    ]
+    .map(str::to_owned);
+    let Some(selection) = prompt.select("Catalog setup and management:", &choices)? else {
+        return Ok(None);
+    };
+    Ok(match selection.as_str() {
+        "Use 0xkamaji's catalog" => Some(CatalogMenuAction::UseKamajiCatalog),
+        "Add an existing catalog" => Some(CatalogMenuAction::AddExisting),
+        "Create or initialize a catalog" => Some(CatalogMenuAction::Initialize),
+        "List catalogs" => Some(CatalogMenuAction::List),
+        "Sync a catalog" => Some(CatalogMenuAction::Sync),
+        "Show catalog status" => Some(CatalogMenuAction::Status),
+        "Show catalog path" => Some(CatalogMenuAction::Path),
+        "Cancel" => None,
+        _ => bail!("invalid catalog menu selection"),
+    })
+}
+
+pub fn confirm_kamaji_catalog<P: Prompt>(prompt: &mut P) -> Result<Option<CatalogAddInput>> {
+    prompt.message(&format!(
+        "\nUse this catalog?\n\n  Name:      {KAMAJI_CATALOG_NAME}\n  URL:       {KAMAJI_CATALOG_URL}\n  Writable:  yes\n"
+    ))?;
+    if prompt.confirm("Proceed?", true)? != Some(true) {
+        return Ok(None);
+    }
+    Ok(Some(CatalogAddInput {
+        name: KAMAJI_CATALOG_NAME.to_owned(),
+        url: KAMAJI_CATALOG_URL.to_owned(),
+        writable: true,
+    }))
+}
+
+pub fn collect_catalog_initialize<P: Prompt>(
+    prompt: &mut P,
+) -> Result<Option<CatalogInitializeInput>> {
+    let Some(name) = prompt_name(prompt, "Catalog name:", None)? else {
+        return Ok(None);
+    };
+    let Some(url) = prompt_nonempty(prompt, "Existing empty Git repository URL:", None)? else {
+        return Ok(None);
+    };
+    let Some(writable) = prompt.confirm("Writable?", true)? else {
+        return Ok(None);
+    };
+    if !writable {
+        bail!("a catalog initialized by Loadbot must be writable");
+    }
+    prompt.message(&format!(
+        "\nInitialize this catalog?\n\n  Name:      {name}\n  URL:       {url}\n  Writable:  yes\n"
+    ))?;
+    if prompt.confirm("Proceed?", true)? != Some(true) {
+        return Ok(None);
+    }
+    prompt.message(
+        "Loadbot will only initialize an existing empty Git remote. It will create catalog.toml, but it will not commit or push unless you confirm each action.",
+    )?;
+    let Some(commit) = prompt.confirm("Commit the initial catalog.toml?", false)? else {
+        return Ok(None);
+    };
+    let push = if commit {
+        let Some(push) = prompt.confirm("Push the initial catalog commit?", false)? else {
+            return Ok(None);
+        };
+        push
+    } else {
+        false
+    };
+    Ok(Some(CatalogInitializeInput {
+        catalog: CatalogAddInput {
+            name,
+            url,
+            writable,
+        },
+        commit,
+        push,
+    }))
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct ToolAddInput {
     pub name: String,
@@ -290,6 +399,7 @@ mod tests {
         confirmations: VecDeque<Option<bool>>,
         selections: VecDeque<Option<String>>,
         messages: Vec<String>,
+        selection_requests: Vec<(String, Vec<String>)>,
     }
 
     impl Prompt for FakePrompt {
@@ -301,7 +411,9 @@ mod tests {
             Ok(self.confirmations.pop_front().flatten())
         }
 
-        fn select(&mut self, _label: &str, _choices: &[String]) -> Result<Option<String>> {
+        fn select(&mut self, label: &str, choices: &[String]) -> Result<Option<String>> {
+            self.selection_requests
+                .push((label.to_owned(), choices.to_vec()));
             Ok(self.selections.pop_front().flatten())
         }
 
@@ -337,6 +449,109 @@ mod tests {
         };
         assert_eq!(
             collect_catalog_add(&mut cancelled, None, None, false).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn bare_catalog_menu_lists_onboarding_and_management_choices() {
+        let mut prompt = FakePrompt {
+            selections: [Some("Use 0xkamaji's catalog".to_owned())].into(),
+            ..FakePrompt::default()
+        };
+        assert_eq!(
+            collect_catalog_menu(&mut prompt).unwrap(),
+            Some(CatalogMenuAction::UseKamajiCatalog)
+        );
+        assert_eq!(
+            prompt.selection_requests[0].1,
+            [
+                "Use 0xkamaji's catalog",
+                "Add an existing catalog",
+                "Create or initialize a catalog",
+                "List catalogs",
+                "Sync a catalog",
+                "Show catalog status",
+                "Show catalog path",
+                "Cancel",
+            ]
+        );
+
+        let mut cancelled = FakePrompt {
+            selections: [Some("Cancel".to_owned())].into(),
+            ..FakePrompt::default()
+        };
+        assert_eq!(collect_catalog_menu(&mut cancelled).unwrap(), None);
+    }
+
+    #[test]
+    fn kamaji_preset_requires_confirmation_and_returns_exact_values() {
+        let mut confirmed = FakePrompt {
+            confirmations: [Some(true)].into(),
+            ..FakePrompt::default()
+        };
+        assert_eq!(
+            confirm_kamaji_catalog(&mut confirmed).unwrap(),
+            Some(CatalogAddInput {
+                name: "personal".to_owned(),
+                url: "git@github.com:0xkamaji/loadbot-catalog.git".to_owned(),
+                writable: true,
+            })
+        );
+        assert!(confirmed.messages[0].contains("Writable:  yes"));
+
+        let mut refused = FakePrompt {
+            confirmations: [Some(false)].into(),
+            ..FakePrompt::default()
+        };
+        assert_eq!(confirm_kamaji_catalog(&mut refused).unwrap(), None);
+    }
+
+    #[test]
+    fn catalog_initialize_collects_separate_commit_and_push_choices() {
+        let mut prompt = FakePrompt {
+            inputs: [Some("new".to_owned()), Some("new.git".to_owned())].into(),
+            confirmations: [Some(true), Some(true), Some(true), Some(false)].into(),
+            ..FakePrompt::default()
+        };
+        let input = collect_catalog_initialize(&mut prompt).unwrap().unwrap();
+        assert!(input.catalog.writable);
+        assert!(input.commit);
+        assert!(!input.push);
+        assert!(prompt.messages.iter().any(|message| {
+            message.contains("will not commit or push unless you confirm each action")
+        }));
+    }
+
+    #[test]
+    fn catalog_initialize_cancellation_returns_before_any_operation() {
+        let mut proceed_refused = FakePrompt {
+            inputs: [Some("new".to_owned()), Some("new.git".to_owned())].into(),
+            confirmations: [Some(true), Some(false)].into(),
+            ..FakePrompt::default()
+        };
+        assert_eq!(
+            collect_catalog_initialize(&mut proceed_refused).unwrap(),
+            None
+        );
+
+        let mut commit_cancelled = FakePrompt {
+            inputs: [Some("new".to_owned()), Some("new.git".to_owned())].into(),
+            confirmations: [Some(true), Some(true), None].into(),
+            ..FakePrompt::default()
+        };
+        assert_eq!(
+            collect_catalog_initialize(&mut commit_cancelled).unwrap(),
+            None
+        );
+
+        let mut push_cancelled = FakePrompt {
+            inputs: [Some("new".to_owned()), Some("new.git".to_owned())].into(),
+            confirmations: [Some(true), Some(true), Some(true), None].into(),
+            ..FakePrompt::default()
+        };
+        assert_eq!(
+            collect_catalog_initialize(&mut push_cancelled).unwrap(),
             None
         );
     }

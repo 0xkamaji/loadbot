@@ -115,7 +115,11 @@ Installer tests use isolated temporary homes and mocked/fake external commands:
 Invoke-Pester .\tests\setup_ps1.Tests.ps1
 ```
 
-Private repositories and pushes use the user's existing Git configuration, SSH keys, credential helpers, and identity. Loadbot does not manage credentials or Git accounts.
+Private repositories and pushes first use the user's existing Git configuration,
+SSH keys, credential helpers, and identity. If a canonical GitHub SSH operation
+fails specifically with public-key authentication, Loadbot can query
+`rot ssh identities --json` and retry with a verified Rot-managed SSH alias.
+Loadbot does not manage credentials, keys, SSH configuration, or Git accounts.
 
 ## Global Options
 
@@ -728,6 +732,8 @@ Loadbot:
 - Never executes repository scripts.
 - The runtime CLI never modifies shell configuration; the setup scripts modify only the user profile described above after confirmation.
 - Never manages SSH keys, credentials, or Git accounts.
+- Keeps configured and origin URLs canonical; a selected Rot SSH alias is applied
+  only to the individual retrying Git process.
 - Preserves unknown TOML fields when reading and writing catalog and local configuration.
 
 ## Current Limitations
@@ -735,4 +741,4 @@ Loadbot:
 - Only Git repository sources are supported.
 - Safe updates require a checked-out branch; detached tags or commits are not updated.
 - URL equivalence removes only surrounding whitespace, a trailing slash, and one trailing `.git`; equivalent SSH and HTTPS URLs remain distinct.
-- There is no catalog discovery service, package resolution, dependency installation, plugin system, script execution, background service, AI feature, or Rotbot integration.
+- There is no catalog discovery service, package resolution, dependency installation, plugin system, script execution, background service, or AI feature. Rot integration is limited to read-only SSH identity discovery after a GitHub SSH public-key authentication failure.

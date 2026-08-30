@@ -10,6 +10,19 @@ use crate::git;
 use crate::paths::{self, Paths};
 
 pub fn catalog_add(paths: &Paths, name: &str, url: String, writable: bool) -> Result<()> {
+    catalog_add_with_save(paths, name, url, writable, config::save)
+}
+
+fn catalog_add_with_save<F>(
+    paths: &Paths,
+    name: &str,
+    url: String,
+    writable: bool,
+    save_config: F,
+) -> Result<()>
+where
+    F: FnOnce(&Path, &LocalConfig) -> Result<()>,
+{
     paths::validate_name(name)?;
     validate_url(&url)?;
     let mut local = config::load(&paths.config())?;
@@ -27,17 +40,51 @@ pub fn catalog_add(paths: &Paths, name: &str, url: String, writable: bool) -> Re
             bail!("catalog name '{name}' conflicts with configured catalog '{existing_name}'");
         }
     }
-    let installed = if path_exists(&destination) {
+    let mut created_clone = false;
+    if path_exists(&destination) {
         if git::is_expected_repository(&destination, &source.url)? {
-            true
         } else if git::is_repository(&destination)? {
             bail!("catalog destination exists but is not the configured Git repository");
         } else {
             bail!("catalog destination exists but is not a Git repository");
         }
     } else {
-        false
-    };
+        fs::create_dir_all(paths.catalogs())
+            .with_context(|| format!("could not create {}", paths.catalogs().display()))?;
+        fs::create_dir(&destination).with_context(|| {
+            format!(
+                "catalog destination {} appeared while preparing installation; nothing was removed",
+                destination.display()
+            )
+        })?;
+        created_clone = true;
+        if let Err(error) = git::clone_repository(&source.url, None, &destination) {
+            return Err(cleanup_catalog_add_failure(
+                &destination,
+                error,
+                &format!("could not install catalog '{name}'"),
+            ));
+        }
+    }
+
+    let validation = (|| -> Result<()> {
+        if !git::is_expected_repository(&destination, &source.url)? {
+            bail!("cloned catalog is not the configured Git repository");
+        }
+        catalog::load(&paths.catalog_file(name))
+            .context("cloned repository is not a valid catalog")?;
+        Ok(())
+    })();
+    if let Err(error) = validation {
+        if created_clone {
+            return Err(cleanup_catalog_add_failure(
+                &destination,
+                error,
+                "catalog validation failed",
+            ));
+        }
+        return Err(error);
+    }
 
     let registration_changed = !local.catalogs.contains_key(name) || existing_differs;
     if registration_changed {
@@ -45,28 +92,26 @@ pub fn catalog_add(paths: &Paths, name: &str, url: String, writable: bool) -> Re
         if local.default_catalog.is_none() {
             local.default_catalog = Some(name.to_owned());
         }
-        config::save(&paths.config(), &local)?;
+        if let Err(error) = save_config(&paths.config(), &local) {
+            if created_clone {
+                return Err(cleanup_catalog_add_failure(
+                    &destination,
+                    error,
+                    "catalog registration failed after validation",
+                ));
+            }
+            return Err(error).context("catalog registration failed after validation");
+        }
         println!("registered catalog '{name}'");
     } else {
         println!("catalog '{name}' is already registered");
     }
 
-    if installed {
+    if created_clone {
+        println!("installed catalog '{name}' at {}", destination.display());
+    } else {
         println!("catalog '{name}' is already installed");
-        return Ok(());
     }
-
-    fs::create_dir_all(paths.catalogs())
-        .with_context(|| format!("could not create {}", paths.catalogs().display()))?;
-    if let Err(error) = git::clone_repository(&source.url, None, &destination) {
-        cleanup_failed_clone(&destination);
-        let context = format!(
-            "catalog '{name}' was registered, but cloning it failed; the registration was preserved; rerun 'loadbot catalog add {name} {}' to retry installation",
-            source.url
-        );
-        return Err(error).context(context);
-    }
-    println!("installed catalog '{name}' at {}", destination.display());
     Ok(())
 }
 
@@ -748,11 +793,7 @@ pub fn resolve_tool(paths: &Paths, name: &str, catalog_name: Option<&str>) -> Re
 
 pub fn writable_catalogs(paths: &Paths) -> Result<Vec<String>> {
     let local = config::load(&paths.config())?;
-    Ok(local
-        .catalogs
-        .into_iter()
-        .filter_map(|(name, source)| source.writable.then_some(name))
-        .collect())
+    available_catalogs(paths, &local, true)
 }
 
 pub fn default_writable_catalog(paths: &Paths) -> Result<Option<String>> {
@@ -760,11 +801,13 @@ pub fn default_writable_catalog(paths: &Paths) -> Result<Option<String>> {
     let Some(name) = local.default_catalog else {
         return Ok(None);
     };
-    Ok(local
-        .catalogs
-        .get(&name)
-        .is_some_and(|source| source.writable)
-        .then_some(name))
+    let Some(source) = local.catalogs.get(&name) else {
+        return Ok(None);
+    };
+    if !source.writable || !catalog_is_available(paths, &name, source) {
+        return Ok(None);
+    }
+    Ok(Some(name))
 }
 
 pub fn catalog_names(paths: &Paths) -> Result<Vec<String>> {
@@ -772,6 +815,38 @@ pub fn catalog_names(paths: &Paths) -> Result<Vec<String>> {
         .catalogs
         .into_keys()
         .collect())
+}
+
+pub fn available_catalog_names(paths: &Paths) -> Result<Vec<String>> {
+    let local = config::load(&paths.config())?;
+    available_catalogs(paths, &local, false)
+}
+
+fn available_catalogs(
+    paths: &Paths,
+    local: &LocalConfig,
+    writable_only: bool,
+) -> Result<Vec<String>> {
+    let mut names = Vec::new();
+    for (name, source) in &local.catalogs {
+        if writable_only && !source.writable {
+            continue;
+        }
+        if catalog_is_available(paths, name, source) {
+            names.push(name.clone());
+        }
+    }
+    Ok(names)
+}
+
+fn catalog_is_available(paths: &Paths, name: &str, source: &CatalogSource) -> bool {
+    let result = checked_catalog_repository(paths, name, source)
+        .and_then(|_| catalog::load(&paths.catalog_file(name)).map(|_| ()));
+    if let Err(error) = result {
+        warn_skipped_catalog(name, &error);
+        return false;
+    }
+    true
 }
 
 fn configured_catalog<'a>(local: &'a LocalConfig, name: &str) -> Result<&'a CatalogSource> {
@@ -814,14 +889,35 @@ fn warn_skipped_catalog(name: &str, error: &anyhow::Error) {
 }
 
 fn cleanup_failed_clone(destination: &Path) {
+    let _ = remove_failed_clone(destination);
+}
+
+fn cleanup_catalog_add_failure(
+    destination: &Path,
+    error: anyhow::Error,
+    context: &str,
+) -> anyhow::Error {
+    match remove_failed_clone(destination) {
+        Ok(()) => error.context(context.to_owned()),
+        Err(cleanup_error) => error.context(format!(
+            "{context}; additionally, cleanup of {} failed: {cleanup_error:#}",
+            destination.display()
+        )),
+    }
+}
+
+fn remove_failed_clone(destination: &Path) -> Result<()> {
     let Ok(metadata) = fs::symlink_metadata(destination) else {
-        return;
+        return Ok(());
     };
     if metadata.is_dir() && !metadata.file_type().is_symlink() {
-        let _ = fs::remove_dir_all(destination);
+        fs::remove_dir_all(destination)
+            .with_context(|| format!("could not remove {}", destination.display()))?;
     } else {
-        let _ = fs::remove_file(destination);
+        fs::remove_file(destination)
+            .with_context(|| format!("could not remove {}", destination.display()))?;
     }
+    Ok(())
 }
 
 fn path_exists(path: &Path) -> bool {
@@ -901,6 +997,111 @@ mod tests {
         );
         git(["push", "origin", "main"], Some(&source));
         remote
+    }
+
+    fn valid_catalog_remote(base: &Path, name: &str) -> PathBuf {
+        let remote = populated_remote(base, name);
+        let source = base.join(format!("{name}-source"));
+        fs::write(source.join("catalog.toml"), "version = 1\n\n[tools]\n").unwrap();
+        git(["add", "catalog.toml"], Some(&source));
+        git(["commit", "-m", "add catalog"], Some(&source));
+        git(["push", "origin", "main"], Some(&source));
+        remote
+    }
+
+    #[test]
+    fn catalog_add_cleans_fresh_clone_when_configuration_save_fails() {
+        let temporary = TempDir::new().unwrap();
+        let paths = Paths::with_root(temporary.path().join("loadbot"));
+        let remote = valid_catalog_remote(temporary.path(), "catalog");
+
+        let error = catalog_add_with_save(
+            &paths,
+            "personal",
+            remote.display().to_string(),
+            true,
+            |_, _| bail!("injected configuration failure"),
+        )
+        .unwrap_err();
+
+        assert!(format!("{error:#}").contains("registration failed"));
+        assert!(format!("{error:#}").contains("injected configuration failure"));
+        assert!(!paths.catalog("personal").exists());
+        assert!(!paths.config().exists());
+    }
+
+    #[test]
+    fn catalog_add_rejects_invalid_catalog_and_cleans_its_clone() {
+        let temporary = TempDir::new().unwrap();
+        let paths = Paths::with_root(temporary.path().join("loadbot"));
+        let remote = populated_remote(temporary.path(), "not-a-catalog");
+
+        let error =
+            catalog_add(&paths, "invalid", remote.display().to_string(), false).unwrap_err();
+
+        assert!(format!("{error:#}").contains("not a valid catalog"));
+        assert!(!paths.catalog("invalid").exists());
+        assert!(!paths.config().exists());
+    }
+
+    #[test]
+    fn catalog_add_never_cleans_preexisting_repository_after_save_failure() {
+        let temporary = TempDir::new().unwrap();
+        let paths = Paths::with_root(temporary.path().join("loadbot"));
+        let remote = valid_catalog_remote(temporary.path(), "catalog");
+        fs::create_dir_all(paths.catalogs()).unwrap();
+        git::clone_repository(
+            &remote.display().to_string(),
+            None,
+            &paths.catalog("personal"),
+        )
+        .unwrap();
+        fs::write(paths.catalog("personal").join("keep.txt"), "keep\n").unwrap();
+
+        assert!(
+            catalog_add_with_save(
+                &paths,
+                "personal",
+                remote.display().to_string(),
+                true,
+                |_, _| bail!("injected configuration failure"),
+            )
+            .is_err()
+        );
+
+        assert_eq!(
+            fs::read_to_string(paths.catalog("personal").join("keep.txt")).unwrap(),
+            "keep\n"
+        );
+        assert!(paths.catalog("personal/.git").is_dir());
+        assert!(!paths.config().exists());
+    }
+
+    #[test]
+    fn operational_catalog_choices_skip_missing_and_wrong_repositories_without_mutating_config() {
+        let temporary = TempDir::new().unwrap();
+        let paths = Paths::with_root(temporary.path().join("loadbot"));
+        let expected = valid_catalog_remote(temporary.path(), "expected");
+        let wrong = valid_catalog_remote(temporary.path(), "wrong");
+        catalog_add(&paths, "personal", expected.display().to_string(), true).unwrap();
+        let config_before = fs::read(paths.config()).unwrap();
+
+        fs::remove_dir_all(paths.catalog("personal")).unwrap();
+        assert!(available_catalog_names(&paths).unwrap().is_empty());
+        assert!(writable_catalogs(&paths).unwrap().is_empty());
+        assert_eq!(default_writable_catalog(&paths).unwrap(), None);
+        assert_eq!(catalog_names(&paths).unwrap(), ["personal"]);
+        assert_eq!(fs::read(paths.config()).unwrap(), config_before);
+
+        git::clone_repository(
+            &wrong.display().to_string(),
+            None,
+            &paths.catalog("personal"),
+        )
+        .unwrap();
+        assert!(available_catalog_names(&paths).unwrap().is_empty());
+        assert!(writable_catalogs(&paths).unwrap().is_empty());
+        assert_eq!(fs::read(paths.config()).unwrap(), config_before);
     }
 
     #[test]

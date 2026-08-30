@@ -220,12 +220,14 @@ fn correctly_registered_personal_catalog_retries_idempotently_and_refuses_origin
 }
 
 #[test]
-fn failed_catalog_registration_is_preserved_and_same_command_retries_clone() {
+fn failed_first_catalog_clone_is_transactional_and_can_be_retried() {
     let Some(fixture) = Fixture::new() else {
         return;
     };
     assert_success(fixture.add_catalog("personal", true));
     assert_success(fixture.add_tool("demo", "personal", &[]));
+    let config_before = fs::read(fixture.home.join("config.toml")).unwrap();
+    fs::write(fixture.home.join("catalogs/keep.txt"), "keep\n").unwrap();
     let missing_remote = fixture._temporary.path().join("missing.git");
     let failed = fixture.loadbot([
         OsStr::new("catalog"),
@@ -235,30 +237,32 @@ fn failed_catalog_registration_is_preserved_and_same_command_retries_clone() {
     ]);
     assert!(!failed.status.success());
     let failure = stderr(&failed);
-    assert!(failure.contains("was registered, but cloning it failed"));
-    assert!(failure.contains("registration was preserved"));
-    assert!(failure.contains("rerun 'loadbot catalog add broken"));
-    let local = fs::read_to_string(fixture.home.join("config.toml")).unwrap();
-    assert!(local.contains("[catalogs.broken]"));
+    assert!(failure.contains("could not install catalog 'broken'"));
+    assert_eq!(
+        fs::read(fixture.home.join("config.toml")).unwrap(),
+        config_before
+    );
+    assert!(!fixture.home.join("catalogs/broken").exists());
+    assert_eq!(
+        fs::read_to_string(fixture.home.join("catalogs/keep.txt")).unwrap(),
+        "keep\n"
+    );
 
     let list = fixture.loadbot(["list"]);
     assert_success_ref(&list);
     assert!(stdout(&list).contains("demo\n  catalog  personal"));
-    assert!(stderr(&list).contains("skipping catalog 'broken'"));
-    assert!(
-        stderr(&list).contains("run 'loadbot catalog status broken'"),
-        "{}",
-        stderr(&list)
-    );
     let qualified = fixture.loadbot(["pull", "demo", "--catalog", "broken"]);
     assert!(!qualified.status.success());
-    assert!(stderr(&qualified).contains("catalog 'broken' is not installed"));
+    assert!(stderr(&qualified).contains("catalog 'broken' is not configured"));
 
-    create_repository(
-        fixture._temporary.path(),
-        "missing",
-        Some("version = 1\n\n[tools]\n"),
-    );
+    let repaired_remote =
+        create_repository(fixture._temporary.path(), "missing", Some("temporary\n"));
+    fs::write(
+        repaired_remote.source.join("catalog.toml"),
+        "version = 1\n\n[tools]\n",
+    )
+    .unwrap();
+    commit_and_push(&repaired_remote.source, "add catalog metadata");
     let repaired = fixture.loadbot([
         OsStr::new("catalog"),
         OsStr::new("add"),
@@ -267,6 +271,31 @@ fn failed_catalog_registration_is_preserved_and_same_command_retries_clone() {
     ]);
     assert_success_ref(&repaired);
     assert!(fixture.home.join("catalogs/broken/.git").is_dir());
+    let local = fs::read_to_string(fixture.home.join("config.toml")).unwrap();
+    assert!(local.contains("[catalogs.broken]"));
+}
+
+#[test]
+fn successful_registration_survives_sync_network_failure() {
+    let Some(fixture) = Fixture::new() else {
+        return;
+    };
+    assert_success(fixture.add_catalog("personal", true));
+    let config_before = fs::read(fixture.home.join("config.toml")).unwrap();
+    let unavailable = fixture.catalog.remote.with_extension("git.offline");
+    fs::rename(&fixture.catalog.remote, &unavailable).unwrap();
+
+    let failed = fixture.loadbot(["catalog", "sync", "personal"]);
+
+    assert!(!failed.status.success());
+    assert_eq!(
+        fs::read(fixture.home.join("config.toml")).unwrap(),
+        config_before
+    );
+    assert!(fixture.home.join("catalogs/personal/.git").is_dir());
+    let listed = fixture.loadbot(["catalog", "list"]);
+    assert_success_ref(&listed);
+    assert!(stdout(&listed).contains("personal\tinstalled"));
 }
 
 #[test]

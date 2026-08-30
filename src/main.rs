@@ -92,13 +92,17 @@ fn run_catalog(paths: &Paths, command: Option<CatalogCommands>) -> Result<()> {
         } => run_catalog_add(paths, name, git_url, writable),
         CatalogCommands::List => operations::catalog_list(paths),
         CatalogCommands::Sync { name } => {
-            run_catalog_named(paths, name, "catalog sync", operations::catalog_sync)
+            run_catalog_named(paths, name, "catalog sync", true, operations::catalog_sync)
         }
-        CatalogCommands::Status { name } => {
-            run_catalog_named(paths, name, "catalog status", operations::catalog_status)
-        }
+        CatalogCommands::Status { name } => run_catalog_named(
+            paths,
+            name,
+            "catalog status",
+            false,
+            operations::catalog_status,
+        ),
         CatalogCommands::Path { name } => {
-            run_catalog_named(paths, name, "catalog path", operations::catalog_path)
+            run_catalog_named(paths, name, "catalog path", false, operations::catalog_path)
         }
         CatalogCommands::Migrate { name, git_url } => {
             operations::catalog_migrate(paths, &name, git_url)
@@ -138,6 +142,7 @@ fn run_catalog_menu<P: Prompt>(paths: &Paths, prompt: &mut P) -> Result<()> {
             paths,
             None,
             "catalog sync",
+            true,
             operations::catalog_sync,
             prompt,
         ),
@@ -145,6 +150,7 @@ fn run_catalog_menu<P: Prompt>(paths: &Paths, prompt: &mut P) -> Result<()> {
             paths,
             None,
             "catalog status",
+            false,
             operations::catalog_status,
             prompt,
         ),
@@ -152,6 +158,7 @@ fn run_catalog_menu<P: Prompt>(paths: &Paths, prompt: &mut P) -> Result<()> {
             paths,
             None,
             "catalog path",
+            false,
             operations::catalog_path,
             prompt,
         ),
@@ -262,6 +269,7 @@ fn run_catalog_named(
     paths: &Paths,
     name: Option<String>,
     command: &str,
+    available_only: bool,
     operation: fn(&Paths, &str) -> Result<()>,
 ) -> Result<()> {
     if let Some(name) = name {
@@ -269,21 +277,31 @@ fn run_catalog_named(
     }
     require_interactive(command, "NAME")?;
     let mut prompt = interactive::TerminalPrompt;
-    run_catalog_named_with_prompt(paths, None, command, operation, &mut prompt)
+    run_catalog_named_with_prompt(paths, None, command, available_only, operation, &mut prompt)
 }
 
 fn run_catalog_named_with_prompt<P: Prompt>(
     paths: &Paths,
     name: Option<String>,
     _command: &str,
+    available_only: bool,
     operation: fn(&Paths, &str) -> Result<()>,
     prompt: &mut P,
 ) -> Result<()> {
     if let Some(name) = name {
         return operation(paths, &name);
     }
-    let choices = operations::catalog_names(paths)?;
+    let choices = if available_only {
+        operations::available_catalog_names(paths)?
+    } else {
+        operations::catalog_names(paths)?
+    };
     if choices.is_empty() {
+        if available_only {
+            bail!(
+                "No installed, valid catalogs are available.\nRun 'loadbot catalog list' or 'loadbot catalog status NAME' for details."
+            );
+        }
         bail!("No catalogs are configured.\nRun 'loadbot catalog add' to add one.");
     }
     match prompt.select("Select a catalog:\n", &choices)? {

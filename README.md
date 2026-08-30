@@ -263,14 +263,14 @@ loadbot catalog add community \
 Behavior:
 
 - Validates the catalog name.
-- Records the catalog in local `config.toml`.
-- Clones it into `LOADBOT_HOME/catalogs/<name>/`.
+- Clones it into `LOADBOT_HOME/catalogs/<name>/` and validates `catalog.toml`.
+- Records the catalog in local `config.toml` only after cloning and validation succeed.
 - Makes the first registered catalog the default.
 - Marks it writable only when `--writable` is supplied.
 - Reuses the user's existing Git and SSH configuration.
 - Refuses unrelated folders, repositories with a different origin, and symlink destinations.
 - Behaves idempotently when the expected repository is already installed.
-- Preserves a successful registration if cloning fails so the operation can be retried.
+- Removes only a clone created by the failed operation and leaves no first-time registration behind if cloning, validation, or registration fails.
 
 Interactive form:
 
@@ -328,7 +328,7 @@ Behavior:
 - Merges only with `--ff-only`.
 - Never resets, discards changes, or resolves conflicts.
 
-When the name is omitted in an interactive terminal, Loadbot presents a numbered catalog selection. It does not synchronize every catalog automatically.
+When the name is omitted in an interactive terminal, Loadbot presents valid installed catalogs only. Missing, mismatched, or invalid registrations remain available through `catalog list`, `catalog status NAME`, and explicit repair commands. Loadbot does not synchronize every catalog automatically.
 
 ### `loadbot catalog status`
 
@@ -667,7 +667,7 @@ Remove-Item Env:COMPLETE
 
 ## Catalog Recovery
 
-If catalog registration succeeds but its clone fails, the local registration is preserved and appears as `missing`.
+First-time catalog addition is transactional. Loadbot clones and validates the catalog before saving its registration. A failed clone, invalid catalog, or failed configuration save leaves no new registration and removes only the clone created by that operation. Rerun the same `catalog add` command after correcting the problem.
 
 Healthy catalogs remain usable. Tool listing skips unhealthy catalogs with a warning and recommends:
 
@@ -675,13 +675,13 @@ Healthy catalogs remain usable. Tool listing skips unhealthy catalogs with a war
 loadbot catalog status NAME
 ```
 
-After resolving the remote or connectivity problem, rerun the original command:
+If a previously registered catalog directory is later deleted, `catalog list` reports it as `missing`, while normal writable and sync selections omit it. Restore it by rerunning the original command:
 
 ```bash
 loadbot catalog add NAME GIT_URL
 ```
 
-Use the same `--writable` setting originally registered. Loadbot retries the missing clone. It does not automatically delete registrations or perform destructive repairs.
+Use the same `--writable` setting originally registered. Read-only commands do not silently rewrite `config.toml`, and temporary sync or network failures never remove a successful registration.
 
 A command explicitly qualified with a missing, mismatched, or invalid catalog fails instead of silently selecting another catalog.
 

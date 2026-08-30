@@ -206,7 +206,7 @@ note = "keep me"
     }
 
     #[test]
-    fn load_preserves_missing_catalog_registration_for_retry() {
+    fn loading_missing_catalog_registrations_does_not_mutate_configuration() {
         let root =
             std::env::temp_dir().join(format!("loadbot-config-reconcile-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);

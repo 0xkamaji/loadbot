@@ -1,6 +1,6 @@
 # Loadbot
 
-Loadbot is a small cross-platform CLI for managing catalogs of Git-backed tool repositories. Catalogs make tool definitions portable between machines, while installed repositories remain local. Loadbot invokes the user's installed `git` command and never parses or executes downloaded repository content.
+Loadbot is a small cross-platform CLI for managing catalogs of Git-backed tool repositories. Catalogs make tool definitions and explicitly selected shared commands portable between machines, while installed repositories remain local. Loadbot invokes the user's installed `git` command and never executes repository content automatically.
 
 ## Data Model
 
@@ -28,6 +28,28 @@ LOADBOT_HOME/
 The default root is `~/.local/share/loadbot/` on Linux and `%LOCALAPPDATA%\loadbot\` on native Windows. `LOADBOT_HOME` overrides the root for portable or isolated use. Read-only commands do not create it.
 
 Personal launcher shortcuts are stored separately in the platform configuration directory at `loadbot/shortcuts.toml` (`~/.config/loadbot/shortcuts.toml` on Linux). They contain a catalog name, tool name, and repository-relative file path, never an absolute installation path. Shortcuts are not written to `config.toml`, catalog repositories, or `catalog.toml`.
+
+Catalog authors may define shared commands directly on a tool in the existing version-1 `catalog.toml`:
+
+```toml
+version = 1
+
+[tools.re-toolkit]
+type = "git"
+url = "https://github.com/0xkamaji/re-toolkit.git"
+revision = "main"
+
+[tools.re-toolkit.commands.print-strings]
+path = "recipes/BinaryNinja/print_strings.py"
+description = "Print strings from the current Binary Ninja database"
+runner = "python"
+
+[tools.re-toolkit.commands.install]
+path = "scripts/install.sh"
+runner = "bash"
+```
+
+The command name is the key below `[tools.<tool>.commands]` and must be unique within that tool. `path` is required. `description` and `runner` are optional. Existing catalogs without `commands` remain valid version-1 catalogs. This release changes only Loadbot's schema and behavior; it does not add commands to the real 0xkamaji catalog.
 
 The Loadbot executable and Loadbot source repository do not have to live beneath `LOADBOT_HOME`.
 
@@ -581,13 +603,15 @@ For an ambiguous name, supply `--catalog`. When the name is omitted in an intera
 loadbot run [SHORTCUT]
 ```
 
-Without a shortcut name, opens an interactive navigator over installed catalogs and tools:
+Without a shortcut name, opens an interactive project-first launcher:
 
 ```bash
 loadbot run
 ```
 
-The navigator reads only the directory currently displayed. Directories descend into that directory, files may be selected for launch, and `../` choices navigate back to the previous directory, tool selection, or catalog selection. Symlinks are not shown. After a selected file exits successfully, Loadbot optionally offers to save it as a local shortcut; the default is No.
+The first menu contains only projects that have at least one shared catalog command or personal shortcut. A tool name is used as the label when unique; duplicate tool names are qualified with their catalog. Selecting a project opens its merged command menu. Descriptions appear beside command names when present. Back returns to project selection and Exit closes the launcher.
+
+`Browse installed tools...` preserves the file navigator. It reads only the directory currently displayed. Directories descend into that directory, files may be selected for launch, and `../` choices navigate back to the previous directory, tool selection, or catalog selection. Symlinks are not shown. After a selected file exits successfully, Loadbot optionally offers to save it as a personal shortcut; the default is No.
 
 Run a saved shortcut directly:
 
@@ -604,11 +628,19 @@ version = 1
 catalog = "personal"
 tool = "re-toolkit"
 path = "recipes/BinaryNinja/print_strings.py"
+description = "My local print workflow"
+runner = "python"
 ```
 
-At launch time Loadbot resolves the catalog-qualified tool through the current catalog definition and installation path. It rejects missing tools, missing files, origin mismatches, path traversal, and targets that resolve outside the tool repository. Duplicate shortcut names are not overwritten.
+`description` and `runner` are optional for personal shortcuts. Existing version-1 files containing only `catalog`, `tool`, and `path` continue to load unchanged, and unknown fields continue to be preserved. Personal shortcut changes are written only to the user-level `shortcuts.toml`, never to a catalog or installed tool clone.
 
-Executable files are launched directly. Non-executable `.py`, `.sh`, and `.ps1` files use a small fixed set of common interpreters available in the user's `PATH`. The child inherits the normal environment and terminal. Loadbot does not discover entrypoints, install dependencies, create environments, or interpret repository metadata.
+At launch time Loadbot resolves the catalog-qualified tool through the current catalog definition and installation path. It rejects missing tools, missing files, origin mismatches, path traversal, and targets that resolve outside the tool repository. Duplicate shortcut names are not overwritten. If a shared command and personal shortcut have the same name in one project, both are retained and visibly labeled `[shared]` and `[personal]`; Loadbot never silently chooses one.
+
+Supported runner values are `direct`, `bash`, `sh`, `python`, and `powershell`. Loadbot selects conventional platform-aware executable names from `PATH`: `bash`, `sh`, `python3`/`python`, and `pwsh`/`powershell`. An explicit runner always invokes that runner, so `runner = "bash"` works for a non-executable file and never substitutes `sh`. A shared command with no runner uses direct execution and therefore must be executable on platforms that require an executable bit. A legacy personal shortcut with no runner preserves the existing behavior: executable files run directly, while non-executable `.py`, `.sh`, and `.ps1` files use the existing extension-based interpreter fallback.
+
+Paths are portable repository-relative strings separated by `/`. They must be nonempty, must not be absolute, and may not contain `.` or `..` components, empty components, backslashes, or colons. Loadbot also canonicalizes the selected target and rejects symlinks or other resolution that escapes the installed tool root. Shared commands run with the installed tool root as their working directory. Children explicitly inherit stdin, stdout, stderr, the environment, and the working terminal, so passphrase prompts, `sudo`, and ordinary script questions remain interactive. Loadbot does not install dependencies or execute arbitrary shell command strings.
+
+Shared commands are read from each registered catalog clone. They become available after the catalog is cloned or after `loadbot catalog sync NAME` fast-forwards it; Loadbot does not create a separate local copy of command definitions. The corresponding tool repository must still be installed before a command can run.
 
 Saved shortcut names are available as dynamic completions for the positional argument to `loadbot run`. Completion never scans installed repositories or suggests tool names and files. Enable it for the current shell with:
 
@@ -729,7 +761,7 @@ Loadbot:
 - Never resets, discards changes, resolves conflicts, or pushes implicitly.
 - Cleans up only a destination newly created by its own failed clone.
 - Passes URLs and names directly as process arguments without a shell.
-- Never executes repository scripts.
+- Never executes repository scripts automatically; `loadbot run` executes only the file explicitly selected by the user.
 - The runtime CLI never modifies shell configuration; the setup scripts modify only the user profile described above after confirmation.
 - Never manages SSH keys, credentials, or Git accounts.
 - Keeps configured and origin URLs canonical; a selected Rot SSH alias is applied
@@ -741,4 +773,4 @@ Loadbot:
 - Only Git repository sources are supported.
 - Safe updates require a checked-out branch; detached tags or commits are not updated.
 - URL equivalence removes only surrounding whitespace, a trailing slash, and one trailing `.git`; equivalent SSH and HTTPS URLs remain distinct.
-- There is no catalog discovery service, package resolution, dependency installation, plugin system, script execution, background service, or AI feature. Rot integration is limited to read-only SSH identity discovery after a GitHub SSH public-key authentication failure.
+- There is no catalog discovery service, package resolution, dependency installation, plugin system, arbitrary shell-command execution, background service, or AI feature. Rot integration is limited to read-only SSH identity discovery after a GitHub SSH public-key authentication failure.

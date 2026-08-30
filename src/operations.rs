@@ -444,14 +444,17 @@ pub fn tool_add(
     let mut catalog_file = catalog::load_or_default(&catalog_path)?;
     let definition = ToolConfig::git(url, revision);
     let catalog_has_changes = git::path_has_changes(&repository, "catalog.toml")?;
-    let exact_definition_exists = catalog_file.tools.get(name) == Some(&definition);
+    let exact_definition_exists = catalog_file
+        .tools
+        .get(name)
+        .is_some_and(|existing| existing.has_source(&definition));
     if catalog_has_changes && !exact_definition_exists {
         bail!(
             "catalog.toml already has uncommitted changes; refusing to combine them with a new tool addition; commit or otherwise handle those changes manually before retrying"
         );
     }
     let changed = if let Some(existing) = catalog_file.tools.get(name) {
-        if existing == &definition {
+        if existing.has_source(&definition) {
             println!("tool '{name}' is already defined in catalog '{catalog_name}'");
             false
         } else {

@@ -1,6 +1,10 @@
 use std::ffi::{OsStr, OsString};
 use std::fs;
+#[cfg(unix)]
+use std::io::Write;
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::process::Stdio;
 use std::process::{Command, Output};
 
 use tempfile::TempDir;
@@ -715,6 +719,74 @@ fn run_shortcut_launches_from_the_current_catalog_scoped_tool_path() {
     let failed = fixture.loadbot(["run", "failing-demo"]);
     assert_eq!(failed.status.code(), Some(7));
     assert!(stderr(&failed).contains("exited with status 7"));
+}
+
+#[cfg(unix)]
+#[test]
+fn catalog_sync_exposes_new_interactive_command_with_inherited_terminal_io() {
+    let Some(fixture) = Fixture::new() else {
+        return;
+    };
+    if !Command::new("script")
+        .arg("--version")
+        .output()
+        .is_ok_and(|output| output.status.success())
+    {
+        eprintln!("skipping integration test: script is not available");
+        return;
+    }
+    fs::create_dir(fixture.tool.source.join("scripts")).unwrap();
+    fs::write(
+        fixture.tool.source.join("scripts/ask.sh"),
+        "printf 'Question: '; read -r answer; printf 'Answer: %s; shell: %s; cwd: %s\\n' \"$answer\" \"${BASH_VERSION:+bash}\" \"$(basename \"$PWD\")\"\n",
+    )
+    .unwrap();
+    commit_and_push(&fixture.tool.source, "add interactive script");
+    assert_success(fixture.add_catalog("personal", true));
+    assert_success(fixture.add_tool("demo", "personal", &["--commit", "--push"]));
+    assert_success(fixture.loadbot(["pull", "demo", "--catalog", "personal"]));
+
+    git(
+        ["pull", "--ff-only", "origin", "main"],
+        Some(&fixture.catalog.source),
+    );
+    let catalog_path = fixture.catalog.source.join("catalog.toml");
+    let mut catalog = fs::read_to_string(&catalog_path).unwrap();
+    catalog.push_str(
+        "\n[tools.demo.commands.ask]\npath = \"scripts/ask.sh\"\ndescription = \"Ask interactively\"\nrunner = \"bash\"\n",
+    );
+    fs::write(&catalog_path, catalog).unwrap();
+    commit_and_push(&fixture.catalog.source, "add shared command");
+    assert_success(fixture.loadbot(["catalog", "sync", "personal"]));
+
+    let executable = env!("CARGO_BIN_EXE_loadbot");
+    let mut child = Command::new("script")
+        .args(["-q", "-e", "-c", &format!("{executable} run"), "/dev/null"])
+        .env("LOADBOT_HOME", &fixture.home)
+        .env("XDG_CONFIG_HOME", &fixture.config_home)
+        .env("APPDATA", &fixture.config_home)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"1\n1\nvisible-input\n")
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert_success_ref(&output);
+    let terminal = String::from_utf8_lossy(&output.stdout);
+    assert!(terminal.contains("Select project:"), "{terminal}");
+    assert!(terminal.contains("ask - Ask interactively"), "{terminal}");
+    assert!(terminal.contains("Question:"), "{terminal}");
+    assert!(
+        terminal.contains("Answer: visible-input; shell: bash; cwd: demo"),
+        "{terminal}"
+    );
+    assert!(!fixture.config_home.join("loadbot/shortcuts.toml").exists());
 }
 
 #[test]

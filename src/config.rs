@@ -70,7 +70,7 @@ pub fn load(path: &Path) -> Result<LocalConfig> {
             path.display()
         );
     }
-    let mut config: LocalConfig = value
+    let config: LocalConfig = value
         .try_into()
         .with_context(|| format!("could not parse {}", path.display()))?;
     validate_version(config.version, path)?;
@@ -79,34 +79,7 @@ pub fn load(path: &Path) -> Result<LocalConfig> {
             .with_context(|| format!("configuration contains an unsafe catalog name '{name}'"))?;
     }
 
-    if reconcile_catalog_registrations(path, &mut config)? {
-        save(path, &config).context("could not persist reconciled catalog configuration")?;
-    }
-
     Ok(config)
-}
-
-fn reconcile_catalog_registrations(path: &Path, config: &mut LocalConfig) -> Result<bool> {
-    let root = path
-        .parent()
-        .context("configuration path has no parent directory")?;
-    let catalogs_root = root.join("catalogs");
-    let before = config.catalogs.len();
-
-    config
-        .catalogs
-        .retain(|name, _| catalogs_root.join(name).is_dir());
-
-    let mut changed = config.catalogs.len() != before;
-    if config
-        .default_catalog
-        .as_ref()
-        .is_some_and(|name| !config.catalogs.contains_key(name))
-    {
-        config.default_catalog = None;
-        changed = true;
-    }
-    Ok(changed)
 }
 
 pub fn load_legacy(path: &Path) -> Result<LegacyConfig> {
@@ -233,11 +206,9 @@ note = "keep me"
     }
 
     #[test]
-    fn load_prunes_missing_catalog_directory_and_clears_default() {
-        let root = std::env::temp_dir().join(format!(
-            "loadbot-config-reconcile-{}",
-            std::process::id()
-        ));
+    fn load_preserves_missing_catalog_registration_for_retry() {
+        let root =
+            std::env::temp_dir().join(format!("loadbot-config-reconcile-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("catalogs/real")).unwrap();
         let path = root.join("config.toml");
@@ -260,13 +231,13 @@ writable = true
 
         let loaded = load(&path).unwrap();
         assert!(loaded.catalogs.contains_key("real"));
-        assert!(!loaded.catalogs.contains_key("stale"));
-        assert_eq!(loaded.default_catalog, None);
+        assert!(loaded.catalogs.contains_key("stale"));
+        assert_eq!(loaded.default_catalog.as_deref(), Some("stale"));
 
         let persisted = fs::read_to_string(&path).unwrap();
         assert!(persisted.contains("[catalogs.real]"));
-        assert!(!persisted.contains("[catalogs.stale]"));
-        assert!(!persisted.contains("default_catalog"));
+        assert!(persisted.contains("[catalogs.stale]"));
+        assert!(persisted.contains("default_catalog = \"stale\""));
 
         let _ = fs::remove_dir_all(&root);
     }

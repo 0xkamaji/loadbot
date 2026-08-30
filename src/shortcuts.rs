@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
+use crate::catalog::Runner;
 use crate::config;
 use crate::paths;
 
@@ -32,6 +33,10 @@ pub struct Shortcut {
     pub catalog: String,
     pub tool: String,
     pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runner: Option<Runner>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, toml::Value>,
 }
@@ -45,6 +50,8 @@ impl Shortcut {
             catalog,
             tool,
             path,
+            description: None,
+            runner: None,
             extra: BTreeMap::new(),
         })
     }
@@ -206,6 +213,44 @@ path = "triage.py"
         assert_eq!(
             shortcut_names(&path).unwrap(),
             ["bn-triage", "print-strings"]
+        );
+    }
+
+    #[test]
+    fn version_one_shortcuts_accept_optional_metadata_and_preserve_unknown_fields() {
+        let temporary = tempfile::TempDir::new().unwrap();
+        let path = temporary.path().join("shortcuts.toml");
+        fs::write(
+            &path,
+            r#"version = 1
+
+[shortcuts.legacy]
+catalog = "personal"
+tool = "demo"
+path = "legacy.sh"
+
+[shortcuts.audit]
+catalog = "personal"
+tool = "demo"
+path = "audit.sh"
+description = "Run the audit"
+runner = "bash"
+future = "kept"
+"#,
+        )
+        .unwrap();
+
+        let loaded = load(&path).unwrap();
+        assert_eq!(loaded.shortcuts["legacy"].description, None);
+        assert_eq!(loaded.shortcuts["legacy"].runner, None);
+        assert_eq!(
+            loaded.shortcuts["audit"].description.as_deref(),
+            Some("Run the audit")
+        );
+        assert_eq!(loaded.shortcuts["audit"].runner, Some(Runner::Bash));
+        assert_eq!(
+            loaded.shortcuts["audit"].extra["future"].as_str(),
+            Some("kept")
         );
     }
 }

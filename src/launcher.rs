@@ -1,8 +1,8 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus};
+use std::process::{Command, ExitStatus, Stdio};
 
 use anyhow::{Context, Result, bail};
 
@@ -10,8 +10,10 @@ use crate::interactive::Prompt;
 use crate::operations;
 use crate::paths::{self, Paths};
 use crate::shortcuts::{self, Shortcut};
+use crate::{catalog::ResolvedTool, catalog::Runner};
 
 const BROWSE_TOOLS: &str = "Browse installed tools...";
+const BACK: &str = "../ Back";
 const EXIT: &str = "Exit";
 
 #[derive(Debug)]
@@ -51,7 +53,13 @@ fn run_shortcut_from(paths: &Paths, shortcut_path: &Path, name: &str) -> Result<
         .get(name)
         .with_context(|| format!("shortcut '{name}' does not exist"))?;
     let target = resolve_target(paths, shortcut).with_context(|| broken_message(name, shortcut))?;
-    launch_file(&target)
+    match shortcut.runner {
+        Some(runner) => {
+            let root = operations::installed_tool_path(paths, &shortcut.tool, &shortcut.catalog)?;
+            launch_with_runner(&target, &root, runner)
+        }
+        None => launch_file(&target),
+    }
 }
 
 pub fn run_interactive<P: Prompt>(paths: &Paths, prompt: &mut P) -> Result<()> {
@@ -63,16 +71,22 @@ fn run_interactive_from<P: Prompt>(
     prompt: &mut P,
     shortcut_path: &Path,
 ) -> Result<()> {
-    let names = shortcuts::shortcut_names(shortcut_path)?;
-    match select_initial_action(prompt, &names)? {
-        InitialAction::Shortcut(name) => {
-            return run_shortcut_from(paths, shortcut_path, &name);
+    let projects = project_inventory(
+        &operations::all_tools(paths)?,
+        &shortcuts::load(shortcut_path)?,
+    );
+    loop {
+        match select_project_action(prompt, &projects)? {
+            ProjectAction::Project(index) => {
+                if run_project_menu(paths, prompt, &projects[index])? {
+                    return Ok(());
+                }
+            }
+            ProjectAction::Browse => return run_selected_file(paths, prompt, shortcut_path),
+            ProjectAction::Exit => return Ok(()),
+            ProjectAction::Cancelled => return cancelled(),
         }
-        InitialAction::Browse => {}
-        InitialAction::Exit => return Ok(()),
-        InitialAction::Cancelled => return cancelled(),
     }
-    run_selected_file(paths, prompt, shortcut_path)
 }
 
 pub fn add_shortcut<P: Prompt>(paths: &Paths, prompt: &mut P) -> Result<()> {
@@ -187,18 +201,169 @@ fn select_installed_file<P: Prompt>(paths: &Paths, prompt: &mut P) -> Result<Opt
     }
 }
 
-fn select_initial_action<P: Prompt>(prompt: &mut P, names: &[String]) -> Result<InitialAction> {
-    let mut choices = names.to_vec();
+fn select_project_action<P: Prompt>(prompt: &mut P, projects: &[Project]) -> Result<ProjectAction> {
+    let mut choices: Vec<_> = projects
+        .iter()
+        .map(|project| project.label.clone())
+        .collect();
     choices.push(BROWSE_TOOLS.to_owned());
     choices.push(EXIT.to_owned());
-    let Some(selection) = prompt.select("Select:", &choices)? else {
-        return Ok(InitialAction::Cancelled);
+    let Some(selection) = prompt.select("Select project:", &choices)? else {
+        return Ok(ProjectAction::Cancelled);
     };
     match selection.as_str() {
-        BROWSE_TOOLS => Ok(InitialAction::Browse),
-        EXIT => Ok(InitialAction::Exit),
-        _ => Ok(InitialAction::Shortcut(selection)),
+        BROWSE_TOOLS => Ok(ProjectAction::Browse),
+        EXIT => Ok(ProjectAction::Exit),
+        _ => projects
+            .iter()
+            .position(|project| project.label == selection)
+            .map(ProjectAction::Project)
+            .context("invalid project selection"),
     }
+}
+
+fn run_project_menu<P: Prompt>(paths: &Paths, prompt: &mut P, project: &Project) -> Result<bool> {
+    let mut choices: Vec<_> = project
+        .entries
+        .iter()
+        .map(|entry| entry.label.clone())
+        .collect();
+    choices.push(BACK.to_owned());
+    choices.push(EXIT.to_owned());
+    let Some(selection) = prompt.select(&format!("Run from {}:", project.label), &choices)? else {
+        cancelled()?;
+        return Ok(true);
+    };
+    if selection == BACK {
+        return Ok(false);
+    }
+    if selection == EXIT {
+        return Ok(true);
+    }
+    let entry = project
+        .entries
+        .iter()
+        .find(|entry| entry.label == selection)
+        .context("invalid project command selection")?;
+    launch_entry(paths, project, entry).with_context(|| match entry.source {
+        EntrySource::Catalog => format!(
+            "shared command '{}' is broken:\n\ncatalog: {}\ntool: {}\npath: {}",
+            entry.name, project.catalog, project.tool, entry.path
+        ),
+        EntrySource::Personal => format!(
+            "shortcut '{}' is broken:\n\ncatalog: {}\ntool: {}\npath: {}",
+            entry.name, project.catalog, project.tool, entry.path
+        ),
+    })?;
+    Ok(true)
+}
+
+fn launch_entry(paths: &Paths, project: &Project, entry: &ProjectEntry) -> Result<()> {
+    let root = operations::installed_tool_path(paths, &project.tool, &project.catalog)?;
+    let relative = shortcuts::relative_path(&entry.path)?;
+    let target = safe_target(&root, &relative)?;
+    match (entry.runner, entry.source) {
+        (Some(runner), _) => launch_with_runner(&target, &root, runner),
+        (None, EntrySource::Catalog) => launch_with_runner(&target, &root, Runner::Direct),
+        (None, EntrySource::Personal) => launch_file(&target),
+    }
+}
+
+fn project_inventory(
+    tools: &[ResolvedTool],
+    shortcut_file: &shortcuts::ShortcutFile,
+) -> Vec<Project> {
+    let mut projects = BTreeMap::<ProjectKey, Vec<ProjectEntry>>::new();
+    for tool in tools {
+        let key = ProjectKey {
+            tool: tool.name.clone(),
+            catalog: tool.catalog.clone(),
+        };
+        for (name, command) in &tool.definition.commands {
+            projects.entry(key.clone()).or_default().push(ProjectEntry {
+                name: name.clone(),
+                label: String::new(),
+                path: command.path.clone(),
+                description: command.description.clone(),
+                runner: command.runner,
+                source: EntrySource::Catalog,
+            });
+        }
+    }
+    for (name, shortcut) in &shortcut_file.shortcuts {
+        projects
+            .entry(ProjectKey {
+                tool: shortcut.tool.clone(),
+                catalog: shortcut.catalog.clone(),
+            })
+            .or_default()
+            .push(ProjectEntry {
+                name: name.clone(),
+                label: String::new(),
+                path: shortcut.path.clone(),
+                description: shortcut.description.clone(),
+                runner: shortcut.runner,
+                source: EntrySource::Personal,
+            });
+    }
+
+    let duplicate_names: BTreeSet<_> = projects
+        .keys()
+        .filter(|key| {
+            projects
+                .keys()
+                .filter(|other| other.tool == key.tool)
+                .count()
+                > 1
+        })
+        .map(|key| key.tool.clone())
+        .collect();
+    projects
+        .into_iter()
+        .map(|(key, mut entries)| {
+            entries.sort_by(|left, right| {
+                left.name
+                    .cmp(&right.name)
+                    .then_with(|| left.source.cmp(&right.source))
+            });
+            let conflicts: BTreeSet<_> = entries
+                .iter()
+                .filter(|entry| {
+                    entries
+                        .iter()
+                        .filter(|other| other.name == entry.name)
+                        .count()
+                        > 1
+                })
+                .map(|entry| entry.name.clone())
+                .collect();
+            for entry in &mut entries {
+                let qualify =
+                    conflicts.contains(&entry.name) || matches!(entry.name.as_str(), BACK | EXIT);
+                entry.label = if qualify {
+                    format!("{} [{}]", entry.name, entry.source.label())
+                } else {
+                    entry.name.clone()
+                };
+                if let Some(description) = &entry.description {
+                    entry.label.push_str(" - ");
+                    entry.label.push_str(description);
+                }
+            }
+            let qualify = duplicate_names.contains(&key.tool)
+                || matches!(key.tool.as_str(), BROWSE_TOOLS | EXIT);
+            Project {
+                label: if qualify {
+                    format!("{} ({})", key.tool, key.catalog)
+                } else {
+                    key.tool.clone()
+                },
+                tool: key.tool,
+                catalog: key.catalog,
+                entries,
+            }
+        })
+        .collect()
 }
 
 fn browse<P: Prompt>(prompt: &mut P, root: &Path, root_label: &str) -> Result<Option<PathBuf>> {
@@ -375,10 +540,48 @@ fn launch_file(target: &Path) -> Result<()> {
     )
 }
 
-fn run_command(mut command: Command, target: &Path) -> Result<()> {
-    if let Some(parent) = target.parent() {
-        command.current_dir(parent);
+fn launch_with_runner(target: &Path, working_directory: &Path, runner: Runner) -> Result<()> {
+    if runner == Runner::Direct {
+        return run_command_in(Command::new(target), target, working_directory);
     }
+    let executables: &[&str] = match runner {
+        Runner::Direct => unreachable!(),
+        Runner::Bash => &["bash"],
+        Runner::Sh => &["sh"],
+        Runner::Python if cfg!(windows) => &["python", "python3"],
+        Runner::Python => &["python3", "python"],
+        Runner::Powershell if cfg!(windows) => &["powershell", "pwsh"],
+        Runner::Powershell => &["pwsh", "powershell"],
+    };
+    for executable in executables {
+        let mut command = Command::new(executable);
+        command.arg(target);
+        match run_command_in(command, target, working_directory) {
+            Err(error)
+                if error
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) => {}
+            result => return result,
+        }
+    }
+    bail!(
+        "runner '{}' is not available in PATH for {}",
+        runner.as_str(),
+        target.display()
+    )
+}
+
+fn run_command(command: Command, target: &Path) -> Result<()> {
+    let working_directory = target.parent().unwrap_or_else(|| Path::new("."));
+    run_command_in(command, target, working_directory)
+}
+
+fn run_command_in(mut command: Command, target: &Path, working_directory: &Path) -> Result<()> {
+    command
+        .current_dir(working_directory)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
     let status = command.status().with_context(|| {
         format!(
             "could not launch {}; the required executable may not be available",
@@ -448,11 +651,50 @@ struct SelectedFile {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-enum InitialAction {
-    Shortcut(String),
+enum ProjectAction {
+    Project(usize),
     Browse,
     Exit,
     Cancelled,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct ProjectKey {
+    tool: String,
+    catalog: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Project {
+    label: String,
+    tool: String,
+    catalog: String,
+    entries: Vec<ProjectEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProjectEntry {
+    name: String,
+    label: String,
+    path: String,
+    description: Option<String>,
+    runner: Option<Runner>,
+    source: EntrySource,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum EntrySource {
+    Catalog,
+    Personal,
+}
+
+impl EntrySource {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Catalog => "shared",
+            Self::Personal => "personal",
+        }
+    }
 }
 
 #[cfg(test)]
@@ -614,28 +856,30 @@ mod tests {
     }
 
     #[test]
-    fn initial_menu_shows_shortcuts_and_keeps_browser_reachable() {
-        let names = vec!["bn-triage".to_owned(), "print-strings".to_owned()];
-        let mut shortcut_prompt = FakePrompt {
-            selections: [Some("print-strings".to_owned())].into(),
+    fn project_menu_is_first_and_keeps_browser_reachable() {
+        let projects = vec![Project {
+            label: "demo".to_owned(),
+            tool: "demo".to_owned(),
+            catalog: "personal".to_owned(),
+            entries: Vec::new(),
+        }];
+        let mut project_prompt = FakePrompt {
+            selections: [Some("demo".to_owned())].into(),
             ..FakePrompt::default()
         };
         assert_eq!(
-            select_initial_action(&mut shortcut_prompt, &names).unwrap(),
-            InitialAction::Shortcut("print-strings".to_owned())
+            select_project_action(&mut project_prompt, &projects).unwrap(),
+            ProjectAction::Project(0)
         );
-        assert_eq!(
-            shortcut_prompt.displayed[0],
-            ["bn-triage", "print-strings", BROWSE_TOOLS, EXIT]
-        );
+        assert_eq!(project_prompt.displayed[0], ["demo", BROWSE_TOOLS, EXIT]);
 
         let mut browse_prompt = FakePrompt {
             selections: [Some(BROWSE_TOOLS.to_owned())].into(),
             ..FakePrompt::default()
         };
         assert_eq!(
-            select_initial_action(&mut browse_prompt, &names).unwrap(),
-            InitialAction::Browse
+            select_project_action(&mut browse_prompt, &projects).unwrap(),
+            ProjectAction::Browse
         );
     }
 
@@ -647,8 +891,8 @@ mod tests {
         };
 
         assert_eq!(
-            select_initial_action(&mut prompt, &[]).unwrap(),
-            InitialAction::Browse
+            select_project_action(&mut prompt, &[]).unwrap(),
+            ProjectAction::Browse
         );
         assert_eq!(prompt.displayed[0], [BROWSE_TOOLS, EXIT]);
 
@@ -657,8 +901,71 @@ mod tests {
             ..FakePrompt::default()
         };
         assert_eq!(
-            select_initial_action(&mut exit_prompt, &[]).unwrap(),
-            InitialAction::Exit
+            select_project_action(&mut exit_prompt, &[]).unwrap(),
+            ProjectAction::Exit
+        );
+    }
+
+    #[test]
+    fn inventory_groups_projects_qualifies_duplicates_and_marks_name_conflicts() {
+        use crate::catalog::{CommandConfig, SourceType, ToolConfig};
+
+        let command = |description: Option<&str>| CommandConfig {
+            path: "scripts/audit.sh".to_owned(),
+            description: description.map(str::to_owned),
+            runner: Some(Runner::Bash),
+            extra: BTreeMap::new(),
+        };
+        let tool = |catalog: &str, commands: BTreeMap<String, CommandConfig>| ResolvedTool {
+            name: "demo".to_owned(),
+            catalog: catalog.to_owned(),
+            definition: ToolConfig {
+                source_type: SourceType::Git,
+                url: "demo.git".to_owned(),
+                revision: None,
+                commands,
+                extra: BTreeMap::new(),
+            },
+        };
+        let tools = [
+            tool(
+                "personal",
+                BTreeMap::from([
+                    ("audit".to_owned(), command(Some("Shared audit"))),
+                    ("build".to_owned(), command(None)),
+                ]),
+            ),
+            tool(
+                "public",
+                BTreeMap::from([("scan".to_owned(), command(None))]),
+            ),
+        ];
+        let mut shortcut_file = shortcuts::ShortcutFile::default();
+        let mut shortcut = Shortcut::new(
+            "personal".to_owned(),
+            "demo".to_owned(),
+            "local/audit.sh".to_owned(),
+        )
+        .unwrap();
+        shortcut.description = Some("My audit".to_owned());
+        shortcut_file.shortcuts.insert("audit".to_owned(), shortcut);
+
+        let projects = project_inventory(&tools, &shortcut_file);
+
+        assert_eq!(projects.len(), 2);
+        assert_eq!(projects[0].label, "demo (personal)");
+        assert_eq!(projects[1].label, "demo (public)");
+        assert_eq!(
+            projects[0]
+                .entries
+                .iter()
+                .map(|entry| entry.label.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "audit [shared] - Shared audit",
+                "audit [personal] - My audit",
+                "build"
+            ]
         );
     }
 
@@ -679,12 +986,13 @@ path = "run.sh"
         .unwrap();
         let paths = Paths::with_root(temporary.path().join("loadbot-home"));
         let mut prompt = FakePrompt {
-            selections: [Some("broken-tool".to_owned())].into(),
+            selections: [Some("demo".to_owned()), Some("broken-tool".to_owned())].into(),
             ..FakePrompt::default()
         };
 
         let error = run_interactive_from(&paths, &mut prompt, &shortcut_path).unwrap_err();
-        assert!(prompt.displayed[0].contains(&"broken-tool".to_owned()));
+        assert!(prompt.displayed[0].contains(&"demo".to_owned()));
+        assert!(prompt.displayed[1].contains(&"broken-tool".to_owned()));
         assert!(format!("{error:#}").contains("shortcut 'broken-tool' is broken"));
         assert!(format!("{error:#}").contains("catalog 'missing-catalog' is not configured"));
     }
@@ -702,5 +1010,34 @@ path = "run.sh"
         symlink(&outside, root.join("escape.sh")).unwrap();
 
         assert!(safe_target(&root, Path::new("escape.sh")).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn explicit_bash_runner_runs_non_executable_script_with_bash_from_tool_root() {
+        let temporary = tempfile::TempDir::new().unwrap();
+        let root = temporary.path();
+        fs::create_dir(root.join("scripts")).unwrap();
+        let script = root.join("scripts/run.sh");
+        fs::write(&script, "[[ -d scripts ]] && printf bash > runner-result\n").unwrap();
+
+        launch_with_runner(&script, root, Runner::Bash).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(root.join("runner-result")).unwrap(),
+            "bash"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn direct_runner_does_not_guess_an_interpreter_for_non_executable_scripts() {
+        let temporary = tempfile::TempDir::new().unwrap();
+        let script = temporary.path().join("run.sh");
+        fs::write(&script, "exit 0\n").unwrap();
+
+        let error = launch_with_runner(&script, temporary.path(), Runner::Direct).unwrap_err();
+
+        assert!(format!("{error:#}").contains("could not launch"));
     }
 }

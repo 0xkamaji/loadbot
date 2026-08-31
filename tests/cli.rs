@@ -626,6 +626,22 @@ fn tool_clone_status_update_and_dirty_refusal_remain_safe() {
     assert_success_ref(&status);
     assert!(stdout(&status).contains("Catalog: personal"));
     assert!(stdout(&status).contains("Working tree: clean"));
+    assert!(stdout(&status).contains("Fetch URL:"));
+    assert!(stdout(&status).contains("Push URL:"));
+    assert!(stdout(&status).contains("(uses fetch URL)"));
+
+    let installed = fixture.home.join("tools/personal/demo");
+    git(
+        [
+            "config",
+            "remote.origin.pushurl",
+            "git@example.test:owner/demo.git",
+        ],
+        Some(&installed),
+    );
+    let push_status = fixture.loadbot(["status", "demo"]);
+    assert_success_ref(&push_status);
+    assert!(stdout(&push_status).contains("Push URL: git@example.test:owner/demo.git"));
 
     fs::write(fixture.tool.source.join("update.txt"), "update\n").unwrap();
     commit_and_push(&fixture.tool.source, "tool update");

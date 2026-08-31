@@ -7,6 +7,7 @@ use anyhow::{Context, Result, bail};
 use crate::catalog::{self, CatalogFile, ResolvedTool, ToolConfig};
 use crate::config::{self, CatalogSource, LocalConfig};
 use crate::git;
+use crate::interactive::{Prompt, TerminalPrompt, terminal_is_interactive};
 use crate::paths::{self, Paths};
 
 pub fn catalog_add(paths: &Paths, name: &str, url: String, writable: bool) -> Result<()> {
@@ -358,7 +359,7 @@ pub fn catalog_status(paths: &Paths, name: &str) -> Result<()> {
 
     println!("Name: {name}");
     println!("Path: {}", destination.display());
-    println!("Configured URL: {}", source.url);
+    println!("Catalog fetch URL: {}", source.url);
     println!("Writable: {}", if source.writable { "yes" } else { "no" });
 
     let is_repository = path_exists(&destination) && git::is_repository(&destination)?;
@@ -377,14 +378,22 @@ pub fn catalog_status(paths: &Paths, name: &str) -> Result<()> {
             if repository.dirty { "dirty" } else { "clean" }
         );
         println!(
-            "Origin URL: {}",
+            "Fetch URL: {}",
             repository.origin.as_deref().unwrap_or("(none)")
         );
+        if let Some(push_url) = repository.push_url.as_deref() {
+            println!("Push URL: {push_url}");
+        } else if let Some(fetch_url) = repository.origin.as_deref() {
+            println!("Push URL: {fetch_url} (uses fetch URL)");
+        } else {
+            println!("Push URL: (none)");
+        }
     } else {
         println!("Current branch: -");
         println!("Current commit: -");
         println!("Working tree: -");
-        println!("Origin URL: -");
+        println!("Fetch URL: -");
+        println!("Push URL: -");
     }
 
     let catalog_path = paths.catalog_file(name);
@@ -567,24 +576,72 @@ pub fn tool_list(paths: &Paths) -> Result<()> {
 }
 
 pub fn tool_pull(paths: &Paths, name: &str, catalog_name: Option<&str>) -> Result<()> {
+    let mut prompt = TerminalPrompt;
+    tool_pull_with(
+        paths,
+        name,
+        catalog_name,
+        terminal_is_interactive(),
+        &mut prompt,
+        git::verified_rot_identities,
+        git::clone_repository,
+    )
+}
+
+fn tool_pull_with<P, I, C>(
+    paths: &Paths,
+    name: &str,
+    catalog_name: Option<&str>,
+    interactive: bool,
+    prompt: &mut P,
+    mut identities: I,
+    mut clone_repository: C,
+) -> Result<()>
+where
+    P: Prompt,
+    I: FnMut() -> Result<Vec<git::RotIdentity>>,
+    C: FnMut(&str, Option<&str>, &Path) -> Result<()>,
+{
     let tool = resolve_tool(paths, name, catalog_name)?;
     let destination = paths.tool(&tool.catalog, &tool.name)?;
     if path_exists(&destination) {
-        if git::is_expected_repository(&destination, &tool.definition.url)? {
+        if !git::is_repository(&destination)? {
+            bail!("destination exists but is not a Git repository");
+        }
+        let repository_match =
+            repository_match_with_identities(&destination, &tool.definition.url, &mut identities)?;
+        if repository_match == git::RepositoryMatch::Exact {
             println!("tool '{name}' is already installed");
+            offer_ssh_push(
+                &destination,
+                &tool.definition.url,
+                interactive,
+                prompt,
+                &mut identities,
+            )?;
             return Ok(());
         }
-        if git::is_repository(&destination)? {
-            bail!("destination exists but is not the configured Git repository");
+        if repository_match == git::RepositoryMatch::EquivalentGithub {
+            return reconcile_existing_checkout(
+                &destination,
+                name,
+                &tool.definition.url,
+                interactive,
+                prompt,
+            );
         }
-        bail!("destination exists but is not a Git repository");
+        let actual = git::fetch_url(&destination)?.unwrap_or_else(|| "(none)".to_owned());
+        bail!(
+            "destination exists but is not the configured Git repository\nFetch URL: {actual}\nCatalog URL: {}",
+            tool.definition.url
+        );
     }
 
     let parent = destination
         .parent()
         .context("tool destination has no parent directory")?;
     fs::create_dir_all(parent).with_context(|| format!("could not create {}", parent.display()))?;
-    if let Err(error) = git::clone_repository(
+    if let Err(error) = clone_repository(
         &tool.definition.url,
         tool.definition.revision.as_deref(),
         &destination,
@@ -592,7 +649,109 @@ pub fn tool_pull(paths: &Paths, name: &str, catalog_name: Option<&str>) -> Resul
         cleanup_failed_clone(&destination);
         return Err(error).context(format!("could not clone tool '{name}'"));
     }
+    if !git::is_expected_repository(&destination, &tool.definition.url)? {
+        bail!("cloned tool is not the configured Git repository");
+    }
     println!("installed tool '{name}' at {}", destination.display());
+    offer_ssh_push(
+        &destination,
+        &tool.definition.url,
+        interactive,
+        prompt,
+        &mut identities,
+    )?;
+    Ok(())
+}
+
+fn repository_match_with_identities<I>(
+    destination: &Path,
+    configured_url: &str,
+    identities: &mut I,
+) -> Result<git::RepositoryMatch>
+where
+    I: FnMut() -> Result<Vec<git::RotIdentity>>,
+{
+    let direct = git::repository_match(destination, configured_url, &[])?;
+    if direct != git::RepositoryMatch::Mismatch {
+        return Ok(direct);
+    }
+    let aliases = identities()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|identity| identity.alias)
+        .collect::<Vec<_>>();
+    git::repository_match(destination, configured_url, &aliases)
+}
+
+fn offer_ssh_push<P, I>(
+    destination: &Path,
+    canonical_url: &str,
+    interactive: bool,
+    prompt: &mut P,
+    identities: &mut I,
+) -> Result<()>
+where
+    P: Prompt,
+    I: FnMut() -> Result<Vec<git::RotIdentity>>,
+{
+    if !interactive
+        || git::push_url(destination)?.is_some()
+        || git::github_ssh_push_url(canonical_url, "placeholder").is_none()
+    {
+        return Ok(());
+    }
+    let Ok(available) = identities() else {
+        return Ok(());
+    };
+    if available.is_empty()
+        || prompt.confirm("Configure SSH for pushes on this machine?", false)? != Some(true)
+    {
+        return Ok(());
+    }
+    let identity = git::select_verified_rot_identity(available, prompt)?;
+    let push_url = git::github_ssh_push_url(canonical_url, &identity.alias)
+        .context("could not derive the GitHub SSH push URL")?;
+    git::set_push_url(destination, &push_url)?;
+    println!("configured SSH push URL: {push_url}");
+    Ok(())
+}
+
+fn reconcile_existing_checkout<P: Prompt>(
+    destination: &Path,
+    name: &str,
+    canonical_url: &str,
+    interactive: bool,
+    prompt: &mut P,
+) -> Result<()> {
+    let existing_fetch = git::fetch_url(destination)?.context("repository has no origin URL")?;
+    if !interactive {
+        bail!(
+            "destination is the configured GitHub repository but uses a different transport\nFetch URL: {existing_fetch}\nCatalog URL: {canonical_url}\nRun 'loadbot pull {name}' interactively to reconcile its fetch and push URLs."
+        );
+    }
+    if prompt.confirm(
+        "This checkout is the configured GitHub repository but uses SSH for fetches.\nUse the catalog HTTPS URL for fetches and keep SSH for pushes?",
+        false,
+    )? != Some(true)
+    {
+        bail!(
+            "repository URL mismatch was not changed\nFetch URL: {existing_fetch}\nCatalog URL: {canonical_url}"
+        );
+    }
+    if let Some(existing_push) = git::push_url(destination)?
+        && existing_push != existing_fetch
+        && prompt.confirm(
+            &format!("Replace existing push URL '{existing_push}' with '{existing_fetch}'?"),
+            false,
+        )? != Some(true)
+    {
+        bail!("existing push URL was preserved; repository URLs were not changed");
+    }
+    git::reconcile_remote(destination, canonical_url, &existing_fetch)?;
+    if !git::is_expected_repository(destination, canonical_url)? {
+        bail!("reconciled repository did not match the catalog URL");
+    }
+    println!("reconciled tool '{name}' fetch and push URLs");
     Ok(())
 }
 
@@ -606,6 +765,11 @@ pub fn tool_update(paths: &Paths, name: &str, catalog_name: Option<&str>) -> Res
         bail!("destination exists but is not a Git repository");
     }
     if !git::is_expected_repository(&destination, &tool.definition.url)? {
+        if equivalent_github_checkout(&destination, &tool.definition.url)? {
+            bail!(
+                "destination uses a different transport for the configured GitHub repository; run 'loadbot pull {name}' interactively to reconcile its fetch and push URLs"
+            );
+        }
         bail!("destination is not the configured Git repository");
     }
 
@@ -635,7 +799,7 @@ pub fn tool_status(paths: &Paths, name: &str, catalog_name: Option<&str>) -> Res
             "no"
         }
     );
-    println!("Configured URL: {}", tool.definition.url);
+    println!("Catalog fetch URL: {}", tool.definition.url);
     println!(
         "Configured revision: {}",
         tool.definition.revision.as_deref().unwrap_or("(default)")
@@ -656,14 +820,22 @@ pub fn tool_status(paths: &Paths, name: &str, catalog_name: Option<&str>) -> Res
             if repository.dirty { "dirty" } else { "clean" }
         );
         println!(
-            "Origin URL: {}",
+            "Fetch URL: {}",
             repository.origin.as_deref().unwrap_or("(none)")
         );
+        if let Some(push_url) = repository.push_url.as_deref() {
+            println!("Push URL: {push_url}");
+        } else if let Some(fetch_url) = repository.origin.as_deref() {
+            println!("Push URL: {fetch_url} (uses fetch URL)");
+        } else {
+            println!("Push URL: (none)");
+        }
     } else {
         println!("Current branch: -");
         println!("Current commit: -");
         println!("Working tree: -");
-        println!("Origin URL: -");
+        println!("Fetch URL: -");
+        println!("Push URL: -");
     }
     Ok(())
 }
@@ -684,9 +856,33 @@ pub fn installed_tool_path(paths: &Paths, name: &str, catalog_name: &str) -> Res
         bail!("installed tool destination is not a Git repository");
     }
     if !git::is_expected_repository(&destination, &tool.definition.url)? {
+        if equivalent_github_checkout(&destination, &tool.definition.url)? {
+            bail!(
+                "installed tool destination uses a different transport for the configured GitHub repository\nRun 'loadbot pull {name}' interactively to reconcile its fetch and push URLs."
+            );
+        }
         bail!("installed tool destination is not the configured Git repository");
     }
     Ok(destination)
+}
+
+fn equivalent_github_checkout(destination: &Path, configured_url: &str) -> Result<bool> {
+    let direct = git::repository_match(destination, configured_url, &[])?;
+    if direct == git::RepositoryMatch::EquivalentGithub {
+        return Ok(true);
+    }
+    if direct != git::RepositoryMatch::Mismatch {
+        return Ok(false);
+    }
+    let aliases = git::verified_rot_identities()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|identity| identity.alias)
+        .collect::<Vec<_>>();
+    Ok(
+        git::repository_match(destination, configured_url, &aliases)?
+            == git::RepositoryMatch::EquivalentGithub,
+    )
 }
 
 pub fn installed_tools(paths: &Paths) -> Result<Vec<ResolvedTool>> {
@@ -926,12 +1122,65 @@ fn path_exists(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::VecDeque;
     use std::ffi::OsStr;
     use std::process::Command;
 
     use tempfile::TempDir;
 
     use super::*;
+
+    #[derive(Default)]
+    struct TestPrompt {
+        confirmations: VecDeque<bool>,
+        selection: Option<String>,
+        confirm_calls: usize,
+        select_calls: usize,
+    }
+
+    impl TestPrompt {
+        fn with_confirmations(confirmations: impl IntoIterator<Item = bool>) -> Self {
+            Self {
+                confirmations: confirmations.into_iter().collect(),
+                ..Self::default()
+            }
+        }
+    }
+
+    impl Prompt for TestPrompt {
+        fn input(&mut self, _: &str, _: Option<&str>) -> Result<Option<String>> {
+            unreachable!()
+        }
+
+        fn confirm(&mut self, _: &str, default: bool) -> Result<Option<bool>> {
+            self.confirm_calls += 1;
+            Ok(Some(self.confirmations.pop_front().unwrap_or(default)))
+        }
+
+        fn select(&mut self, _: &str, _: &[String]) -> Result<Option<String>> {
+            self.select_calls += 1;
+            Ok(self.selection.clone())
+        }
+
+        fn message(&mut self, _: &str) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    fn identity(alias: &str, username: &str) -> git::RotIdentity {
+        git::RotIdentity {
+            alias: alias.to_owned(),
+            username: Some(username.to_owned()),
+            verification: "verified".to_owned(),
+        }
+    }
+
+    fn repository_with_origin(base: &Path, origin: &str) -> PathBuf {
+        let repository = base.join("checkout");
+        git(["init", "--quiet", repository.to_str().unwrap()], None);
+        git(["remote", "add", "origin", origin], Some(&repository));
+        repository
+    }
 
     fn git<I, S>(arguments: I, directory: Option<&Path>)
     where
@@ -1007,6 +1256,323 @@ mod tests {
         git(["commit", "-m", "add catalog"], Some(&source));
         git(["push", "origin", "main"], Some(&source));
         remote
+    }
+
+    #[test]
+    fn public_https_push_configuration_is_optional_and_rot_is_not_required() {
+        let temporary = TempDir::new().unwrap();
+        let repository =
+            repository_with_origin(temporary.path(), "https://github.com/owner/repo.git");
+        let mut prompt = TestPrompt::default();
+
+        offer_ssh_push(
+            &repository,
+            "https://github.com/owner/repo.git",
+            true,
+            &mut prompt,
+            &mut || bail!("Rot unavailable"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            git::fetch_url(&repository).unwrap().as_deref(),
+            Some("https://github.com/owner/repo.git")
+        );
+        assert_eq!(git::push_url(&repository).unwrap(), None);
+        assert_eq!(prompt.confirm_calls, 0);
+    }
+
+    #[test]
+    fn public_https_push_configuration_can_be_declined() {
+        let temporary = TempDir::new().unwrap();
+        let repository =
+            repository_with_origin(temporary.path(), "https://github.com/owner/repo.git");
+        let mut prompt = TestPrompt::with_confirmations([false]);
+
+        offer_ssh_push(
+            &repository,
+            "https://github.com/owner/repo.git",
+            true,
+            &mut prompt,
+            &mut || Ok(vec![identity("github-work", "owner")]),
+        )
+        .unwrap();
+
+        assert_eq!(git::push_url(&repository).unwrap(), None);
+        assert_eq!(prompt.confirm_calls, 1);
+    }
+
+    #[test]
+    fn public_https_push_configuration_uses_one_or_selected_rot_identity() {
+        for (identities, selection, expected, expected_selects) in [
+            (
+                vec![identity("github-only", "owner")],
+                None,
+                "git@github-only:Owner/Repo.git",
+                0,
+            ),
+            (
+                vec![
+                    identity("github-personal", "owner"),
+                    identity("github-work", "work"),
+                ],
+                Some("github-work -> work".to_owned()),
+                "git@github-work:Owner/Repo.git",
+                1,
+            ),
+        ] {
+            let temporary = TempDir::new().unwrap();
+            let repository =
+                repository_with_origin(temporary.path(), "https://github.com/Owner/Repo.git");
+            let mut prompt = TestPrompt::with_confirmations([true]);
+            prompt.selection = selection;
+
+            offer_ssh_push(
+                &repository,
+                "https://github.com/Owner/Repo.git",
+                true,
+                &mut prompt,
+                &mut || Ok(identities.clone()),
+            )
+            .unwrap();
+
+            assert_eq!(
+                git::push_url(&repository).unwrap().as_deref(),
+                Some(expected)
+            );
+            assert_eq!(prompt.select_calls, expected_selects);
+        }
+    }
+
+    #[test]
+    fn existing_push_url_is_preserved_without_prompting_or_querying_rot() {
+        let temporary = TempDir::new().unwrap();
+        let repository =
+            repository_with_origin(temporary.path(), "https://github.com/owner/repo.git");
+        git::set_push_url(&repository, "git@example.test:owner/repo.git").unwrap();
+        let mut prompt = TestPrompt::default();
+        let mut queries = 0;
+
+        offer_ssh_push(
+            &repository,
+            "https://github.com/owner/repo.git",
+            true,
+            &mut prompt,
+            &mut || {
+                queries += 1;
+                Ok(vec![identity("github-work", "owner")])
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            git::push_url(&repository).unwrap().as_deref(),
+            Some("git@example.test:owner/repo.git")
+        );
+        assert_eq!(queries, 0);
+        assert_eq!(prompt.confirm_calls, 0);
+    }
+
+    #[test]
+    fn approved_github_ssh_transports_reconcile_without_touching_dirty_files() {
+        for (index, origin) in [
+            "git@github.com:owner/repo.git",
+            "ssh://git@github.com/owner/repo.git",
+            "git@github-work:owner/repo.git",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let temporary = TempDir::new().unwrap();
+            let repository = repository_with_origin(temporary.path(), origin);
+            fs::write(repository.join(format!("dirty-{index}.txt")), "keep\n").unwrap();
+            let before = git::working_tree_changes(&repository).unwrap();
+            let mut prompt = TestPrompt::with_confirmations([true]);
+
+            reconcile_existing_checkout(
+                &repository,
+                "demo",
+                "https://github.com/owner/repo.git",
+                true,
+                &mut prompt,
+            )
+            .unwrap();
+
+            assert_eq!(
+                git::fetch_url(&repository).unwrap().as_deref(),
+                Some("https://github.com/owner/repo.git")
+            );
+            assert_eq!(git::push_url(&repository).unwrap().as_deref(), Some(origin));
+            assert_eq!(git::working_tree_changes(&repository).unwrap(), before);
+        }
+    }
+
+    #[test]
+    fn declined_and_noninteractive_reconciliation_change_nothing() {
+        for (interactive, confirmations, expected) in [
+            (true, vec![false], "mismatch was not changed"),
+            (false, Vec::new(), "interactively to reconcile"),
+        ] {
+            let temporary = TempDir::new().unwrap();
+            let origin = "git@github.com:owner/repo.git";
+            let repository = repository_with_origin(temporary.path(), origin);
+            let mut prompt = TestPrompt::with_confirmations(confirmations);
+
+            let error = reconcile_existing_checkout(
+                &repository,
+                "demo",
+                "https://github.com/owner/repo.git",
+                interactive,
+                &mut prompt,
+            )
+            .unwrap_err();
+
+            assert!(error.to_string().contains(expected));
+            assert_eq!(
+                git::fetch_url(&repository).unwrap().as_deref(),
+                Some(origin)
+            );
+            assert_eq!(git::push_url(&repository).unwrap(), None);
+        }
+    }
+
+    #[test]
+    fn reconciliation_never_silently_overwrites_an_existing_push_url() {
+        let temporary = TempDir::new().unwrap();
+        let origin = "git@github.com:owner/repo.git";
+        let repository = repository_with_origin(temporary.path(), origin);
+        git::set_push_url(&repository, "git@other:owner/repo.git").unwrap();
+        let mut prompt = TestPrompt::with_confirmations([true, false]);
+
+        let error = reconcile_existing_checkout(
+            &repository,
+            "demo",
+            "https://github.com/owner/repo.git",
+            true,
+            &mut prompt,
+        )
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("existing push URL was preserved")
+        );
+        assert_eq!(
+            git::fetch_url(&repository).unwrap().as_deref(),
+            Some(origin)
+        );
+        assert_eq!(
+            git::push_url(&repository).unwrap().as_deref(),
+            Some("git@other:owner/repo.git")
+        );
+    }
+
+    #[test]
+    fn private_ssh_catalog_urls_do_not_offer_a_separate_push_url() {
+        let temporary = TempDir::new().unwrap();
+        let origin = "git@github.com:owner/private.git";
+        let repository = repository_with_origin(temporary.path(), origin);
+        let mut prompt = TestPrompt::default();
+        let mut queries = 0;
+
+        offer_ssh_push(&repository, origin, true, &mut prompt, &mut || {
+            queries += 1;
+            Ok(vec![identity("github-work", "owner")])
+        })
+        .unwrap();
+
+        assert_eq!(
+            git::fetch_url(&repository).unwrap().as_deref(),
+            Some(origin)
+        );
+        assert_eq!(git::push_url(&repository).unwrap(), None);
+        assert_eq!(queries, 0);
+        assert_eq!(prompt.confirm_calls, 0);
+    }
+
+    #[test]
+    fn launcher_validation_points_equivalent_checkouts_to_interactive_pull() {
+        let temporary = TempDir::new().unwrap();
+        let paths = Paths::with_root(temporary.path().join("loadbot"));
+        let catalog_remote = valid_catalog_remote(temporary.path(), "launcher-catalog");
+        catalog_add(
+            &paths,
+            "personal",
+            catalog_remote.display().to_string(),
+            false,
+        )
+        .unwrap();
+        fs::write(
+            paths.catalog_file("personal"),
+            "version = 1\n\n[tools.demo]\ntype = \"git\"\nurl = \"https://github.com/owner/repo.git\"\n",
+        )
+        .unwrap();
+        fs::create_dir_all(paths.tools().join("personal")).unwrap();
+        let checkout = repository_with_origin(
+            &paths.tools().join("personal"),
+            "git@github.com:owner/repo.git",
+        );
+        fs::rename(checkout, paths.tool("personal", "demo").unwrap()).unwrap();
+
+        let error = installed_tool_path(&paths, "demo", "personal").unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("Run 'loadbot pull demo' interactively")
+        );
+        assert_eq!(
+            git::fetch_url(&paths.tool("personal", "demo").unwrap())
+                .unwrap()
+                .as_deref(),
+            Some("git@github.com:owner/repo.git")
+        );
+    }
+
+    #[test]
+    fn new_public_https_clone_succeeds_without_rot_and_keeps_canonical_fetch() {
+        let temporary = TempDir::new().unwrap();
+        let paths = Paths::with_root(temporary.path().join("loadbot"));
+        let catalog_remote = valid_catalog_remote(temporary.path(), "public-tool-catalog");
+        catalog_add(
+            &paths,
+            "personal",
+            catalog_remote.display().to_string(),
+            false,
+        )
+        .unwrap();
+        let canonical = "https://github.com/owner/repo.git";
+        fs::write(
+            paths.catalog_file("personal"),
+            format!("version = 1\n\n[tools.demo]\ntype = \"git\"\nurl = {canonical:?}\n"),
+        )
+        .unwrap();
+        let mut prompt = TestPrompt::default();
+
+        tool_pull_with(
+            &paths,
+            "demo",
+            Some("personal"),
+            true,
+            &mut prompt,
+            || bail!("Rot unavailable"),
+            |url, _, destination| {
+                fs::create_dir(destination).unwrap();
+                git(["init", "--quiet"], Some(destination));
+                git(["remote", "add", "origin", url], Some(destination));
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        let destination = paths.tool("personal", "demo").unwrap();
+        assert_eq!(
+            git::fetch_url(&destination).unwrap().as_deref(),
+            Some(canonical)
+        );
+        assert_eq!(git::push_url(&destination).unwrap(), None);
+        assert_eq!(prompt.confirm_calls, 0);
     }
 
     #[test]

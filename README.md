@@ -143,6 +143,13 @@ fails specifically with public-key authentication, Loadbot can query
 `rot ssh identities --json` and retry with a verified Rot-managed SSH alias.
 Loadbot does not manage credentials, keys, SSH configuration, or Git accounts.
 
+Catalog Git URLs are portable canonical fetch URLs. For a public GitHub HTTPS
+tool, interactive `loadbot pull` can use a verified Rot-managed host alias to
+set a machine-local `remote.origin.pushurl` while leaving `remote.origin.url`
+and `catalog.toml` unchanged. This affects only that checkout and does not
+change other machines or global Git configuration. Private tools whose
+canonical catalog URL is SSH continue to use SSH for fetching and pushing.
+
 ## Global Options
 
 ```bash
@@ -507,6 +514,17 @@ Behavior:
 - Behaves idempotently when the expected repository is already installed.
 - Cleans up only a destination newly created by its own failed clone.
 - Never executes downloaded repository content.
+- For public GitHub HTTPS tools, may interactively offer to configure an SSH
+  push URL from a verified Rot identity; the default answer is No.
+- Can interactively reconcile an equivalent GitHub SSH origin into the exact
+  catalog HTTPS fetch URL while preserving the old SSH URL for pushes.
+- Never reconciles unknown SSH aliases, different owners, different
+  repositories, or non-GitHub hosts.
+
+The SSH push setting is local to the installed repository. Noninteractive
+pulls never prompt or change remotes, and a declined reconciliation reports
+both URLs without modifying the checkout. Existing separate push URLs are
+preserved unless an explicit replacement is confirmed.
 
 When the name is omitted in an interactive terminal, Loadbot presents catalog-qualified selections such as `personal/re-toolkit`.
 
@@ -557,7 +575,12 @@ Shows a tool definition and its local Git state:
 - Current branch
 - Current commit
 - Clean or dirty working tree
-- Actual origin URL
+- Actual fetch URL
+- Effective push URL
+
+`Fetch URL:` is the repository's `remote.origin.url`. `Push URL:` shows
+`remote.origin.pushurl` when configured; otherwise it shows the fetch URL and
+notes that pushes use it.
 
 ```bash
 loadbot status re-toolkit

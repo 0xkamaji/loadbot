@@ -11,10 +11,10 @@ use crate::interactive::{Prompt, TerminalPrompt, terminal_is_interactive};
 const ROT_IDENTITY_VERSION: u32 = 1;
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
-struct RotIdentity {
-    alias: String,
-    username: Option<String>,
-    verification: String,
+pub(crate) struct RotIdentity {
+    pub(crate) alias: String,
+    pub(crate) username: Option<String>,
+    pub(crate) verification: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -29,6 +29,20 @@ pub struct RepositoryStatus {
     pub commit: Option<String>,
     pub dirty: bool,
     pub origin: Option<String>,
+    pub push_url: Option<String>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum RepositoryMatch {
+    Exact,
+    EquivalentGithub,
+    Mismatch,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct GithubRepository {
+    owner: String,
+    name: String,
 }
 
 pub fn clone_repository(url: &str, revision: Option<&str>, destination: &Path) -> Result<()> {
@@ -48,7 +62,7 @@ pub fn is_expected_repository(path: &Path, configured_url: &str) -> Result<bool>
     if !path.is_dir() || !is_repository(path)? {
         return Ok(false);
     }
-    let Some(origin) = origin_url(path)? else {
+    let Some(origin) = fetch_url(path)? else {
         return Ok(false);
     };
     Ok(urls_match(&origin, configured_url))
@@ -98,6 +112,7 @@ pub fn status(path: &Path) -> Result<RepositoryStatus> {
         commit,
         dirty: !porcelain.is_empty(),
         origin: origin_url(path)?,
+        push_url: push_url(path)?,
     })
 }
 
@@ -225,14 +240,152 @@ pub fn push_origin(path: &Path) -> Result<()> {
 }
 
 pub fn origin_url(path: &Path) -> Result<Option<String>> {
+    fetch_url(path)
+}
+
+pub fn fetch_url(path: &Path) -> Result<Option<String>> {
+    configured_remote_url(path, false)
+}
+
+pub fn push_url(path: &Path) -> Result<Option<String>> {
     let output = raw_output([
         OsStr::new("-C"),
         path.as_os_str(),
-        OsStr::new("remote"),
-        OsStr::new("get-url"),
-        OsStr::new("origin"),
+        OsStr::new("config"),
+        OsStr::new("--get"),
+        OsStr::new("remote.origin.pushurl"),
     ])?;
     Ok(output.status.success().then(|| stdout_text(&output)))
+}
+
+pub fn repository_match(
+    path: &Path,
+    configured_url: &str,
+    verified_aliases: &[String],
+) -> Result<RepositoryMatch> {
+    let Some(actual_url) = fetch_url(path)? else {
+        return Ok(RepositoryMatch::Mismatch);
+    };
+    if urls_match(&actual_url, configured_url) {
+        return Ok(RepositoryMatch::Exact);
+    }
+    let Some(configured) = github_https_repository(configured_url) else {
+        return Ok(RepositoryMatch::Mismatch);
+    };
+    let Some(actual) = github_ssh_repository(&actual_url, verified_aliases) else {
+        return Ok(RepositoryMatch::Mismatch);
+    };
+    if actual.owner.eq_ignore_ascii_case(&configured.owner)
+        && actual.name.eq_ignore_ascii_case(&configured.name)
+    {
+        Ok(RepositoryMatch::EquivalentGithub)
+    } else {
+        Ok(RepositoryMatch::Mismatch)
+    }
+}
+
+pub fn verified_rot_identities() -> Result<Vec<RotIdentity>> {
+    query_rot_identities()
+}
+
+pub fn select_verified_rot_identity<P: Prompt>(
+    identities: Vec<RotIdentity>,
+    prompt: &mut P,
+) -> Result<RotIdentity> {
+    select_rot_identity(identities, true, prompt)
+}
+
+pub fn github_ssh_push_url(canonical_url: &str, alias: &str) -> Option<String> {
+    let repository = github_https_repository(canonical_url)?;
+    valid_ssh_alias(alias)
+        .then(|| format!("git@{alias}:{}/{}.git", repository.owner, repository.name))
+}
+
+pub fn set_push_url(path: &Path, url: &str) -> Result<()> {
+    set_remote_url(path, "remote.origin.pushurl", url)
+}
+
+pub fn reconcile_remote(path: &Path, fetch: &str, push: &str) -> Result<()> {
+    let old_fetch = fetch_url(path)?;
+    let old_push = push_url(path)?;
+    let result = (|| {
+        set_remote_url(path, "remote.origin.pushurl", push)?;
+        set_remote_url(path, "remote.origin.url", fetch)?;
+        if fetch_url(path)?.as_deref() != Some(fetch) || push_url(path)?.as_deref() != Some(push) {
+            bail!("Git did not retain the requested fetch and push URLs");
+        }
+        Ok(())
+    })();
+    if let Err(error) = result {
+        restore_remote_url(path, "remote.origin.url", old_fetch.as_deref());
+        restore_remote_url(path, "remote.origin.pushurl", old_push.as_deref());
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn set_remote_url(path: &Path, key: &str, url: &str) -> Result<()> {
+    checked_output([
+        OsStr::new("-C"),
+        path.as_os_str(),
+        OsStr::new("config"),
+        OsStr::new("--local"),
+        OsStr::new("--replace-all"),
+        OsStr::new(key),
+        OsStr::new(url),
+    ])?;
+    Ok(())
+}
+
+fn restore_remote_url(path: &Path, key: &str, url: Option<&str>) {
+    let mut arguments = vec![
+        OsString::from("-C"),
+        path.as_os_str().to_owned(),
+        OsString::from("config"),
+        OsString::from("--local"),
+    ];
+    if let Some(url) = url {
+        arguments.extend([
+            OsString::from("--replace-all"),
+            OsString::from(key),
+            OsString::from(url),
+        ]);
+    } else {
+        arguments.extend([OsString::from("--unset-all"), OsString::from(key)]);
+    }
+    let _ = raw_output(arguments);
+}
+
+fn github_https_repository(url: &str) -> Option<GithubRepository> {
+    github_repository_path(url.strip_prefix("https://github.com/")?)
+}
+
+fn github_ssh_repository(url: &str, verified_aliases: &[String]) -> Option<GithubRepository> {
+    if let Some(path) = url.strip_prefix("git@github.com:") {
+        return github_repository_path(path);
+    }
+    if let Some(path) = url.strip_prefix("ssh://git@github.com/") {
+        return github_repository_path(path);
+    }
+    let path = url.strip_prefix("git@")?;
+    let (host, path) = path.split_once(':')?;
+    verified_aliases
+        .iter()
+        .any(|alias| alias == host)
+        .then(|| github_repository_path(path))?
+}
+
+fn github_repository_path(path: &str) -> Option<GithubRepository> {
+    let path = path.trim_end_matches('/');
+    let path = path.strip_suffix(".git").unwrap_or(path);
+    let (owner, name) = path.split_once('/')?;
+    if owner.is_empty() || name.is_empty() || name.contains('/') {
+        return None;
+    }
+    Some(GithubRepository {
+        owner: owner.to_owned(),
+        name: name.to_owned(),
+    })
 }
 
 fn query(path: &Path, arguments: &[&str]) -> Result<String> {
@@ -579,6 +732,139 @@ mod tests {
     }
 
     #[test]
+    fn github_repository_identity_accepts_only_approved_transports_and_aliases() {
+        let configured = github_https_repository("https://github.com/Owner/Repo.git").unwrap();
+        for actual in [
+            "git@github.com:owner/repo.git",
+            "ssh://git@github.com/OWNER/REPO.git",
+            "git@github-work:Owner/Repo.git",
+        ] {
+            let parsed = github_ssh_repository(actual, &["github-work".to_owned()]).unwrap();
+            assert!(parsed.owner.eq_ignore_ascii_case(&configured.owner));
+            assert!(parsed.name.eq_ignore_ascii_case(&configured.name));
+        }
+
+        assert!(github_ssh_repository("git@unknown:Owner/Repo.git", &[]).is_none());
+        assert!(github_ssh_repository("git@gitlab.com:Owner/Repo.git", &[]).is_none());
+        assert!(github_https_repository("https://example.com/Owner/Repo.git").is_none());
+    }
+
+    #[test]
+    fn github_repository_identity_keeps_owner_and_repository_boundaries() {
+        let configured = github_https_repository("https://github.com/owner/repo.git").unwrap();
+        let other_owner = github_ssh_repository("git@github.com:other/repo.git", &[]).unwrap();
+        let other_repo = github_ssh_repository("git@github.com:owner/other.git", &[]).unwrap();
+
+        assert_ne!(configured, other_owner);
+        assert_ne!(configured, other_repo);
+        assert!(github_repository_path("owner/nested/repo.git").is_none());
+    }
+
+    #[test]
+    fn github_push_url_uses_the_verified_alias_and_canonical_path() {
+        assert_eq!(
+            github_ssh_push_url("https://github.com/0xkamaji/rot-tools.git", "github-kamaji"),
+            Some("git@github-kamaji:0xkamaji/rot-tools.git".to_owned())
+        );
+        assert_eq!(
+            github_ssh_push_url("git@github.com:0xkamaji/private.git", "github-kamaji"),
+            None
+        );
+        assert_eq!(
+            github_ssh_push_url("https://github.com/owner/repo.git", "bad alias"),
+            None
+        );
+    }
+
+    #[test]
+    fn repository_match_requires_verified_rot_alias_and_exact_identity() {
+        if raw_output([OsStr::new("--version")]).is_err() {
+            return;
+        }
+        let temporary = tempfile::tempdir().unwrap();
+        let repository = temporary.path();
+        checked_output([
+            OsStr::new("init"),
+            OsStr::new("--quiet"),
+            repository.as_os_str(),
+        ])
+        .unwrap();
+        set_remote_url(
+            repository,
+            "remote.origin.url",
+            "git@github-work:owner/repo.git",
+        )
+        .unwrap();
+
+        assert_eq!(
+            repository_match(
+                repository,
+                "https://github.com/owner/repo.git",
+                &["github-work".to_owned()]
+            )
+            .unwrap(),
+            RepositoryMatch::EquivalentGithub
+        );
+        assert_eq!(
+            repository_match(repository, "https://github.com/owner/repo.git", &[]).unwrap(),
+            RepositoryMatch::Mismatch
+        );
+        assert_eq!(
+            repository_match(
+                repository,
+                "https://github.com/different/repo.git",
+                &["github-work".to_owned()]
+            )
+            .unwrap(),
+            RepositoryMatch::Mismatch
+        );
+    }
+
+    #[test]
+    fn remote_reconciliation_changes_only_fetch_and_push_configuration() {
+        if raw_output([OsStr::new("--version")]).is_err() {
+            return;
+        }
+        let temporary = tempfile::tempdir().unwrap();
+        let repository = temporary.path();
+        checked_output([
+            OsStr::new("init"),
+            OsStr::new("--quiet"),
+            repository.as_os_str(),
+        ])
+        .unwrap();
+        set_remote_url(
+            repository,
+            "remote.origin.url",
+            "git@github.com:owner/repo.git",
+        )
+        .unwrap();
+        fs::write(repository.join("dirty.txt"), "preserve\n").unwrap();
+        let before = working_tree_changes(repository).unwrap();
+
+        reconcile_remote(
+            repository,
+            "https://github.com/owner/repo.git",
+            "git@github.com:owner/repo.git",
+        )
+        .unwrap();
+
+        assert_eq!(
+            fetch_url(repository).unwrap().as_deref(),
+            Some("https://github.com/owner/repo.git")
+        );
+        assert_eq!(
+            push_url(repository).unwrap().as_deref(),
+            Some("git@github.com:owner/repo.git")
+        );
+        assert_eq!(working_tree_changes(repository).unwrap(), before);
+        assert_eq!(
+            fs::read_to_string(repository.join("dirty.txt")).unwrap(),
+            "preserve\n"
+        );
+    }
+
+    #[test]
     fn https_and_non_github_urls_never_receive_ssh_rewrites() {
         assert_eq!(
             runtime_url_rewrite("https://github.com/owner/repo.git", "github-work"),
@@ -887,7 +1173,7 @@ mod tests {
         );
         assert_eq!(
             origin_url(repository).unwrap().as_deref(),
-            Some("git@existing:owner/repo.git")
+            Some("git@github.com:owner/repo.git")
         );
     }
 }

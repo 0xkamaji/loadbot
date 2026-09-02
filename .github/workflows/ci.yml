@@ -10,6 +10,12 @@ on:
 permissions:
   contents: read
 
+env:
+  GIT_AUTHOR_NAME: Loadbot Tests
+  GIT_AUTHOR_EMAIL: loadbot@example.test
+  GIT_COMMITTER_NAME: Loadbot Tests
+  GIT_COMMITTER_EMAIL: loadbot@example.test
+
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true

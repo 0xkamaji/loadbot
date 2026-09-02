@@ -55,7 +55,7 @@ The Loadbot executable and Loadbot source repository do not have to live beneath
 
 ## Build and Install
 
-Loadbot requires Git, Rust, and Cargo. Cargo downloads the crate dependencies declared by `Cargo.toml` and `Cargo.lock`; the setup scripts do not install individual Rust crates.
+Loadbot requires Git and a Rust toolchain with Cargo 1.85 or newer because the crate uses Rust edition 2024. Cargo downloads the crate dependencies declared by `Cargo.toml` and `Cargo.lock`; the setup scripts do not install individual Rust crates.
 
 ```bash
 cargo build --release
@@ -73,7 +73,7 @@ Native Windows PowerShell users can run:
 .\setup.ps1
 ```
 
-The setup scripts display a consolidated plan before changing PATH, a profile, or system prerequisites. Automatic prerequisite installation is limited to `apt-get` on Ubuntu/Debian, `pacman` on Arch/CachyOS, and Winget on native Windows. The exact package command, package list, and elevation behavior are displayed first, and package installation always requires an explicit `Install these prerequisites? [y/N]` confirmation. A noninteractive setup with missing prerequisites prints the required command and exits. Unsupported package managers receive manual guidance and are never guessed.
+The setup scripts display a consolidated plan before changing PATH, a profile, or system prerequisites. On Linux, `apt-get` on Ubuntu/Debian and `pacman` on Arch/CachyOS install only missing system utilities such as Git or curl. Missing or outdated Rust is installed with rustup so an old distro Cargo package cannot silently break the build. Native Windows uses Winget and rustup. The commands, package list, and elevation behavior are displayed first, and prerequisite changes always require an explicit `Install/update these prerequisites? [y/N]` confirmation. A noninteractive setup that needs prerequisite changes prints the plan and exits. Unsupported package managers receive manual guidance and are never guessed.
 
 Linux setup installs beneath `${CARGO_HOME:-$HOME/.cargo}`, adds its `bin` directory and the appropriate generated completion to one of these login-shell files, and leaves other shells untouched:
 
@@ -92,10 +92,14 @@ Users who decline automatic prerequisite installation can run the displayed comm
 ```bash
 # Ubuntu/Debian (the displayed package list is reduced to missing prerequisites)
 sudo apt-get update
-sudo apt-get install -y git cargo rustc
+sudo apt-get install -y git curl
 
 # Arch/CachyOS (the displayed package list is reduced to missing prerequisites)
-sudo pacman -S --needed git rust cargo
+sudo pacman -S --needed git curl
+
+# When Cargo is missing or older than 1.85, install current stable Rust with rustup.
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path
+source "${CARGO_HOME:-$HOME/.cargo}/env"
 ```
 
 ```powershell

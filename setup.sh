@@ -7,6 +7,9 @@ INSTALL_ROOT=${CARGO_HOME:-"$HOME/.cargo"}
 INSTALL_BIN=$INSTALL_ROOT/bin
 LOADBOT_BIN=$INSTALL_BIN/loadbot
 COMPLETION_DIR=$INSTALL_ROOT/completions
+MIN_CARGO_MAJOR=1
+MIN_CARGO_MINOR=85
+RUSTUP_INIT_URL=https://sh.rustup.rs
 START_MARKER='# >>> loadbot >>>'
 END_MARKER='# <<< loadbot <<<'
 
@@ -31,13 +34,73 @@ command_status() {
     fi
 }
 
-missing_prerequisites() {
+cargo_version() {
+    has_command cargo || return 1
+    cargo --version 2>/dev/null | awk 'NR == 1 { print $2; exit }'
+}
+
+cargo_is_supported() {
+    version=$(cargo_version) || return 1
+    numeric=${version%%-*}
+    major=${numeric%%.*}
+    remainder=${numeric#*.}
+    [ "$remainder" != "$numeric" ] || return 1
+    minor=${remainder%%.*}
+    case "$major" in ''|*[!0-9]*) return 1 ;; esac
+    case "$minor" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$major" -gt "$MIN_CARGO_MAJOR" ] ||
+        { [ "$major" -eq "$MIN_CARGO_MAJOR" ] && [ "$minor" -ge "$MIN_CARGO_MINOR" ]; }
+}
+
+rust_toolchain_status() {
+    if ! has_command cargo || ! has_command rustc; then
+        printf 'missing'
+    elif cargo_is_supported; then
+        printf 'ready'
+    else
+        printf 'outdated'
+    fi
+}
+
+cargo_status() {
+    if ! has_command cargo; then
+        printf 'missing'
+        return
+    fi
+    version=$(cargo_version || true)
+    if cargo_is_supported; then
+        printf 'ready (%s)' "$version"
+    elif [ -n "$version" ]; then
+        printf 'too old or unsupported (%s; need %s.%s+)' "$version" "$MIN_CARGO_MAJOR" "$MIN_CARGO_MINOR"
+    else
+        printf 'version unreadable (need %s.%s+)' "$MIN_CARGO_MAJOR" "$MIN_CARGO_MINOR"
+    fi
+}
+
+rust_action() {
+    [ "$(rust_toolchain_status)" != ready ] || { printf 'none'; return; }
+    if has_command rustup; then
+        printf 'update'
+    else
+        printf 'install'
+    fi
+}
+
+rust_toolchain_signature() {
+    printf '%s|%s|%s|%s' "$(rust_toolchain_status)" "$(cargo_version || true)" \
+        "$(command -v cargo 2>/dev/null || true)" "$(command -v rustup 2>/dev/null || true)"
+}
+
+missing_system_prerequisites() {
     missing=
-    for prerequisite in git cargo rustc; do
+    for prerequisite in git; do
         if ! has_command "$prerequisite"; then
             missing="$missing $prerequisite"
         fi
     done
+    if [ "$(rust_toolchain_status)" != ready ] && ! has_command rustup && ! has_command curl; then
+        missing="$missing curl"
+    fi
     printf '%s' "${missing# }"
 }
 
@@ -89,11 +152,9 @@ package_list() {
     for prerequisite in $prerequisites; do
         case "$manager:$prerequisite" in
             apt-get:git) package=git ;;
-            apt-get:cargo) package=cargo ;;
-            apt-get:rustc) package=rustc ;;
+            apt-get:curl) package=curl ;;
             pacman:git) package=git ;;
-            pacman:cargo) package=cargo ;;
-            pacman:rustc) package=rust ;;
+            pacman:curl) package=curl ;;
             *) continue ;;
         esac
         case " $packages " in
@@ -102,6 +163,34 @@ package_list() {
         esac
     done
     printf '%s' "${packages# }"
+}
+
+install_rust_toolchain() {
+    action=$1
+    if [ "$action" = update ]; then
+        rustup toolchain install stable
+        rustup default stable
+    else
+        temporary=$(mktemp "${TMPDIR:-/tmp}/loadbot-rustup-init.XXXXXX") ||
+            fail "could not create rustup installer temporary file"
+        trap 'rm -f "$temporary"' EXIT HUP INT TERM
+        curl --proto '=https' --tlsv1.2 -sSf "$RUSTUP_INIT_URL" -o "$temporary" ||
+            fail "could not download rustup from $RUSTUP_INIT_URL"
+        sh "$temporary" -y --no-modify-path || fail "rustup installation failed"
+        rm -f "$temporary"
+        trap - EXIT HUP INT TERM
+    fi
+
+    PATH=$INSTALL_BIN:$PATH
+    export PATH
+    has_command rustup || fail "rustup completed, but rustup is not available in $INSTALL_BIN"
+    if [ "$action" = install ]; then
+        rustup default stable
+    fi
+    has_command cargo || fail "rustup completed, but cargo is still unavailable"
+    has_command rustc || fail "rustup completed, but rustc is still unavailable"
+    cargo_is_supported ||
+        fail "rustup completed, but Cargo $(cargo_version || printf unknown) is older than $MIN_CARGO_MAJOR.$MIN_CARGO_MINOR"
 }
 
 shell_quote() {
@@ -280,7 +369,9 @@ if [ -n "$profile_path" ]; then
     profile_before=$(profile_signature "$profile_path")
 fi
 
-missing=$(missing_prerequisites)
+rust_before=$(rust_toolchain_signature)
+toolchain_action=$(rust_action)
+missing=$(missing_system_prerequisites)
 manager=
 packages=
 if [ -n "$missing" ]; then
@@ -294,8 +385,21 @@ say "LOADBOT SETUP PLAN"
 say ""
 say "Prerequisites:"
 printf '  git:   %s\n' "$(command_status git)"
-printf '  cargo: %s\n' "$(command_status cargo)"
+printf '  cargo: %s\n' "$(cargo_status)"
 printf '  rustc: %s\n' "$(command_status rustc)"
+printf '  rustup: %s\n' "$(command_status rustup)"
+if [ "$toolchain_action" != none ]; then
+    say ""
+    say "Rust toolchain:"
+    if [ "$toolchain_action" = update ]; then
+        say "  Update/install stable with the existing rustup"
+        say "  rustup toolchain install stable"
+        say "  rustup default stable"
+    else
+        say "  Install stable with rustup (Cargo $MIN_CARGO_MAJOR.$MIN_CARGO_MINOR+ required)"
+        say "  Download $RUSTUP_INIT_URL over HTTPS, then run it with --no-modify-path"
+    fi
+fi
 say ""
 say "Package manager:"
 say "  ${manager:-none required or supported}"
@@ -327,7 +431,7 @@ fi
 
 if [ -n "$missing" ] && [ -z "$manager" ]; then
     say ""
-    say "Missing prerequisites: $missing"
+    say "Missing system prerequisites: $missing"
     say "No supported package manager applies. Install the missing commands manually and rerun setup."
     say "Supported automatic managers are apt-get on Debian/Ubuntu and pacman on Arch/CachyOS."
     exit 1
@@ -335,12 +439,13 @@ fi
 
 needs_approval=false
 [ -n "$missing" ] && needs_approval=true
+[ "$toolchain_action" != none ] && needs_approval=true
 case "$profile_change" in create|append|replace) needs_approval=true ;; esac
 if [ "$needs_approval" = true ]; then
     if [ ! -t 0 ] || [ ! -t 1 ]; then
-        if [ -n "$missing" ]; then
+        if [ -n "$missing" ] || [ "$toolchain_action" != none ]; then
             say ""
-            say "Noninteractive setup cannot install missing prerequisites. Run the exact command(s) shown above manually, then rerun setup."
+            say "Noninteractive setup cannot install or update prerequisites. Run setup in an interactive terminal."
         else
             say ""
             say "Noninteractive setup cannot approve profile changes. Rerun in an interactive terminal."
@@ -348,8 +453,8 @@ if [ "$needs_approval" = true ]; then
         exit 1
     fi
     say ""
-    if [ -n "$missing" ]; then
-        printf 'Install these prerequisites? [y/N] '
+    if [ -n "$missing" ] || [ "$toolchain_action" != none ]; then
+        printf 'Install/update these prerequisites? [y/N] '
     else
         printf 'Proceed? [y/N] '
     fi
@@ -357,7 +462,8 @@ if [ "$needs_approval" = true ]; then
     case "$answer" in y|Y|yes|YES|Yes) ;; *) say "Setup cancelled; no changes were made."; exit 1 ;; esac
 fi
 
-[ "$(missing_prerequisites)" = "$missing" ] || fail "prerequisite state changed after approval; rerun setup"
+[ "$(missing_system_prerequisites)" = "$missing" ] || fail "prerequisite state changed after approval; rerun setup"
+[ "$(rust_toolchain_signature)" = "$rust_before" ] || fail "Rust toolchain changed after approval; rerun setup"
 if [ -n "$profile_path" ]; then
     [ "$(profile_signature "$profile_path")" = "$profile_before" ] ||
         fail "profile changed after approval; rerun setup"
@@ -373,8 +479,13 @@ if [ -n "$missing" ]; then
             sudo pacman -S --needed $packages
             ;;
     esac
-    remaining=$(missing_prerequisites)
+    remaining=$(missing_system_prerequisites)
     [ -z "$remaining" ] || fail "prerequisite installation completed but these commands remain missing: $remaining"
+fi
+
+if [ "$toolchain_action" != none ]; then
+    say "Installing a supported Rust toolchain with rustup..."
+    install_rust_toolchain "$toolchain_action"
 fi
 
 say "Installing Loadbot from source..."

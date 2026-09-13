@@ -13,7 +13,7 @@ pub enum MainMenuAction {
     List,
     Path,
     Status,
-    AddShortcut,
+    ManageShortcuts,
     ManageCatalogs,
     Exit,
 }
@@ -28,7 +28,7 @@ pub fn collect_main_menu<P: Prompt>(prompt: &mut P) -> Result<Option<MainMenuAct
         ("List tools", List),
         ("Show tool path", Path),
         ("Show tool status", Status),
-        ("Add a shortcut", AddShortcut),
+        ("Manage shortcuts", ManageShortcuts),
         ("Manage catalogs", ManageCatalogs),
         ("Exit", Exit),
     ];
@@ -39,6 +39,20 @@ pub fn collect_main_menu<P: Prompt>(prompt: &mut P) -> Result<Option<MainMenuAct
     entries.into_iter()
         .find_map(|(label, action)| (label == selection).then_some(Some(action)))
         .context("invalid main menu selection")
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShortcutMenuAction {
+    Add,
+}
+
+pub fn collect_shortcut_menu<P: Prompt>(prompt: &mut P) -> Result<Option<ShortcutMenuAction>> {
+    let choices = ["Add a shortcut", "Cancel"].map(str::to_owned);
+    match prompt.select("Shortcuts:", &choices)?.as_deref() {
+        Some("Add a shortcut") => Ok(Some(ShortcutMenuAction::Add)),
+        Some("Cancel") | None => Ok(None),
+        Some(_) => bail!("invalid shortcut menu selection"),
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -471,7 +485,7 @@ mod tests {
             ("List tools", List),
             ("Show tool path", Path),
             ("Show tool status", Status),
-            ("Add a shortcut", AddShortcut),
+            ("Manage shortcuts", ManageShortcuts),
             ("Manage catalogs", ManageCatalogs),
             ("Exit", Exit),
         ] {
@@ -487,6 +501,33 @@ mod tests {
             ..FakePrompt::default()
         };
         assert!(collect_main_menu(&mut invalid).is_err());
+    }
+
+    #[test]
+    fn shortcut_menu_actions_and_cancellation_are_mockable() {
+        for (selection, expected) in [
+            (Some("Add a shortcut"), Some(ShortcutMenuAction::Add)),
+            (Some("Cancel"), None),
+            (None, None),
+        ] {
+            let mut prompt = FakePrompt {
+                selections: [selection.map(str::to_owned)].into(),
+                ..FakePrompt::default()
+            };
+            assert_eq!(collect_shortcut_menu(&mut prompt).unwrap(), expected);
+            assert_eq!(
+                prompt.selection_requests,
+                vec![(
+                    "Shortcuts:".to_owned(),
+                    vec!["Add a shortcut".to_owned(), "Cancel".to_owned()],
+                )]
+            );
+        }
+        let mut invalid = FakePrompt {
+            selections: [Some("invalid".to_owned())].into(),
+            ..FakePrompt::default()
+        };
+        assert!(collect_shortcut_menu(&mut invalid).is_err());
     }
 
     #[test]

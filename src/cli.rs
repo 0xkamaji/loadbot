@@ -8,7 +8,7 @@ pub struct Cli {
     pub command: Option<Commands>,
 }
 
-#[derive(Debug, Subcommand)]
+#[derive(Debug, PartialEq, Eq, Subcommand)]
 pub enum Commands {
     /// Add a tool definition to a writable catalog.
     Add {
@@ -57,7 +57,7 @@ pub enum Commands {
     /// Manage saved shortcuts.
     Shortcut {
         #[command(subcommand)]
-        command: ShortcutCommands,
+        command: Option<ShortcutCommands>,
     },
     /// Manage Git-backed tool catalogs.
     Catalog {
@@ -71,7 +71,7 @@ pub enum Commands {
     },
 }
 
-#[derive(Debug, Subcommand)]
+#[derive(Debug, PartialEq, Eq, Subcommand)]
 pub enum RotCommands {
     Complete {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
@@ -79,7 +79,7 @@ pub enum RotCommands {
     },
 }
 
-#[derive(Debug, Subcommand)]
+#[derive(Debug, PartialEq, Eq, Subcommand)]
 pub enum ShortcutCommands {
     /// Save an installed file as a shortcut without running it.
     Add,
@@ -97,7 +97,10 @@ mod tests {
                 .command
                 .is_none()
         );
-        assert!(Cli::try_parse_from(["loadbot", "shortcut"]).is_err());
+        assert_eq!(
+            Cli::try_parse_from(["loadbot", "shortcut"]).unwrap().command,
+            Some(Commands::Shortcut { command: None })
+        );
     }
 
     #[test]
@@ -148,16 +151,16 @@ mod tests {
         ));
 
         let add = Cli::try_parse_from(["loadbot", "shortcut", "add"]).unwrap();
-        assert!(matches!(
-            add.command.unwrap(),
-            Commands::Shortcut {
-                command: ShortcutCommands::Add
-            }
-        ));
+        assert_eq!(
+            add.command,
+            Some(Commands::Shortcut {
+                command: Some(ShortcutCommands::Add)
+            })
+        );
     }
 }
 
-#[derive(Debug, Subcommand)]
+#[derive(Debug, PartialEq, Eq, Subcommand)]
 pub enum CatalogCommands {
     /// Register and clone a catalog repository.
     Add {

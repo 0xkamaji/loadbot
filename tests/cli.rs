@@ -1218,3 +1218,33 @@ fn dynamic_completion_preserves_root_and_nested_commands() {
         assert_eq!(commands, expected);
     }
 }
+
+#[test]
+fn bare_shortcut_without_tty_does_not_create_or_modify_state() {
+    let temporary = TempDir::new().unwrap();
+    let home = temporary.path().join("home");
+    let config = temporary.path().join("config");
+    for existing in [false, true] {
+        let shortcuts = config.join("loadbot/shortcuts.toml");
+        if existing {
+            fs::create_dir_all(shortcuts.parent().unwrap()).unwrap();
+            fs::write(&shortcuts, "version = 1\n").unwrap();
+        }
+        let output = Command::new(env!("CARGO_BIN_EXE_loadbot"))
+            .env("LOADBOT_HOME", &home)
+            .env("XDG_CONFIG_HOME", &config)
+            .env("APPDATA", &config)
+            .args(["shortcut"])
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(stderr(&output).contains("'shortcut' requires an interactive terminal"));
+        assert!(!home.exists());
+        if existing {
+            assert_eq!(fs::read_to_string(&shortcuts).unwrap(), "version = 1\n");
+        } else {
+            assert!(!config.exists());
+        }
+    }
+}

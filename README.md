@@ -176,13 +176,13 @@ Loadbot:
 5. List tools
 6. Show tool path
 7. Show tool status
-8. Add a shortcut
+8. Manage shortcuts
 9. Manage catalogs
 10. Exit
 ```
 
 Each selection opens the same flow as its direct command. List tools prints the
-list immediately; Add a shortcut opens `loadbot shortcut add` directly; Manage
+list immediately; Manage shortcuts opens `loadbot shortcut`; Manage
 catalogs opens the existing `loadbot catalog` menu. After the selected flow
 finishes, Loadbot exits. Exit or cancellation closes the menu successfully.
 Bare `loadbot` requires both stdin and stdout to be terminals. Explicit commands
@@ -690,6 +690,22 @@ Supported runner values are `direct`, `bash`, `sh`, `python`, and `powershell`. 
 Paths are portable repository-relative strings separated by `/`. They must be nonempty, must not be absolute, and may not contain `.` or `..` components, empty components, backslashes, or colons. Loadbot also canonicalizes the selected target and rejects symlinks or other resolution that escapes the installed tool root. Shared commands run with the installed tool root as their working directory. Children explicitly inherit stdin, stdout, stderr, the environment, and the working terminal, so passphrase prompts, `sudo`, and ordinary script questions remain interactive. Loadbot does not install dependencies or execute arbitrary shell command strings.
 
 Shared commands are read from each registered catalog clone. They become available after the catalog is cloned or after `loadbot catalog sync NAME` fast-forwards it; Loadbot does not create a separate local copy of command definitions. The corresponding tool repository must still be installed before a command can run.
+
+Bare `loadbot shortcut` requires an interactive terminal and opens:
+
+```text
+Shortcuts:
+
+1. Add a shortcut
+2. Cancel
+```
+
+The menu currently offers only Add, leaving a place for future shortcut-management
+operations. Add opens the existing shortcut creation flow, also available directly
+with `loadbot shortcut add`. Cancel, the usual cancellation input (`q`, `quit`, or
+`cancel`), or EOF exits successfully without changing state. Shell completion for
+`loadbot shortcut` continues to offer only `add`; Cancel is a menu choice, not a
+CLI subcommand.
 
 Saved shortcut names are available as dynamic completions for the positional argument to `loadbot run`. Completion never scans installed repositories or suggests tool names and files. Enable it for the current shell with:
 

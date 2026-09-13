@@ -79,8 +79,8 @@ fn collect_main_command<P: Prompt>(prompt: &mut P) -> Result<Option<Commands>> {
             name: None,
             catalog: None,
         }),
-        Some(MainMenuAction::AddShortcut) => Some(Commands::Shortcut {
-            command: ShortcutCommands::Add,
+        Some(MainMenuAction::ManageShortcuts) => Some(Commands::Shortcut {
+            command: None,
         }),
         Some(MainMenuAction::ManageCatalogs) => Some(Commands::Catalog { command: None }),
         Some(MainMenuAction::Exit) | None => None,
@@ -118,15 +118,44 @@ fn dispatch_command(paths: &Paths, command: Commands) -> Result<()> {
                 launcher::run_interactive(paths, &mut prompt)
             }
         },
-        Commands::Shortcut {
-            command: ShortcutCommands::Add,
-        } => {
-            require_interactive("shortcut add", "")?;
-            let mut prompt = interactive::TerminalPrompt;
-            launcher::add_shortcut(paths, &mut prompt)
-        }
+        Commands::Shortcut { command } => run_shortcut(paths, command),
         Commands::Catalog { command } => run_catalog(paths, command),
         Commands::Rot { .. } => unreachable!(),
+    }
+}
+
+fn run_shortcut(paths: &Paths, command: Option<ShortcutCommands>) -> Result<()> {
+    require_interactive(
+        if command.is_some() {
+            "shortcut add"
+        } else {
+            "shortcut"
+        },
+        "",
+    )?;
+    let mut prompt = interactive::TerminalPrompt;
+    run_shortcut_with_prompt(paths, command, &mut prompt, launcher::add_shortcut)
+}
+
+fn run_shortcut_with_prompt<P, F>(
+    paths: &Paths,
+    command: Option<ShortcutCommands>,
+    prompt: &mut P,
+    add_shortcut: F,
+) -> Result<()>
+where
+    P: Prompt,
+    F: FnOnce(&Paths, &mut P) -> Result<()>,
+{
+    let command = match command {
+        Some(command) => command,
+        None => match interactive::collect_shortcut_menu(prompt)? {
+            Some(interactive::ShortcutMenuAction::Add) => ShortcutCommands::Add,
+            None => return Ok(()),
+        },
+    };
+    match command {
+        ShortcutCommands::Add => add_shortcut(paths, prompt),
     }
 }
 
@@ -440,7 +469,7 @@ mod tests {
                     "List tools",
                     "Show tool path",
                     "Show tool status",
-                    "Add a shortcut",
+                    "Manage shortcuts",
                     "Manage catalogs",
                     "Exit",
                 ]
@@ -459,13 +488,13 @@ mod tests {
             vec!["list"],
             vec!["path"],
             vec!["status"],
-            vec!["shortcut", "add"],
+            vec!["shortcut"],
             vec!["catalog"],
         ];
         for (index, arguments) in commands.into_iter().enumerate() {
             let direct = Cli::try_parse_from(std::iter::once("loadbot").chain(arguments)).unwrap();
             let selected = collect_main_command(&mut MenuPrompt(Some(index))).unwrap();
-            assert_eq!(format!("{selected:?}"), format!("{:?}", direct.command));
+            assert_eq!(selected, direct.command);
         }
     }
 
@@ -477,6 +506,57 @@ mod tests {
                     .unwrap()
                     .is_none()
             );
+        }
+    }
+
+    struct ShortcutPrompt(Option<&'static str>);
+
+    impl Prompt for ShortcutPrompt {
+        fn input(&mut self, _: &str, _: Option<&str>) -> Result<Option<String>> {
+            unreachable!()
+        }
+        fn confirm(&mut self, _: &str, _: bool) -> Result<Option<bool>> {
+            unreachable!()
+        }
+        fn message(&mut self, _: &str) -> Result<()> {
+            unreachable!()
+        }
+        fn select(&mut self, label: &str, choices: &[String]) -> Result<Option<String>> {
+            assert_eq!(label, "Shortcuts:");
+            assert_eq!(choices, &["Add a shortcut", "Cancel"]);
+            Ok(self.0.map(str::to_owned))
+        }
+    }
+
+    #[test]
+    fn shortcut_menu_and_direct_add_delegate_to_the_same_handler() {
+        let paths = Paths::with_root(PathBuf::from("/tmp/loadbot-shortcut-menu-test"));
+        for command in [None, Some(ShortcutCommands::Add)] {
+            let selection = command.is_none().then_some("Add a shortcut");
+            let mut called = false;
+            run_shortcut_with_prompt(
+                &paths,
+                command,
+                &mut ShortcutPrompt(selection),
+                |received, _| {
+                    assert!(std::ptr::eq(received, &paths));
+                    called = true;
+                    Ok(())
+                },
+            )
+            .unwrap();
+            assert!(called);
+        }
+    }
+
+    #[test]
+    fn shortcut_menu_cancel_and_eof_never_call_add() {
+        let paths = Paths::with_root(PathBuf::from("/tmp/loadbot-shortcut-menu-test"));
+        for selection in [Some("Cancel"), None] {
+            run_shortcut_with_prompt(&paths, None, &mut ShortcutPrompt(selection), |_, _| {
+                panic!("shortcut add must not run after cancellation")
+            })
+            .unwrap();
         }
     }
 

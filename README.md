@@ -164,7 +164,29 @@ loadbot --version
 - `--help` displays CLI help.
 - `--version` displays the version from `Cargo.toml`.
 
-Running `loadbot` without a subcommand does not currently open a top-level menu.
+Running bare `loadbot` in an interactive terminal opens this numbered menu:
+
+```text
+Loadbot:
+
+1. Run a tool
+2. Add a tool
+3. Pull/install a tool
+4. Update a tool
+5. List tools
+6. Show tool path
+7. Show tool status
+8. Add a shortcut
+9. Manage catalogs
+10. Exit
+```
+
+Each selection opens the same flow as its direct command. List tools prints the
+list immediately; Add a shortcut opens `loadbot shortcut add` directly; Manage
+catalogs opens the existing `loadbot catalog` menu. After the selected flow
+finishes, Loadbot exits. Exit or cancellation closes the menu successfully.
+Bare `loadbot` requires both stdin and stdout to be terminals. Explicit commands
+retain their existing behavior, including noninteractive use with arguments.
 
 ## New Machine Bootstrap
 

@@ -4,6 +4,43 @@ use anyhow::{Context, Result, bail};
 
 use crate::paths;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MainMenuAction {
+    Run,
+    Add,
+    Pull,
+    Update,
+    List,
+    Path,
+    Status,
+    AddShortcut,
+    ManageCatalogs,
+    Exit,
+}
+
+pub fn collect_main_menu<P: Prompt>(prompt: &mut P) -> Result<Option<MainMenuAction>> {
+    use MainMenuAction::*;
+    let entries = [
+        ("Run a tool", Run),
+        ("Add a tool", Add),
+        ("Pull/install a tool", Pull),
+        ("Update a tool", Update),
+        ("List tools", List),
+        ("Show tool path", Path),
+        ("Show tool status", Status),
+        ("Add a shortcut", AddShortcut),
+        ("Manage catalogs", ManageCatalogs),
+        ("Exit", Exit),
+    ];
+    let choices = entries.map(|(label, _)| label.to_owned());
+    let Some(selection) = prompt.select("Loadbot:", &choices)? else {
+        return Ok(None);
+    };
+    entries.into_iter()
+        .find_map(|(label, action)| (label == selection).then_some(Some(action)))
+        .context("invalid main menu selection")
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct CatalogAddInput {
     pub name: String,
@@ -421,6 +458,35 @@ mod tests {
             self.messages.push(message.to_owned());
             Ok(())
         }
+    }
+
+    #[test]
+    fn main_menu_returns_every_typed_action_and_cancellation() {
+        use MainMenuAction::*;
+        for (label, action) in [
+            ("Run a tool", Run),
+            ("Add a tool", Add),
+            ("Pull/install a tool", Pull),
+            ("Update a tool", Update),
+            ("List tools", List),
+            ("Show tool path", Path),
+            ("Show tool status", Status),
+            ("Add a shortcut", AddShortcut),
+            ("Manage catalogs", ManageCatalogs),
+            ("Exit", Exit),
+        ] {
+            let mut prompt = FakePrompt {
+                selections: [Some(label.to_owned())].into(),
+                ..FakePrompt::default()
+            };
+            assert_eq!(collect_main_menu(&mut prompt).unwrap(), Some(action));
+        }
+        assert_eq!(collect_main_menu(&mut FakePrompt::default()).unwrap(), None);
+        let mut invalid = FakePrompt {
+            selections: [Some("invalid".to_owned())].into(),
+            ..FakePrompt::default()
+        };
+        assert!(collect_main_menu(&mut invalid).is_err());
     }
 
     #[test]

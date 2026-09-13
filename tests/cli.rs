@@ -1176,3 +1176,45 @@ fn stdout(output: &Output) -> String {
 fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).trim().to_owned()
 }
+
+#[test]
+fn bare_loadbot_requires_a_terminal_without_creating_home() {
+    let temporary = TempDir::new().unwrap();
+    let home = temporary.path().join("missing");
+    let output = Command::new(env!("CARGO_BIN_EXE_loadbot"))
+        .env("LOADBOT_HOME", &home)
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("'loadbot' requires an interactive terminal"));
+    assert!(!home.exists());
+}
+
+#[test]
+fn dynamic_completion_preserves_root_and_nested_commands() {
+    for (words, expected) in [
+        (vec![""], vec!["add", "catalog", "list", "path", "pull", "run", "shortcut", "status", "update"]),
+        (vec!["shortcut", ""], vec!["add"]),
+        (vec!["catalog", ""], vec!["add", "list", "migrate", "path", "status", "sync"]),
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_loadbot"))
+            .env("COMPLETE", "bash")
+            .env("_CLAP_IFS", "\n")
+            .env("_CLAP_COMPLETE_INDEX", words.len().to_string())
+            .env("_CLAP_COMPLETE_COMP_TYPE", "9")
+            .env("_CLAP_COMPLETE_SPACE", "false")
+            .args(["--", "loadbot"])
+            .args(words)
+            .output()
+            .unwrap();
+        assert_success_ref(&output);
+        let result = stdout(&output);
+        let mut commands: Vec<_> = result
+            .lines()
+            .filter(|value| !value.starts_with('-') && *value != "help")
+            .collect();
+        commands.sort();
+        assert_eq!(commands, expected);
+    }
+}

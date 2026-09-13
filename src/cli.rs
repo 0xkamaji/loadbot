@@ -5,7 +5,7 @@ use clap_complete::engine::ArgValueCompleter;
 #[command(name = "loadbot", version, about)]
 pub struct Cli {
     #[command(subcommand)]
-    pub command: Commands,
+    pub command: Option<Commands>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -90,22 +90,58 @@ mod tests {
     use super::*;
 
     #[test]
+    fn bare_command_is_optional() {
+        assert!(
+            Cli::try_parse_from(["loadbot"])
+                .unwrap()
+                .command
+                .is_none()
+        );
+        assert!(Cli::try_parse_from(["loadbot", "shortcut"]).is_err());
+    }
+
+    #[test]
+    fn direct_tool_arguments_are_preserved() {
+        for command in ["pull", "update", "path", "status"] {
+            let parsed =
+                Cli::try_parse_from(["loadbot", command, "demo", "--catalog", "personal"])
+                    .unwrap();
+            let (name, catalog) = match parsed.command.unwrap() {
+                Commands::Pull { name, catalog }
+                | Commands::Update { name, catalog }
+                | Commands::Path { name, catalog }
+                | Commands::Status { name, catalog } => (name, catalog),
+                _ => panic!("wrong command"),
+            };
+            assert_eq!(name.as_deref(), Some("demo"));
+            assert_eq!(catalog.as_deref(), Some("personal"));
+        }
+        let parsed = Cli::try_parse_from([
+            "loadbot", "add", "demo", "local.git", "--revision", "main", "--catalog",
+            "personal", "--commit", "--push",
+        ])
+        .unwrap();
+        assert!(matches!(parsed.command, Some(Commands::Add { name: Some(name), git_url: Some(url), revision: Some(revision), catalog: Some(catalog), commit: true, push: true }) if name == "demo" && url == "local.git" && revision == "main" && catalog == "personal"));
+        assert!(Cli::try_parse_from(["loadbot", "add", "--push"]).is_err());
+    }
+
+    #[test]
     fn parses_interactive_and_shortcut_run_forms() {
         let interactive = Cli::try_parse_from(["loadbot", "run"]).unwrap();
         assert!(matches!(
-            interactive.command,
+            interactive.command.unwrap(),
             Commands::Run { shortcut: None }
         ));
 
         let catalog = Cli::try_parse_from(["loadbot", "catalog"]).unwrap();
         assert!(matches!(
-            catalog.command,
+            catalog.command.unwrap(),
             Commands::Catalog { command: None }
         ));
 
         let direct = Cli::try_parse_from(["loadbot", "run", "print-strings"]).unwrap();
         assert!(matches!(
-            direct.command,
+            direct.command.unwrap(),
             Commands::Run {
                 shortcut: Some(name)
             } if name == "print-strings"
@@ -113,7 +149,7 @@ mod tests {
 
         let add = Cli::try_parse_from(["loadbot", "shortcut", "add"]).unwrap();
         assert!(matches!(
-            add.command,
+            add.command.unwrap(),
             Commands::Shortcut {
                 command: ShortcutCommands::Add
             }

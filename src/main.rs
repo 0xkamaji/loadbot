@@ -29,14 +29,66 @@ fn main() {
 
 fn run() -> Result<()> {
     let cli = Cli::parse();
-    if let Commands::Rot {
+    if let Some(Commands::Rot {
         command: RotCommands::Complete { words },
-    } = &cli.command
+    }) = &cli.command
     {
         return completion::rot_complete(words);
     }
+    let command = match cli.command {
+        Some(command) => command,
+        None => {
+            require_interactive("loadbot", "")?;
+            let mut prompt = interactive::TerminalPrompt;
+            let Some(command) = collect_main_command(&mut prompt)? else {
+                return Ok(());
+            };
+            command
+        }
+    };
     let paths = Paths::discover()?;
-    match cli.command {
+    dispatch_command(&paths, command)
+}
+
+fn collect_main_command<P: Prompt>(prompt: &mut P) -> Result<Option<Commands>> {
+    use interactive::MainMenuAction;
+    Ok(match interactive::collect_main_menu(prompt)? {
+        Some(MainMenuAction::Run) => Some(Commands::Run { shortcut: None }),
+        Some(MainMenuAction::Add) => Some(Commands::Add {
+            name: None,
+            git_url: None,
+            revision: None,
+            catalog: None,
+            commit: false,
+            push: false,
+        }),
+        Some(MainMenuAction::Pull) => Some(Commands::Pull {
+            name: None,
+            catalog: None,
+        }),
+        Some(MainMenuAction::Update) => Some(Commands::Update {
+            name: None,
+            catalog: None,
+        }),
+        Some(MainMenuAction::List) => Some(Commands::List),
+        Some(MainMenuAction::Path) => Some(Commands::Path {
+            name: None,
+            catalog: None,
+        }),
+        Some(MainMenuAction::Status) => Some(Commands::Status {
+            name: None,
+            catalog: None,
+        }),
+        Some(MainMenuAction::AddShortcut) => Some(Commands::Shortcut {
+            command: ShortcutCommands::Add,
+        }),
+        Some(MainMenuAction::ManageCatalogs) => Some(Commands::Catalog { command: None }),
+        Some(MainMenuAction::Exit) | None => None,
+    })
+}
+
+fn dispatch_command(paths: &Paths, command: Commands) -> Result<()> {
+    match command {
         Commands::Add {
             name,
             git_url,
@@ -44,26 +96,26 @@ fn run() -> Result<()> {
             catalog,
             commit,
             push,
-        } => run_tool_add(&paths, name, git_url, revision, catalog, commit, push),
+        } => run_tool_add(paths, name, git_url, revision, catalog, commit, push),
         Commands::Pull { name, catalog } => {
-            run_tool_named(&paths, name, catalog, "pull", operations::tool_pull)
+            run_tool_named(paths, name, catalog, "pull", operations::tool_pull)
         }
         Commands::Update { name, catalog } => {
-            run_tool_named(&paths, name, catalog, "update", operations::tool_update)
+            run_tool_named(paths, name, catalog, "update", operations::tool_update)
         }
-        Commands::List => operations::tool_list(&paths),
+        Commands::List => operations::tool_list(paths),
         Commands::Path { name, catalog } => {
-            run_tool_named(&paths, name, catalog, "path", operations::tool_path)
+            run_tool_named(paths, name, catalog, "path", operations::tool_path)
         }
         Commands::Status { name, catalog } => {
-            run_tool_named(&paths, name, catalog, "status", operations::tool_status)
+            run_tool_named(paths, name, catalog, "status", operations::tool_status)
         }
         Commands::Run { shortcut } => match shortcut {
-            Some(name) => launcher::run_shortcut(&paths, &name),
+            Some(name) => launcher::run_shortcut(paths, &name),
             None => {
                 require_interactive("run", "SHORTCUT")?;
                 let mut prompt = interactive::TerminalPrompt;
-                launcher::run_interactive(&paths, &mut prompt)
+                launcher::run_interactive(paths, &mut prompt)
             }
         },
         Commands::Shortcut {
@@ -71,9 +123,9 @@ fn run() -> Result<()> {
         } => {
             require_interactive("shortcut add", "")?;
             let mut prompt = interactive::TerminalPrompt;
-            launcher::add_shortcut(&paths, &mut prompt)
+            launcher::add_shortcut(paths, &mut prompt)
         }
-        Commands::Catalog { command } => run_catalog(&paths, command),
+        Commands::Catalog { command } => run_catalog(paths, command),
         Commands::Rot { .. } => unreachable!(),
     }
 }
@@ -363,6 +415,70 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+
+    struct MenuPrompt(Option<usize>);
+
+    impl Prompt for MenuPrompt {
+        fn input(&mut self, _: &str, _: Option<&str>) -> Result<Option<String>> {
+            unreachable!()
+        }
+        fn confirm(&mut self, _: &str, _: bool) -> Result<Option<bool>> {
+            unreachable!()
+        }
+        fn message(&mut self, _: &str) -> Result<()> {
+            unreachable!()
+        }
+        fn select(&mut self, label: &str, choices: &[String]) -> Result<Option<String>> {
+            assert_eq!(label, "Loadbot:");
+            assert_eq!(
+                choices,
+                &[
+                    "Run a tool",
+                    "Add a tool",
+                    "Pull/install a tool",
+                    "Update a tool",
+                    "List tools",
+                    "Show tool path",
+                    "Show tool status",
+                    "Add a shortcut",
+                    "Manage catalogs",
+                    "Exit",
+                ]
+            );
+            Ok(self.0.map(|index| choices[index].clone()))
+        }
+    }
+
+    #[test]
+    fn every_main_menu_selection_delegates_to_its_direct_command() {
+        let commands = [
+            vec!["run"],
+            vec!["add"],
+            vec!["pull"],
+            vec!["update"],
+            vec!["list"],
+            vec!["path"],
+            vec!["status"],
+            vec!["shortcut", "add"],
+            vec!["catalog"],
+        ];
+        for (index, arguments) in commands.into_iter().enumerate() {
+            let direct = Cli::try_parse_from(std::iter::once("loadbot").chain(arguments)).unwrap();
+            let selected = collect_main_command(&mut MenuPrompt(Some(index))).unwrap();
+            assert_eq!(format!("{selected:?}"), format!("{:?}", direct.command));
+        }
+    }
+
+    #[test]
+    fn main_menu_exit_and_cancellation_do_not_dispatch() {
+        for selection in [Some(9), None] {
+            assert!(
+                collect_main_command(&mut MenuPrompt(selection))
+                    .unwrap()
+                    .is_none()
+            );
+        }
+    }
 
     struct ConfirmPrompt(bool);
 

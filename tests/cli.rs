@@ -960,7 +960,8 @@ path = "triage.py"
     );
     assert_eq!(complete(&["run", ""]), ["bn-triage", "print-strings"]);
     assert_eq!(complete(&["run", "pri"]), ["print-strings"]);
-    assert_eq!(complete(&["shortcut", ""]), ["add"]);
+    assert_eq!(complete(&["shortcut", "remove", ""]), ["bn-triage", "print-strings"]);
+    assert_eq!(complete(&["shortcut", ""]), ["add", "list", "remove"]);
     assert_eq!(complete(&[""]), root);
 }
 
@@ -1195,7 +1196,7 @@ fn bare_loadbot_requires_a_terminal_without_creating_home() {
 fn dynamic_completion_preserves_root_and_nested_commands() {
     for (words, expected) in [
         (vec![""], vec!["add", "catalog", "list", "path", "pull", "run", "shortcut", "status", "update"]),
-        (vec!["shortcut", ""], vec!["add"]),
+        (vec!["shortcut", ""], vec!["add", "list", "remove"]),
         (vec!["catalog", ""], vec!["add", "list", "migrate", "path", "status", "sync"]),
     ] {
         let output = Command::new(env!("CARGO_BIN_EXE_loadbot"))
@@ -1247,4 +1248,131 @@ fn bare_shortcut_without_tty_does_not_create_or_modify_state() {
             assert!(!config.exists());
         }
     }
+}
+
+#[test]
+fn shortcut_list_remove_and_completion_work_without_installed_tools() {
+    let temp = TempDir::new().unwrap();
+    let home = temp.path().join("home");
+    let config = temp.path().join("config");
+    let file = config.join("loadbot/shortcuts.toml");
+    let invoke = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_loadbot"))
+            .env("LOADBOT_HOME", &home)
+            .env("XDG_CONFIG_HOME", &config)
+            .env("APPDATA", &config)
+            .args(args)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap()
+    };
+    let empty = invoke(&["shortcut", "list"]);
+    assert_success_ref(&empty);
+    assert!(stdout(&empty).contains("No shortcuts"));
+    assert!(!config.exists());
+    fs::create_dir_all(file.parent().unwrap()).unwrap();
+    let contents = r#"version = 1
+future = "preserved"
+[shortcuts.zebra]
+catalog = "missing"
+tool = "missing"
+path = "missing.py"
+[shortcuts.alpha]
+catalog = "personal"
+tool = "demo"
+path = "alpha.sh"
+description = "My alpha"
+runner = "bash"
+future = "entry"
+"#;
+    fs::write(&file, contents).unwrap();
+    let listed = invoke(&["shortcut", "list"]);
+    assert_success_ref(&listed);
+    let text = stdout(&listed);
+    assert!(text.find("Name: alpha").unwrap() < text.find("Name: zebra").unwrap());
+    assert!(text.contains("Description: My alpha\nRunner: bash"));
+    assert_eq!(fs::read_to_string(&file).unwrap(), contents);
+    for args in [
+        vec!["shortcut", "remove"],
+        vec!["shortcut", "remove", "alpha"],
+        vec!["shortcut", "remove", "--yes"],
+        vec!["shortcut", "remove", "absent", "--yes"],
+        vec!["shortcut", "remove", "../invalid", "--yes"],
+    ] {
+        let output = invoke(&args);
+        assert!(!output.status.success());
+        assert_eq!(fs::read_to_string(&file).unwrap(), contents);
+    }
+    assert!(stderr(&invoke(&["shortcut", "remove", "alpha"])).contains("interactive terminal"));
+    assert!(stderr(&invoke(&["shortcut", "remove", "absent", "--yes"])).contains("does not exist"));
+    let rot = invoke(&["rot", "complete", "shortcut", "remove", ""]);
+    assert_eq!(serde_json::from_slice::<Vec<String>>(&rot.stdout).unwrap(), ["alpha", "zebra"]);
+    let shell = Command::new(env!("CARGO_BIN_EXE_loadbot"))
+        .env("XDG_CONFIG_HOME", &config)
+        .env("APPDATA", &config)
+        .env("COMPLETE", "bash")
+        .env("_CLAP_IFS", "\n")
+        .env("_CLAP_COMPLETE_INDEX", "3")
+        .env("_CLAP_COMPLETE_COMP_TYPE", "9")
+        .env("_CLAP_COMPLETE_SPACE", "false")
+        .args(["--", "loadbot", "shortcut", "remove", "al"])
+        .output().unwrap();
+    assert_success_ref(&shell);
+    assert_eq!(stdout(&shell), "alpha");
+    let removed = invoke(&["shortcut", "remove", "zebra", "--yes"]);
+    assert_success_ref(&removed);
+    assert_eq!(stdout(&removed), "removed shortcut 'zebra'");
+    let parsed: toml::Value = toml::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
+    assert_eq!(parsed["future"].as_str(), Some("preserved"));
+    assert_eq!(parsed["shortcuts"]["alpha"]["future"].as_str(), Some("entry"));
+    assert_success(invoke(&["shortcut", "remove", "alpha", "--yes"]));
+    assert!(file.is_file());
+    assert!(stdout(&invoke(&["shortcut", "list"])).contains("No shortcuts"));
+    assert!(!home.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn shortcut_menu_list_remove_and_cancel_use_existing_flows() {
+    if !Command::new("script")
+        .arg("--version")
+        .output()
+        .is_ok_and(|output| output.status.success())
+    {
+        eprintln!("skipping terminal test: script is unavailable");
+        return;
+    }
+    let temp = TempDir::new().unwrap();
+    let config = temp.path().join("config");
+    let file = config.join("loadbot/shortcuts.toml");
+    fs::create_dir_all(file.parent().unwrap()).unwrap();
+    let contents = "version = 1\n[shortcuts.demo]\ncatalog = 'personal'\ntool = 'missing'\npath = 'missing.sh'\n";
+    fs::write(&file, contents).unwrap();
+    let terminal = |input: &[u8]| {
+        let executable = env!("CARGO_BIN_EXE_loadbot");
+        let mut child = Command::new("script")
+            .args(["-q", "-e", "-c", &format!("{executable} shortcut"), "/dev/null"])
+            .env("LOADBOT_HOME", temp.path().join("home"))
+            .env("XDG_CONFIG_HOME", &config)
+            .env("APPDATA", &config)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn().unwrap();
+        child.stdin.take().unwrap().write_all(input).unwrap();
+        child.wait_with_output().unwrap()
+    };
+    for input in [b"4\n".as_slice(), b"q\n", b"\x04", b"3\nq\n", b"3\n1\nn\n"] {
+        assert_success(terminal(input));
+        assert_eq!(fs::read_to_string(&file).unwrap(), contents);
+    }
+    let listed = terminal(b"2\n");
+    assert_success_ref(&listed);
+    assert!(stdout(&listed).contains("Name: demo"));
+    assert_eq!(fs::read_to_string(&file).unwrap(), contents);
+    let removed = terminal(b"3\n1\ny\n");
+    assert_success_ref(&removed);
+    assert!(stdout(&removed).contains("removed shortcut 'demo'"));
+    let saved: toml::Value = toml::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
+    assert!(saved["shortcuts"].as_table().unwrap().is_empty());
 }

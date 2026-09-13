@@ -697,15 +697,41 @@ Bare `loadbot shortcut` requires an interactive terminal and opens:
 Shortcuts:
 
 1. Add a shortcut
-2. Cancel
+2. List shortcuts
+3. Remove a shortcut
+4. Cancel
 ```
 
-The menu currently offers only Add, leaving a place for future shortcut-management
-operations. Add opens the existing shortcut creation flow, also available directly
-with `loadbot shortcut add`. Cancel, the usual cancellation input (`q`, `quit`, or
-`cancel`), or EOF exits successfully without changing state. Shell completion for
-`loadbot shortcut` continues to offer only `add`; Cancel is a menu choice, not a
-CLI subcommand.
+Add opens the existing shortcut creation flow, also available directly with
+`loadbot shortcut add`. List and Remove use the same handlers as their direct
+commands:
+
+```bash
+loadbot shortcut list
+loadbot shortcut remove
+loadbot shortcut remove NAME
+loadbot shortcut remove NAME --yes
+```
+
+List prints saved definitions alphabetically, including name, catalog, tool,
+repository-relative path, and optional description and runner. It works without
+an interactive terminal or installed repositories and does not modify files.
+An empty or missing shortcut file produces a clear empty-list message.
+
+Remove without a name opens an alphabetical selector. A supplied name skips
+selection. Interactive removal displays the definition and asks for confirmation,
+with a default of No. `--yes` skips confirmation and requires an explicit name;
+noninteractive removal requires both `NAME` and `--yes`. Missing or invalid names
+produce an error. Successful removal prints `removed shortcut 'NAME'`.
+
+Cancel, `q`, `quit`, `cancel`, or EOF before confirmation exits successfully
+without changes. Removal preserves other definitions, optional metadata, unknown
+TOML fields, and the version field. Removing the final entry leaves a valid empty
+file. Symlinked shortcut files are refused.
+
+Shortcut command completion offers `add`, `list`, and `remove`; the Remove name
+argument completes saved shortcut names, never filesystem entries. Rot completion
+supports the same operations and names. Cancel is only an interactive menu choice.
 
 Saved shortcut names are available as dynamic completions for the positional argument to `loadbot run`. Completion never scans installed repositories or suggests tool names and files. Enable it for the current shell with:
 

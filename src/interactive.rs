@@ -44,12 +44,22 @@ pub fn collect_main_menu<P: Prompt>(prompt: &mut P) -> Result<Option<MainMenuAct
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShortcutMenuAction {
     Add,
+    List,
+    Remove,
 }
 
 pub fn collect_shortcut_menu<P: Prompt>(prompt: &mut P) -> Result<Option<ShortcutMenuAction>> {
-    let choices = ["Add a shortcut", "Cancel"].map(str::to_owned);
+    let choices = [
+        "Add a shortcut",
+        "List shortcuts",
+        "Remove a shortcut",
+        "Cancel",
+    ]
+    .map(str::to_owned);
     match prompt.select("Shortcuts:", &choices)?.as_deref() {
         Some("Add a shortcut") => Ok(Some(ShortcutMenuAction::Add)),
+        Some("List shortcuts") => Ok(Some(ShortcutMenuAction::List)),
+        Some("Remove a shortcut") => Ok(Some(ShortcutMenuAction::Remove)),
         Some("Cancel") | None => Ok(None),
         Some(_) => bail!("invalid shortcut menu selection"),
     }
@@ -507,6 +517,8 @@ mod tests {
     fn shortcut_menu_actions_and_cancellation_are_mockable() {
         for (selection, expected) in [
             (Some("Add a shortcut"), Some(ShortcutMenuAction::Add)),
+            (Some("List shortcuts"), Some(ShortcutMenuAction::List)),
+            (Some("Remove a shortcut"), Some(ShortcutMenuAction::Remove)),
             (Some("Cancel"), None),
             (None, None),
         ] {
@@ -519,7 +531,14 @@ mod tests {
                 prompt.selection_requests,
                 vec![(
                     "Shortcuts:".to_owned(),
-                    vec!["Add a shortcut".to_owned(), "Cancel".to_owned()],
+                    [
+                        "Add a shortcut",
+                        "List shortcuts",
+                        "Remove a shortcut",
+                        "Cancel",
+                    ]
+                    .map(str::to_owned)
+                    .to_vec(),
                 )]
             );
         }

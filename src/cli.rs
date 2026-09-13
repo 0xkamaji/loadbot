@@ -83,11 +83,35 @@ pub enum RotCommands {
 pub enum ShortcutCommands {
     /// Save an installed file as a shortcut without running it.
     Add,
+    /// List saved shortcut definitions.
+    List,
+    /// Remove a saved shortcut definition.
+    Remove {
+        #[arg(add = ArgValueCompleter::new(crate::completion::shortcut_candidates))]
+        name: Option<String>,
+        #[arg(long, requires = "name")]
+        yes: bool,
+    },
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shortcut_commands_compare_structurally() {
+        for (args, expected) in [
+            (vec!["add"], ShortcutCommands::Add),
+            (vec!["list"], ShortcutCommands::List),
+            (vec!["remove"], ShortcutCommands::Remove { name: None, yes: false }),
+            (vec!["remove", "demo"], ShortcutCommands::Remove { name: Some("demo".to_owned()), yes: false }),
+            (vec!["remove", "demo", "--yes"], ShortcutCommands::Remove { name: Some("demo".to_owned()), yes: true }),
+        ] {
+            let parsed = Cli::try_parse_from(["loadbot", "shortcut"].into_iter().chain(args)).unwrap();
+            assert_eq!(parsed.command, Some(Commands::Shortcut { command: Some(expected) }));
+        }
+        assert!(Cli::try_parse_from(["loadbot", "shortcut", "remove", "--yes"]).is_err());
+    }
 
     #[test]
     fn bare_command_is_optional() {

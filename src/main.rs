@@ -125,14 +125,16 @@ fn dispatch_command(paths: &Paths, command: Commands) -> Result<()> {
 }
 
 fn run_shortcut(paths: &Paths, command: Option<ShortcutCommands>) -> Result<()> {
-    require_interactive(
-        if command.is_some() {
-            "shortcut add"
-        } else {
-            "shortcut"
-        },
-        "",
-    )?;
+    match &command {
+        None => require_interactive("shortcut", "")?,
+        Some(ShortcutCommands::Add) => require_interactive("shortcut add", "")?,
+        Some(ShortcutCommands::List) => {}
+        Some(ShortcutCommands::Remove { name, yes }) => {
+            if name.is_none() || !yes {
+                require_interactive("shortcut remove", "NAME --yes")?;
+            }
+        }
+    }
     let mut prompt = interactive::TerminalPrompt;
     run_shortcut_with_prompt(paths, command, &mut prompt, launcher::add_shortcut)
 }
@@ -151,11 +153,27 @@ where
         Some(command) => command,
         None => match interactive::collect_shortcut_menu(prompt)? {
             Some(interactive::ShortcutMenuAction::Add) => ShortcutCommands::Add,
+            Some(interactive::ShortcutMenuAction::List) => ShortcutCommands::List,
+            Some(interactive::ShortcutMenuAction::Remove) => ShortcutCommands::Remove {
+                name: None,
+                yes: false,
+            },
             None => return Ok(()),
         },
     };
     match command {
         ShortcutCommands::Add => add_shortcut(paths, prompt),
+        ShortcutCommands::List => {
+            println!("{}", shortcuts::list(&paths.shortcuts()?)?);
+            Ok(())
+        }
+        ShortcutCommands::Remove { name, yes } => {
+            if let Some(name) = shortcuts::remove_with_prompt(&paths.shortcuts()?, name, yes, prompt)?
+            {
+                println!("removed shortcut '{name}'");
+            }
+            Ok(())
+        }
     }
 }
 
@@ -523,7 +541,10 @@ mod tests {
         }
         fn select(&mut self, label: &str, choices: &[String]) -> Result<Option<String>> {
             assert_eq!(label, "Shortcuts:");
-            assert_eq!(choices, &["Add a shortcut", "Cancel"]);
+            assert_eq!(
+                choices,
+                &["Add a shortcut", "List shortcuts", "Remove a shortcut", "Cancel"]
+            );
             Ok(self.0.map(str::to_owned))
         }
     }

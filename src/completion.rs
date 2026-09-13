@@ -40,7 +40,7 @@ fn rot_candidates(words: &[String]) -> Vec<String> {
         command = subcommand;
     }
 
-    let mut candidates = if path == ["run"] {
+    let mut candidates = if path == ["run"] || path == ["shortcut", "remove"] {
         shortcut_names()
     } else {
         command
@@ -145,7 +145,7 @@ path = "triage.py"
         );
         assert_eq!(
             rot_candidates(&["shortcut".to_owned(), String::new()]),
-            ["add"]
+            ["add", "list", "remove"]
         );
     }
 }

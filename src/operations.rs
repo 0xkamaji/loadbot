@@ -113,9 +113,7 @@ where
             )
         })?;
         created_clone = true;
-        if let Err(error) =
-            git::clone_repository(&source.url, None, &destination, context)
-        {
+        if let Err(error) = git::clone_repository(&source.url, None, &destination, context) {
             return Err(cleanup_catalog_add_failure(
                 &destination,
                 error,
@@ -149,7 +147,9 @@ where
         if local.default_catalog.is_none() {
             local.default_catalog = Some(name.to_owned());
         }
-        if let Err(error) = merge_registration(&paths.config(), &original_local, &local, save_config) {
+        if let Err(error) =
+            merge_registration(&paths.config(), &original_local, &local, save_config)
+        {
             if created_clone {
                 return Err(cleanup_catalog_add_failure(
                     &destination,
@@ -190,11 +190,20 @@ fn merge_registration(
     let _lease = crate::persistence::Lease::acquire(path)?;
     let mut current = config::load(path)?;
     for (name, source) in &desired.catalogs {
-        if original.catalogs.get(name) == Some(source) { continue; }
-        if current.catalogs.get(name) != original.catalogs.get(name) {
-            return Err(crate::persistence::Busy { resource: path.to_owned() }.into());
+        if original.catalogs.get(name) == Some(source) {
+            continue;
         }
-        if current.catalogs.keys().any(|key| key != name && key.eq_ignore_ascii_case(name)) {
+        if current.catalogs.get(name) != original.catalogs.get(name) {
+            return Err(crate::persistence::Busy {
+                resource: path.to_owned(),
+            }
+            .into());
+        }
+        if current
+            .catalogs
+            .keys()
+            .any(|key| key != name && key.eq_ignore_ascii_case(name))
+        {
             bail!("catalog name '{name}' conflicts with a concurrently registered catalog");
         }
         current.catalogs.insert(name.clone(), source.clone());
@@ -255,10 +264,9 @@ pub fn catalog_initialize(
     } else {
         fs::create_dir_all(paths.catalogs())
             .with_context(|| format!("could not create {}", paths.catalogs().display()))?;
-        fs::create_dir(&destination).context("catalog destination appeared before clone; nothing removed")?;
-        if let Err(mut error) =
-            git::clone_repository(&source.url, None, &destination, context)
-        {
+        fs::create_dir(&destination)
+            .context("catalog destination appeared before clone; nothing removed")?;
+        if let Err(mut error) = git::clone_repository(&source.url, None, &destination, context) {
             error = cleanup_failed_clone(&destination, error);
             return Err(error).context("could not clone the catalog to initialize");
         }
@@ -334,7 +342,8 @@ pub fn catalog_initialize(
         }
     };
 
-    if create_catalog && let Err(mut error) = catalog::save(&catalog_path, &CatalogFile::default()) {
+    if create_catalog && let Err(mut error) = catalog::save(&catalog_path, &CatalogFile::default())
+    {
         if created_clone {
             error = cleanup_failed_clone(&destination, error);
         }
@@ -347,7 +356,9 @@ pub fn catalog_initialize(
         if local.default_catalog.is_none() {
             local.default_catalog = Some(name.to_owned());
         }
-        if let Err(mut error) = merge_registration(&paths.config(), &original_local, &local, config::save) {
+        if let Err(mut error) =
+            merge_registration(&paths.config(), &original_local, &local, config::save)
+        {
             if create_catalog && cleanup_is_safe(&error) {
                 let _ = fs::remove_file(&catalog_path);
             }
@@ -389,9 +400,13 @@ pub fn catalog_initialize(
     context.process.cancellation.check()?;
     if commit {
         if git::path_has_changes(&destination, "catalog.toml")? {
-            let commit_hash =
-                git::commit_file_with_interaction(&destination, "catalog.toml", "Initialize Loadbot catalog", context)
-                    .context("catalog.toml was created, but committing it failed")?;
+            let commit_hash = git::commit_file_with_interaction(
+                &destination,
+                "catalog.toml",
+                "Initialize Loadbot catalog",
+                context,
+            )
+            .context("catalog.toml was created, but committing it failed")?;
             context.record(Notice::InitialCatalogCommitted { commit_hash });
         } else if git::head_commit(&destination)?.is_some() {
             context.record(Notice::InitialCatalogAlreadyCommitted);
@@ -556,7 +571,8 @@ pub fn catalog_migrate(
 
     fs::create_dir_all(paths.catalogs())
         .with_context(|| format!("could not create {}", paths.catalogs().display()))?;
-    fs::create_dir(&destination).context("migration destination appeared before clone; nothing removed")?;
+    fs::create_dir(&destination)
+        .context("migration destination appeared before clone; nothing removed")?;
     if let Err(mut error) = git::clone_repository(&url, None, &destination, context) {
         error = cleanup_failed_clone(&destination, error);
         return Err(error).context("could not clone migration catalog");
@@ -588,7 +604,10 @@ pub fn catalog_migrate(
         };
         let _configuration_lease = crate::persistence::Lease::acquire(&paths.config())?;
         if crate::persistence::read_optional(&paths.config())? != original_bytes {
-            return Err(crate::persistence::Busy { resource: paths.config() }.into());
+            return Err(crate::persistence::Busy {
+                resource: paths.config(),
+            }
+            .into());
         }
         config::save(&paths.config(), &local)
             .context("catalog.toml was written, but replacing the legacy configuration failed")
@@ -679,8 +698,13 @@ pub fn tool_add(
     if commit {
         if git::path_has_changes(&repository, "catalog.toml")? {
             let message = format!("Add {name} to Loadbot catalog");
-            let commit_hash = git::commit_file_with_interaction(&repository, "catalog.toml", &message, context)
-                .context("tool definition was saved, but committing the catalog change failed")?;
+            let commit_hash = git::commit_file_with_interaction(
+                &repository,
+                "catalog.toml",
+                &message,
+                context,
+            )
+            .context("tool definition was saved, but committing the catalog change failed")?;
             context.record(Notice::CatalogCommitted { commit_hash });
         } else if changed {
             bail!("catalog changed but Git did not detect a catalog.toml modification");
@@ -757,7 +781,10 @@ where
     let _catalog_snapshot = context.watch(&paths.catalog_file(&tool.catalog))?;
     let current_tool = resolve_tool(paths, name, catalog_name, context)?;
     if current_tool.definition != tool.definition {
-        return Err(crate::persistence::Busy { resource: destination }.into());
+        return Err(crate::persistence::Busy {
+            resource: destination,
+        }
+        .into());
     }
     if path_exists(&destination) {
         if !git::is_repository(&destination)? {
@@ -798,7 +825,8 @@ where
         .parent()
         .context("tool destination has no parent directory")?;
     fs::create_dir_all(parent).with_context(|| format!("could not create {}", parent.display()))?;
-    fs::create_dir(&destination).context("tool destination appeared before clone; nothing removed")?;
+    fs::create_dir(&destination)
+        .context("tool destination appeared before clone; nothing removed")?;
     if let Err(mut error) = clone_repository(
         &tool.definition.url,
         tool.definition.revision.as_deref(),
@@ -875,7 +903,9 @@ where
     let identity = git::select_verified_rot_identity(available, context)?;
     let push_url = git::github_ssh_push_url(canonical_url, &identity.alias)
         .context("could not derive the GitHub SSH push URL")?;
-    if git::push_url(destination)?.is_some() || !git::is_expected_repository(destination, canonical_url)? {
+    if git::push_url(destination)?.is_some()
+        || !git::is_expected_repository(destination, canonical_url)?
+    {
         bail!("repository URLs changed while awaiting a decision; retry the operation");
     }
     git::set_push_url(destination, &push_url)?;
@@ -896,9 +926,7 @@ fn reconcile_existing_checkout(
             "destination is the configured GitHub repository but uses a different transport\nFetch URL: {existing_fetch}\nCatalog URL: {canonical_url}\nRun 'loadbot pull {name}' interactively to reconcile its fetch and push URLs."
         );
     }
-    if !context
-        .reconcile_checkout(&existing_fetch, canonical_url)?
-    {
+    if !context.reconcile_checkout(&existing_fetch, canonical_url)? {
         bail!(
             "repository URL mismatch was not changed\nFetch URL: {existing_fetch}\nCatalog URL: {canonical_url}"
         );
@@ -906,12 +934,13 @@ fn reconcile_existing_checkout(
     let original_push = git::push_url(destination)?;
     if let Some(existing_push) = original_push.as_ref()
         && existing_push != &existing_fetch
-        && !context
-            .replace_push(existing_push, &existing_fetch)?
+        && !context.replace_push(existing_push, &existing_fetch)?
     {
         bail!("existing push URL was preserved; repository URLs were not changed");
     }
-    if git::fetch_url(destination)?.as_deref() != Some(&existing_fetch) || git::push_url(destination)? != original_push {
+    if git::fetch_url(destination)?.as_deref() != Some(&existing_fetch)
+        || git::push_url(destination)? != original_push
+    {
         bail!("repository URLs changed while awaiting a decision; retry the operation");
     }
     git::reconcile_remote(destination, canonical_url, &existing_fetch)?;
@@ -943,7 +972,10 @@ pub fn tool_update(
     let _catalog_snapshot = context.watch(&paths.catalog_file(&tool.catalog))?;
     let current_tool = resolve_tool(paths, name, catalog_name, context)?;
     if current_tool.definition != tool.definition {
-        return Err(crate::persistence::Busy { resource: destination }.into());
+        return Err(crate::persistence::Busy {
+            resource: destination,
+        }
+        .into());
     }
     if !path_exists(&destination) {
         bail!("tool '{name}' is not installed; run 'loadbot pull {name}' first");
@@ -960,12 +992,9 @@ pub fn tool_update(
         bail!("destination is not the configured Git repository");
     }
 
-    let (old_commit, new_commit) = git::update(
-        &destination,
-        tool.definition.revision.as_deref(),
-        context,
-    )
-    .with_context(|| format!("refusing to update '{name}'"))?;
+    let (old_commit, new_commit) =
+        git::update(&destination, tool.definition.revision.as_deref(), context)
+            .with_context(|| format!("refusing to update '{name}'"))?;
     if old_commit == new_commit {
         context.record(Notice::ToolCurrent {
             name: name.to_owned(),
@@ -1304,7 +1333,9 @@ fn validate_url(url: &str) -> Result<()> {
 
 fn aborts_operation(error: &anyhow::Error) -> bool {
     error.downcast_ref::<crate::process::Cancelled>().is_some()
-        || error.downcast_ref::<crate::process::CleanupIncomplete>().is_some()
+        || error
+            .downcast_ref::<crate::process::CleanupIncomplete>()
+            .is_some()
         || error.downcast_ref::<crate::persistence::Busy>().is_some()
 }
 
@@ -1316,8 +1347,14 @@ fn optional_identities(result: Result<Vec<git::RotIdentity>>) -> Result<Vec<git:
     }
 }
 
-fn warn_skipped_catalog(name: &str, error: anyhow::Error, context: &mut OperationContext<'_>) -> Result<()> {
-    if aborts_operation(&error) { return Err(error); }
+fn warn_skipped_catalog(
+    name: &str,
+    error: anyhow::Error,
+    context: &mut OperationContext<'_>,
+) -> Result<()> {
+    if aborts_operation(&error) {
+        return Err(error);
+    }
     context.record(Notice::SkippedCatalog {
         name: name.to_owned(),
         diagnostic: format!("{error:#}"),
@@ -1327,8 +1364,12 @@ fn warn_skipped_catalog(name: &str, error: anyhow::Error, context: &mut Operatio
 
 fn cleanup_is_safe(error: &anyhow::Error) -> bool {
     error.downcast_ref::<crate::persistence::Busy>().is_none()
-        && error.downcast_ref::<crate::process::CleanupIncomplete>().is_none()
-        && error.downcast_ref::<crate::persistence::DurabilityUncertain>().is_none()
+        && error
+            .downcast_ref::<crate::process::CleanupIncomplete>()
+            .is_none()
+        && error
+            .downcast_ref::<crate::persistence::DurabilityUncertain>()
+            .is_none()
 }
 
 fn cleanup_failed_clone(destination: &Path, error: anyhow::Error) -> anyhow::Error {
@@ -1696,35 +1737,54 @@ mod tests {
         let paths = Paths::with_root(temporary.path().join("loadbot"));
         let remote = valid_catalog_remote(temporary.path(), "reconciliation-catalog");
         catalog_add(
-            &paths, "personal", remote.display().to_string(), false,
+            &paths,
+            "personal",
+            remote.display().to_string(),
+            false,
             &mut OperationContext::new(&mut crate::interaction::Unattended),
-        ).unwrap();
+        )
+        .unwrap();
         fs::write(paths.catalog_file("personal"),
             "version = 1\n[tools.demo]\ntype = \"git\"\nurl = \"https://github.com/owner/repo.git\"\n",
         ).unwrap();
         fs::create_dir_all(paths.tools().join("personal")).unwrap();
         let checkout = repository_with_origin(
-            &paths.tools().join("personal"), "git@github.com:owner/repo.git",
+            &paths.tools().join("personal"),
+            "git@github.com:owner/repo.git",
         );
         let destination = paths.tool("personal", "demo").unwrap();
         fs::rename(checkout, &destination).unwrap();
-        if let Some(push) = push { git::set_push_url(&destination, push).unwrap(); }
+        if let Some(push) = push {
+            git::set_push_url(&destination, push).unwrap();
+        }
         fs::write(destination.join("dirty.txt"), "preserve\n").unwrap();
         (temporary, paths, destination)
     }
 
-    fn reconciliation_report(paths: &Paths, context: &mut OperationContext<'_>) -> crate::interaction::OperationReport<()> {
-        context.run(|context| tool_pull_with(
-            paths, "demo", Some("personal"), true, context,
-            || Ok(Vec::new()),
-            |_, _, _, _| panic!("an existing checkout must not be cloned"),
-        ))
+    fn reconciliation_report(
+        paths: &Paths,
+        context: &mut OperationContext<'_>,
+    ) -> crate::interaction::OperationReport<()> {
+        context.run(|context| {
+            tool_pull_with(
+                paths,
+                "demo",
+                Some("personal"),
+                true,
+                context,
+                || Ok(Vec::new()),
+                |_, _, _, _| panic!("an existing checkout must not be cloned"),
+            )
+        })
     }
 
     #[test]
     fn reconciliation_records_completion_when_cancelled_between_or_after_url_writes() {
-        use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
         use crate::{interaction::OperationStatus, process::Event};
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
 
         for cancel_between_writes in [true, false] {
             let (_temporary, paths, destination) = reconciliation_fixture(None);
@@ -1733,41 +1793,69 @@ mod tests {
             let token = context.process.cancellation.clone();
             let fetch_write = AtomicBool::new(false);
             let inspected_destination = destination.clone();
-            context.process.observer = Some(Arc::new(move |event| {
-                match event {
-                    Event::Starting { arguments, .. } => {
-                        let writing_fetch = arguments.iter().any(|arg| arg == "--replace-all")
-                            && arguments.iter().any(|arg| arg == "remote.origin.url");
-                        fetch_write.store(writing_fetch, Ordering::SeqCst);
-                        if writing_fetch {
-                            assert!(crate::persistence::Lease::acquire(&inspected_destination)
-                                .err().unwrap().downcast_ref::<crate::persistence::Busy>().is_some());
-                            if cancel_between_writes { token.cancel(); }
+            context.process.observer = Some(Arc::new(move |event| match event {
+                Event::Starting { arguments, .. } => {
+                    let writing_fetch = arguments.iter().any(|arg| arg == "--replace-all")
+                        && arguments.iter().any(|arg| arg == "remote.origin.url");
+                    fetch_write.store(writing_fetch, Ordering::SeqCst);
+                    if writing_fetch {
+                        assert!(
+                            crate::persistence::Lease::acquire(&inspected_destination)
+                                .err()
+                                .unwrap()
+                                .downcast_ref::<crate::persistence::Busy>()
+                                .is_some()
+                        );
+                        if cancel_between_writes {
+                            token.cancel();
                         }
                     }
-                    Event::Exited { status, .. } if fetch_write.load(Ordering::SeqCst) => {
-                        assert!(status.success());
-                        if !cancel_between_writes { token.cancel(); }
-                    }
-                    _ => {}
                 }
+                Event::Exited { status, .. } if fetch_write.load(Ordering::SeqCst) => {
+                    assert!(status.success());
+                    if !cancel_between_writes {
+                        token.cancel();
+                    }
+                }
+                _ => {}
             }));
             let report = reconciliation_report(&paths, &mut context);
             assert!(context.process.cancellation.is_cancelled());
             assert_eq!(report.status(), OperationStatus::Cancelled, "{report:?}");
             assert!(report.is_partial());
-            assert_eq!(report.notices.iter().filter(|notice| matches!(notice, Notice::ToolReconciled { name } if name == "demo")).count(), 1);
-            assert_eq!(git::fetch_url(&destination).unwrap().as_deref(), Some("https://github.com/owner/repo.git"));
-            assert_eq!(git::push_url(&destination).unwrap().as_deref(), Some("git@github.com:owner/repo.git"));
-            assert_eq!(fs::read_to_string(destination.join("dirty.txt")).unwrap(), "preserve\n");
+            assert_eq!(
+                report
+                    .notices
+                    .iter()
+                    .filter(
+                        |notice| matches!(notice, Notice::ToolReconciled { name } if name == "demo")
+                    )
+                    .count(),
+                1
+            );
+            assert_eq!(
+                git::fetch_url(&destination).unwrap().as_deref(),
+                Some("https://github.com/owner/repo.git")
+            );
+            assert_eq!(
+                git::push_url(&destination).unwrap().as_deref(),
+                Some("git@github.com:owner/repo.git")
+            );
+            assert_eq!(
+                fs::read_to_string(destination.join("dirty.txt")).unwrap(),
+                "preserve\n"
+            );
             assert!(crate::persistence::Lease::acquire(&destination).is_ok());
         }
     }
 
     #[test]
     fn reconciliation_recovers_original_urls_after_write_failure_despite_cancellation() {
-        use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
         use crate::{interaction::OperationStatus, process::Event};
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
 
         for original_push in [None, Some("git@other:owner/repo.git")] {
             let (_temporary, paths, destination) = reconciliation_fixture(original_push);
@@ -1778,40 +1866,56 @@ mod tests {
             let inject = AtomicBool::new(true);
             let failing = AtomicBool::new(false);
             let lock = destination.join(".git/config.lock");
-            context.process.observer = Some(Arc::new(move |event| {
-                match event {
-                    Event::Starting { arguments, .. }
-                        if arguments.iter().any(|arg| arg == "--replace-all")
-                            && arguments.iter().any(|arg| arg == "remote.origin.url")
-                            && inject.swap(false, Ordering::SeqCst) => {
-                        fs::write(&lock, "owned by this test").unwrap();
-                        failing.store(true, Ordering::SeqCst);
-                        token.cancel();
-                    }
-                    Event::Exited { status, .. } if failing.swap(false, Ordering::SeqCst) => {
-                        assert!(!status.success());
-                        fs::remove_file(&lock).unwrap();
-                    }
-                    _ => {}
+            context.process.observer = Some(Arc::new(move |event| match event {
+                Event::Starting { arguments, .. }
+                    if arguments.iter().any(|arg| arg == "--replace-all")
+                        && arguments.iter().any(|arg| arg == "remote.origin.url")
+                        && inject.swap(false, Ordering::SeqCst) =>
+                {
+                    fs::write(&lock, "owned by this test").unwrap();
+                    failing.store(true, Ordering::SeqCst);
+                    token.cancel();
                 }
+                Event::Exited { status, .. } if failing.swap(false, Ordering::SeqCst) => {
+                    assert!(!status.success());
+                    fs::remove_file(&lock).unwrap();
+                }
+                _ => {}
             }));
             let report = reconciliation_report(&paths, &mut context);
             assert!(context.process.cancellation.is_cancelled());
             assert_eq!(report.status(), OperationStatus::Failed, "{report:?}");
             assert!(!report.is_partial());
-            assert!(!report.notices.iter().any(|notice| matches!(notice, Notice::ToolReconciled { .. })));
-            assert_eq!(git::fetch_url(&destination).unwrap().as_deref(), Some("git@github.com:owner/repo.git"));
-            assert_eq!(git::push_url(&destination).unwrap().as_deref(), original_push);
+            assert!(
+                !report
+                    .notices
+                    .iter()
+                    .any(|notice| matches!(notice, Notice::ToolReconciled { .. }))
+            );
+            assert_eq!(
+                git::fetch_url(&destination).unwrap().as_deref(),
+                Some("git@github.com:owner/repo.git")
+            );
+            assert_eq!(
+                git::push_url(&destination).unwrap().as_deref(),
+                original_push
+            );
             assert_eq!(fs::read(destination.join(".git/config")).unwrap(), before);
-            assert_eq!(fs::read_to_string(destination.join("dirty.txt")).unwrap(), "preserve\n");
+            assert_eq!(
+                fs::read_to_string(destination.join("dirty.txt")).unwrap(),
+                "preserve\n"
+            );
             assert!(crate::persistence::Lease::acquire(&destination).is_ok());
         }
     }
 
     #[test]
     fn reconciliation_reports_remaining_changes_when_recovery_fails() {
-        use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
         use crate::{interaction::OperationStatus, process::Event};
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
 
         let (_temporary, paths, destination) = reconciliation_fixture(None);
         let mut prompt = TestPrompt::with_confirmations([true]);
@@ -1834,11 +1938,32 @@ mod tests {
         assert!(context.process.cancellation.is_cancelled());
         assert_eq!(report.status(), OperationStatus::Failed, "{report:?}");
         assert!(report.is_partial());
-        assert!(report.result.as_ref().unwrap_err().downcast_ref::<git::RemoteRecoveryIncomplete>().is_some());
-        assert!(!report.notices.iter().any(|notice| matches!(notice, Notice::ToolReconciled { .. })));
-        assert_eq!(git::fetch_url(&destination).unwrap().as_deref(), Some("git@github.com:owner/repo.git"));
-        assert_eq!(git::push_url(&destination).unwrap().as_deref(), Some("git@github.com:owner/repo.git"));
-        assert_eq!(fs::read_to_string(&retained_lock).unwrap(), "owned by this test");
+        assert!(
+            report
+                .result
+                .as_ref()
+                .unwrap_err()
+                .downcast_ref::<git::RemoteRecoveryIncomplete>()
+                .is_some()
+        );
+        assert!(
+            !report
+                .notices
+                .iter()
+                .any(|notice| matches!(notice, Notice::ToolReconciled { .. }))
+        );
+        assert_eq!(
+            git::fetch_url(&destination).unwrap().as_deref(),
+            Some("git@github.com:owner/repo.git")
+        );
+        assert_eq!(
+            git::push_url(&destination).unwrap().as_deref(),
+            Some("git@github.com:owner/repo.git")
+        );
+        assert_eq!(
+            fs::read_to_string(&retained_lock).unwrap(),
+            "owned by this test"
+        );
         fs::remove_file(retained_lock).unwrap();
         assert!(crate::persistence::Lease::acquire(&destination).is_ok());
     }
@@ -1852,9 +1977,16 @@ mod tests {
         let report = context.run(|context| {
             let _lease = context.lease(&destination)?;
             context.process.cancellation.cancel();
-            git::reconcile_remote(&destination, "https://github.com/owner/repo.git", "git@github.com:owner/repo.git")
+            git::reconcile_remote(
+                &destination,
+                "https://github.com/owner/repo.git",
+                "git@github.com:owner/repo.git",
+            )
         });
-        assert_eq!(report.status(), crate::interaction::OperationStatus::Cancelled);
+        assert_eq!(
+            report.status(),
+            crate::interaction::OperationStatus::Cancelled
+        );
         assert!(!report.is_partial());
         assert!(report.notices.is_empty());
         assert_eq!(fs::read(destination.join(".git/config")).unwrap(), before);
@@ -2354,7 +2486,10 @@ mod tests {
             &mut OperationContext::new(&mut crate::interaction::Unattended),
         )
         .unwrap_err();
-        assert!(format!("{error:#}").contains("unrelated changes"), "{error:#}");
+        assert!(
+            format!("{error:#}").contains("unrelated changes"),
+            "{error:#}"
+        );
         assert_eq!(
             fs::read_to_string(paths.catalog("dirty").join("unrelated.txt")).unwrap(),
             "keep\n"

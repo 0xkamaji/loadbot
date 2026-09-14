@@ -120,7 +120,10 @@ fn remove_matching(path: &Path, name: &str, expected: Option<&Shortcut>) -> Resu
     let _lease = crate::persistence::Lease::acquire(path)?;
     let mut file = load(path)?;
     if expected.is_some_and(|expected| file.shortcuts.get(name) != Some(expected)) {
-        return Err(crate::persistence::Busy { resource: path.to_owned() }.into());
+        return Err(crate::persistence::Busy {
+            resource: path.to_owned(),
+        }
+        .into());
     }
     if file.shortcuts.remove(name).is_none() {
         bail!("shortcut '{name}' does not exist");

@@ -1,10 +1,10 @@
 use anyhow::{Context, Result, bail};
+#[cfg(test)]
+use loadbot::shortcuts::remove;
 use loadbot::{
     paths,
     shortcuts::{Shortcut, load, remove_if_matches},
 };
-#[cfg(test)]
-use loadbot::shortcuts::remove;
 use std::path::Path;
 fn details(name: &str, shortcut: &Shortcut) -> String {
     let mut text = format!(

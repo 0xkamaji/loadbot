@@ -1,8 +1,8 @@
+use crate::persistence::read_optional;
 use std::collections::BTreeMap;
 #[cfg(test)]
 use std::fs;
 use std::path::Path;
-use crate::persistence::read_optional;
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};

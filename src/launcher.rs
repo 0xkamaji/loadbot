@@ -93,7 +93,10 @@ pub fn safe_target(root: &Path, relative: &Path) -> Result<PathBuf> {
 }
 
 pub fn launch_file(target: &Path) -> Result<()> {
-    launch_file_in(target, &mut OperationContext::new(&mut crate::interaction::Unattended))
+    launch_file_in(
+        target,
+        &mut OperationContext::new(&mut crate::interaction::Unattended),
+    )
 }
 
 pub fn launch_file_in(target: &Path, context: &mut OperationContext<'_>) -> Result<()> {
@@ -138,10 +141,20 @@ pub fn launch_file_in(target: &Path, context: &mut OperationContext<'_>) -> Resu
 }
 
 pub fn launch_with_runner(target: &Path, working_directory: &Path, runner: Runner) -> Result<()> {
-    launch_with_runner_in(target, working_directory, runner, &mut OperationContext::new(&mut crate::interaction::Unattended))
+    launch_with_runner_in(
+        target,
+        working_directory,
+        runner,
+        &mut OperationContext::new(&mut crate::interaction::Unattended),
+    )
 }
 
-pub fn launch_with_runner_in(target: &Path, working_directory: &Path, runner: Runner, context: &mut OperationContext<'_>) -> Result<()> {
+pub fn launch_with_runner_in(
+    target: &Path,
+    working_directory: &Path,
+    runner: Runner,
+    context: &mut OperationContext<'_>,
+) -> Result<()> {
     context.process.cancellation.check()?;
     if runner == Runner::Direct {
         return run_command_in(Command::new(target), target, working_directory, context);
@@ -246,10 +259,20 @@ fn run_command(command: Command, target: &Path, context: &mut OperationContext<'
     run_command_in(command, target, working_directory, context)
 }
 
-fn run_command_in(mut command: Command, target: &Path, working_directory: &Path, context: &mut OperationContext<'_>) -> Result<()> {
+fn run_command_in(
+    mut command: Command,
+    target: &Path,
+    working_directory: &Path,
+    context: &mut OperationContext<'_>,
+) -> Result<()> {
     command.current_dir(working_directory);
     let output = crate::process::execute(&mut command, context.tool_mode, &context.process)
-        .with_context(|| format!("could not launch {}; the required executable may not be available", target.display()))?;
+        .with_context(|| {
+            format!(
+                "could not launch {}; the required executable may not be available",
+                target.display()
+            )
+        })?;
     successful_status(output.status, target)
 }
 

@@ -218,7 +218,10 @@ pub fn update(
     // User decisions during fetch release the operation lease. Recheck Git's
     // local preconditions before changing the worktree.
     let after_fetch = status(path)?;
-    if after_fetch.dirty || after_fetch.branch.as_deref() != Some(&branch) || after_fetch.commit != current.commit {
+    if after_fetch.dirty
+        || after_fetch.branch.as_deref() != Some(&branch)
+        || after_fetch.commit != current.commit
+    {
         bail!("repository changed during fetch; retry the update");
     }
     controlled_query(path, &["merge", "--ff-only", "--", &target], interaction)?;
@@ -236,18 +239,33 @@ pub fn commit_file(path: &Path, file: &str, message: &str) -> Result<String> {
     commit_file_with_interaction(path, file, message, &mut crate::interaction::Unattended)
 }
 
-pub fn commit_file_with_interaction(path: &Path, file: &str, message: &str, interaction: &mut dyn Interaction) -> Result<String> {
+pub fn commit_file_with_interaction(
+    path: &Path,
+    file: &str,
+    message: &str,
+    interaction: &mut dyn Interaction,
+) -> Result<String> {
     controlled_query(path, &["add", "--", file], interaction)?;
-    controlled_query(path, &["commit", "--only", "-m", message, "--", file], interaction)?;
+    controlled_query(
+        path,
+        &["commit", "--only", "-m", message, "--", file],
+        interaction,
+    )?;
     let _completed_step = crate::process::critical_scope();
     query(path, &["rev-parse", "--short", "HEAD"])
 }
 
-fn controlled_query(path: &Path, arguments: &[&str], interaction: &mut dyn Interaction) -> Result<String> {
+fn controlled_query(
+    path: &Path,
+    arguments: &[&str],
+    interaction: &mut dyn Interaction,
+) -> Result<String> {
     let mut args = vec![OsString::from("-C"), path.as_os_str().to_owned()];
     args.extend(arguments.iter().map(OsString::from));
     let output = raw_output_control(args, &interaction.process_control())?;
-    if !output.status.success() { bail!("{}", git_error_message(&output)); }
+    if !output.status.success() {
+        bail!("{}", git_error_message(&output));
+    }
     Ok(stdout_text(&output))
 }
 
@@ -351,7 +369,12 @@ pub struct RemoteRecoveryIncomplete {
 
 impl std::fmt::Display for RemoteRecoveryIncomplete {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "remote configuration recovery is incomplete in {}; inspect Git configuration before retrying: {}", self.path.display(), self.diagnostic)
+        write!(
+            formatter,
+            "remote configuration recovery is incomplete in {}; inspect Git configuration before retrying: {}",
+            self.path.display(),
+            self.diagnostic
+        )
     }
 }
 
@@ -379,18 +402,26 @@ pub fn reconcile_remote(path: &Path, fetch: &str, push: &str) -> Result<()> {
         // Attempt both restorations, even if one fails, then verify actual
         // local values (including absence and multiple configured URLs).
         let mut failures = Vec::new();
-        for (key, urls) in [("remote.origin.url", &old_fetch), ("remote.origin.pushurl", &old_push)] {
+        for (key, urls) in [
+            ("remote.origin.url", &old_fetch),
+            ("remote.origin.pushurl", &old_push),
+        ] {
             if let Err(recovery) = restore_remote_url(path, key, urls) {
                 failures.push(format!("{key}: {recovery:#}"));
             }
         }
         let mut restored = true;
-        for (key, expected) in [("remote.origin.url", &old_fetch), ("remote.origin.pushurl", &old_push)] {
+        for (key, expected) in [
+            ("remote.origin.url", &old_fetch),
+            ("remote.origin.pushurl", &old_push),
+        ] {
             match local_remote_urls(path, key) {
                 Ok(actual) if &actual == expected => {}
                 Ok(actual) => {
                     restored = false;
-                    failures.push(format!("{key}: expected {expected:?}, remaining {actual:?}"));
+                    failures.push(format!(
+                        "{key}: expected {expected:?}, remaining {actual:?}"
+                    ));
                 }
                 Err(verification) => {
                     restored = false;
@@ -400,7 +431,8 @@ pub fn reconcile_remote(path: &Path, fetch: &str, push: &str) -> Result<()> {
         }
         if !restored {
             return Err(error.context(RemoteRecoveryIncomplete {
-                path: path.to_owned(), diagnostic: failures.join("; "),
+                path: path.to_owned(),
+                diagnostic: failures.join("; "),
             }));
         }
         return Err(error.context(if failures.is_empty() {
@@ -414,12 +446,23 @@ pub fn reconcile_remote(path: &Path, fetch: &str, push: &str) -> Result<()> {
 
 fn local_remote_urls(path: &Path, key: &str) -> Result<Vec<String>> {
     let output = raw_output([
-        OsStr::new("-C"), path.as_os_str(), OsStr::new("config"),
-        OsStr::new("--local"), OsStr::new("--null"), OsStr::new("--get-all"), OsStr::new(key),
+        OsStr::new("-C"),
+        path.as_os_str(),
+        OsStr::new("config"),
+        OsStr::new("--local"),
+        OsStr::new("--null"),
+        OsStr::new("--get-all"),
+        OsStr::new(key),
     ])?;
-    if output.status.code() == Some(1) { return Ok(Vec::new()); }
+    if output.status.code() == Some(1) {
+        return Ok(Vec::new());
+    }
     if !output.status.success() {
-        bail!("could not read {key}: Git exited with {}: {}", output.status, String::from_utf8_lossy(&output.stderr).trim());
+        bail!(
+            "could not read {key}: Git exited with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
     }
     let text = String::from_utf8(output.stdout).context("Git remote URL is not UTF-8")?;
     Ok(text.split_terminator('\0').map(str::to_owned).collect())
@@ -443,18 +486,31 @@ fn restore_remote_url(path: &Path, key: &str, urls: &[String]) -> Result<()> {
         set_remote_url(path, key, first)?;
         for url in rest {
             checked_output([
-                OsStr::new("-C"), path.as_os_str(), OsStr::new("config"),
-                OsStr::new("--local"), OsStr::new("--add"), OsStr::new(key), OsStr::new(url),
+                OsStr::new("-C"),
+                path.as_os_str(),
+                OsStr::new("config"),
+                OsStr::new("--local"),
+                OsStr::new("--add"),
+                OsStr::new(key),
+                OsStr::new(url),
             ])?;
         }
     } else {
         let output = raw_output([
-            OsStr::new("-C"), path.as_os_str(), OsStr::new("config"),
-            OsStr::new("--local"), OsStr::new("--unset-all"), OsStr::new(key),
+            OsStr::new("-C"),
+            path.as_os_str(),
+            OsStr::new("config"),
+            OsStr::new("--local"),
+            OsStr::new("--unset-all"),
+            OsStr::new(key),
         ])?;
         // Git returns 5 when the requested key is already absent.
         if !output.status.success() && output.status.code() != Some(5) {
-            bail!("could not remove {key}: Git exited with {}: {}", output.status, String::from_utf8_lossy(&output.stderr).trim());
+            bail!(
+                "could not remove {key}: Git exited with {}: {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
         }
     }
     Ok(())
@@ -614,7 +670,9 @@ where
 
 fn authentication_context(error: anyhow::Error, original: &str) -> anyhow::Error {
     if error.downcast_ref::<crate::process::Cancelled>().is_some()
-        || error.downcast_ref::<crate::process::CleanupIncomplete>().is_some()
+        || error
+            .downcast_ref::<crate::process::CleanupIncomplete>()
+            .is_some()
         || error.downcast_ref::<crate::persistence::Busy>().is_some()
     {
         error.context(original.to_owned())
@@ -628,9 +686,15 @@ fn query_rot_identities() -> Result<Vec<RotIdentity>> {
         Command::new("rot").args(["ssh", "identities", "--json"]),
         crate::process::Mode::Capture { limit: 1024 * 1024 },
         &crate::process::current_control(),
-    ).map_err(|error| {
-        if error.downcast_ref::<std::io::Error>().is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound) {
-            error.context("Rot is not installed in PATH. Configure GitHub SSH normally or install Rot.")
+    )
+    .map_err(|error| {
+        if error
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound)
+        {
+            error.context(
+                "Rot is not installed in PATH. Configure GitHub SSH normally or install Rot.",
+            )
         } else {
             error.context("could not query Rot-managed SSH identities")
         }
@@ -755,9 +819,12 @@ where
 {
     crate::process::execute(
         Command::new("git").args(arguments),
-        crate::process::Mode::Capture { limit: 4 * 1024 * 1024 },
+        crate::process::Mode::Capture {
+            limit: 4 * 1024 * 1024,
+        },
         control,
-    ).context("could not execute Git (ensure Git is available in PATH)")
+    )
+    .context("could not execute Git (ensure Git is available in PATH)")
 }
 
 fn stdout_text(output: &Output) -> String {

@@ -134,7 +134,9 @@ pub fn save(path: &Path, catalog: &CatalogFile) -> Result<()> {
 /// Edit a catalog under its repository lease. Do not prompt or call repository
 /// operations inside the callback. Whole-document `save` is a low-level writer.
 pub fn update<T>(path: &Path, change: impl FnOnce(&mut CatalogFile) -> Result<T>) -> Result<T> {
-    let repository = path.parent().context("catalog path has no repository directory")?;
+    let repository = path
+        .parent()
+        .context("catalog path has no repository directory")?;
     let _lease = crate::persistence::Lease::acquire(repository)?;
     let mut catalog = load_or_default(path)?;
     let result = change(&mut catalog)?;

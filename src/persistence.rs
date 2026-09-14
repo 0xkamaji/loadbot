@@ -12,7 +12,11 @@ pub struct Busy {
 }
 impl std::fmt::Display for Busy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{} is busy or changed while awaiting a decision; retry the operation", self.resource.display())
+        write!(
+            f,
+            "{} is busy or changed while awaiting a decision; retry the operation",
+            self.resource.display()
+        )
     }
 }
 impl std::error::Error for Busy {}
@@ -24,11 +28,18 @@ pub struct DurabilityUncertain {
 }
 impl std::fmt::Display for DurabilityUncertain {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{} was replaced, but directory synchronization failed: {}", self.path.display(), self.source)
+        write!(
+            f,
+            "{} was replaced, but directory synchronization failed: {}",
+            self.path.display(),
+            self.source
+        )
     }
 }
 impl std::error::Error for DurabilityUncertain {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> { Some(&self.source) }
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
 }
 
 /// Never unlink this sidecar: its inode/Windows file identity is the lock target.
@@ -50,10 +61,22 @@ impl Lease {
         if fs::symlink_metadata(&lock_path).is_ok_and(|m| m.file_type().is_symlink()) {
             bail!("refusing symlink lock {}", lock_path.display());
         }
-        let file = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(lock_path)?;
-        let mut lease = Self { file, resource: resource.to_owned(), generation: 0 };
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(lock_path)?;
+        let mut lease = Self {
+            file,
+            resource: resource.to_owned(),
+            generation: 0,
+        };
         lease.lock()?;
-        lease.generation = lease.read_generation()?.checked_add(1).context("lock generation exhausted")?;
+        lease.generation = lease
+            .read_generation()?
+            .checked_add(1)
+            .context("lock generation exhausted")?;
         lease.file.seek(SeekFrom::Start(0))?;
         lease.file.write_all(&lease.generation.to_le_bytes())?;
         lease.file.set_len(8)?;
@@ -63,7 +86,10 @@ impl Lease {
     fn lock(&self) -> Result<()> {
         match self.file.try_lock() {
             Ok(()) => Ok(()),
-            Err(TryLockError::WouldBlock) => Err(Busy { resource: self.resource.clone() }.into()),
+            Err(TryLockError::WouldBlock) => Err(Busy {
+                resource: self.resource.clone(),
+            }
+            .into()),
             Err(TryLockError::Error(error)) => Err(error).context("could not lock resource"),
         }
     }
@@ -71,15 +97,27 @@ impl Lease {
         self.file.seek(SeekFrom::Start(0))?;
         let mut bytes = Vec::new();
         (&self.file).take(9).read_to_end(&mut bytes)?;
-        if bytes.is_empty() { return Ok(0); }
-        let bytes: [u8; 8] = bytes.try_into().map_err(|_| anyhow::anyhow!("invalid lock generation; inspect {}", self.resource.display()))?;
+        if bytes.is_empty() {
+            return Ok(0);
+        }
+        let bytes: [u8; 8] = bytes.try_into().map_err(|_| {
+            anyhow::anyhow!(
+                "invalid lock generation; inspect {}",
+                self.resource.display()
+            )
+        })?;
         Ok(u64::from_le_bytes(bytes))
     }
-    pub(crate) fn suspend(&self) -> Result<()> { self.file.unlock().map_err(Into::into) }
+    pub(crate) fn suspend(&self) -> Result<()> {
+        self.file.unlock().map_err(Into::into)
+    }
     pub(crate) fn resume(&mut self) -> Result<()> {
         self.lock()?;
         if self.read_generation()? != self.generation {
-            return Err(Busy { resource: self.resource.clone() }.into());
+            return Err(Busy {
+                resource: self.resource.clone(),
+            }
+            .into());
         }
         Ok(())
     }
@@ -89,11 +127,18 @@ impl Lease {
 /// An abandoned unique temporary file is never interpreted as committed data.
 pub fn write_toml<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     write_toml_with(path, value, |temporary, path| {
-        temporary.persist(path).map(|_| ()).map_err(|error| error.error)
+        temporary
+            .persist(path)
+            .map(|_| ())
+            .map_err(|error| error.error)
     })
 }
 
-fn write_toml_with<T: Serialize>(path: &Path, value: &T, replace: impl FnOnce(tempfile::NamedTempFile, &Path) -> std::io::Result<()>) -> Result<()> {
+fn write_toml_with<T: Serialize>(
+    path: &Path,
+    value: &T,
+    replace: impl FnOnce(tempfile::NamedTempFile, &Path) -> std::io::Result<()>,
+) -> Result<()> {
     let contents = toml::to_string_pretty(value).context("could not serialize configuration")?;
     let parent = path.parent().context("configuration path has no parent")?;
     fs::create_dir_all(parent)?;
@@ -102,24 +147,40 @@ fn write_toml_with<T: Serialize>(path: &Path, value: &T, replace: impl FnOnce(te
     }
     // A Phase 1 backup may be the only valid copy; never overwrite it implicitly.
     ensure_no_legacy_recovery(path)?;
-    let mut temporary = tempfile::Builder::new().prefix(".loadbot-write-").tempfile_in(parent)?;
+    let mut temporary = tempfile::Builder::new()
+        .prefix(".loadbot-write-")
+        .tempfile_in(parent)?;
     if let Ok(metadata) = fs::metadata(path) {
-        temporary.as_file().set_permissions(metadata.permissions())?;
+        temporary
+            .as_file()
+            .set_permissions(metadata.permissions())?;
     }
     temporary.write_all(contents.as_bytes())?;
     temporary.as_file().sync_all()?;
-    replace(temporary, path)
-        .with_context(|| format!("could not replace {}; existing data was retained", path.display()))?;
+    replace(temporary, path).with_context(|| {
+        format!(
+            "could not replace {}; existing data was retained",
+            path.display()
+        )
+    })?;
     #[cfg(unix)]
-    File::open(parent).and_then(|directory| directory.sync_all())
-        .map_err(|source| DurabilityUncertain { path: path.to_owned(), source })?;
+    File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|source| DurabilityUncertain {
+            path: path.to_owned(),
+            source,
+        })?;
     Ok(())
 }
 
 fn ensure_no_legacy_recovery(path: &Path) -> Result<()> {
     let backup = path.with_extension("toml.loadbot-backup");
     if backup.try_exists()? {
-        bail!("recovery required: inspect {} and {}; no files were changed", path.display(), backup.display());
+        bail!(
+            "recovery required: inspect {} and {}; no files were changed",
+            path.display(),
+            backup.display()
+        );
     }
     Ok(())
 }
@@ -144,10 +205,18 @@ mod tests {
         fs::write(&path, "version = 1\n").unwrap();
         let orphan = root.path().join(".loadbot-write-other-operation");
         fs::write(&orphan, "owned elsewhere").unwrap();
-        let error = write_toml_with(&path, &crate::config::LocalConfig::default(), |temporary, _| {
-            assert!(!fs::read(temporary.path()).unwrap().is_empty());
-            Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "injected replacement failure"))
-        }).unwrap_err();
+        let error = write_toml_with(
+            &path,
+            &crate::config::LocalConfig::default(),
+            |temporary, _| {
+                assert!(!fs::read(temporary.path()).unwrap().is_empty());
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "injected replacement failure",
+                ))
+            },
+        )
+        .unwrap_err();
         assert!(format!("{error:#}").contains("injected replacement failure"));
         assert_eq!(fs::read_to_string(&path).unwrap(), "version = 1\n");
         assert_eq!(fs::read_dir(root.path()).unwrap().count(), 2);

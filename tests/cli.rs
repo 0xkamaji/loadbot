@@ -923,6 +923,7 @@ fn rot_completion_is_parseable_deterministic_and_context_aware() {
     let home = temporary.path().join("loadbot-home");
     let config_home = temporary.path().join("config-home");
     let shortcuts = config_home.join("loadbot/shortcuts.toml");
+    fs::write(temporary.path().join("print-filesystem-decoy"), "not a command").unwrap();
     fs::create_dir_all(shortcuts.parent().unwrap()).unwrap();
     fs::write(
         shortcuts,
@@ -942,6 +943,7 @@ path = "triage.py"
     .unwrap();
     let complete = |words: &[&str]| {
         let output = Command::new(env!("CARGO_BIN_EXE_loadbot"))
+            .current_dir(temporary.path())
             .env("LOADBOT_HOME", &home)
             .env("XDG_CONFIG_HOME", &config_home)
             .env("APPDATA", &config_home)
@@ -974,6 +976,17 @@ path = "triage.py"
         ["bn-triage", "print-strings"]
     );
     assert_eq!(complete(&["shortcut", ""]), ["add", "list", "remove"]);
+    assert_eq!(complete(&["shortcut", "r"]), ["remove"]);
+    assert_eq!(complete(&["shortcut", "remove", "pri"]), ["print-strings"]);
+    assert_eq!(complete(&["catalog", "s"]), ["status", "sync"]);
+    for words in [
+        vec![], vec!["unknown"], vec!["run", "missing"], vec!["run", "print-filesystem"],
+        vec!["shortcut", "add", ""], vec!["catalog", "status", ""],
+        vec!["shortcut", "remove", "print-strings", ""], vec!["unknown", ""],
+    ] {
+        assert!(complete(&words).is_empty(), "{words:?}");
+    }
+    assert!(!home.exists());
     assert_eq!(complete(&[""]), root);
 }
 

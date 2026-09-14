@@ -1087,8 +1087,8 @@ mod tests {
     #[test]
     fn rot_document_accepts_only_verified_safe_identities() {
         let identities = parse_rot_identities(
-            br#"{"version":1,"identities":[
-                {"alias":"github-kamaji","username":"0xkamaji","verification":"verified"},
+            br#"{"version":1,"future_field":true,"identities":[
+                {"alias":"github-kamaji","username":"0xkamaji","verification":"verified","future_field":42},
                 {"alias":"github-work","username":null,"verification":"unverified"},
                 {"alias":"bad alias","username":"bad","verification":"verified"},
                 {"alias":"github-kamaji","username":"duplicate","verification":"verified"}
@@ -1107,6 +1107,17 @@ mod tests {
                 .to_string()
                 .contains("unsupported SSH identity document version 2")
         );
+    }
+
+    #[test]
+    fn rot_document_accepts_empty_results_and_rejects_malformed_contracts() {
+        assert!(parse_rot_identities(br#"{"version":1,"identities":[]}"#).unwrap().is_empty());
+        for document in [
+            b"not JSON".as_slice(), b"[]", br#"{"identities":[]}"#,
+            br#"{"version":1}"#, br#"{"version":1,"identities":[{"alias":"github-work"}]}"#,
+        ] {
+            assert!(parse_rot_identities(document).is_err());
+        }
     }
 
     #[test]

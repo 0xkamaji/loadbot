@@ -49,6 +49,16 @@ pub struct Lease {
     resource: PathBuf,
     generation: u64,
 }
+
+impl Drop for Lease {
+    fn drop(&mut self) {
+        // Release at the operation boundary, even when a concurrent Unix fork
+        // briefly inherits this file description before exec closes it.
+        // Closing the handle still supplies OS cleanup on failure or crash.
+        let _ = self.file.unlock();
+    }
+}
+
 impl Lease {
     pub fn acquire(resource: &Path) -> Result<Self> {
         let parent = resource.parent().context("resource has no parent")?;
@@ -198,6 +208,22 @@ pub fn read_optional(path: &Path) -> Result<Option<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn lease_release_does_not_wait_for_an_inherited_file_description() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("repository");
+        let lease = Lease::acquire(&path).unwrap();
+        // dup shares the same open file description, just as a concurrent fork
+        // does until exec closes CLOEXEC descriptors in the child.
+        let inherited = lease.file.try_clone().unwrap();
+        drop(lease);
+        let next = Lease::acquire(&path);
+        assert!(next.is_ok(), "the completed operation still holds its lease");
+        drop(inherited);
+    }
+
     #[test]
     fn replacement_failure_keeps_old_file_and_removes_only_our_temporary() {
         let root = tempfile::tempdir().unwrap();

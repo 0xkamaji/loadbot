@@ -24,7 +24,7 @@ pub mod config;
 pub mod git;
 /// Typed decisions, progress, warnings, and partial-success reports.
 pub mod interaction;
-/// Project inventory, safe file resolution, and inherited-stream child execution.
+/// Project inventory, safe file resolution, and terminal or streamed child execution.
 pub mod launcher;
 /// Catalog and tool operations shared by every adapter.
 pub mod operations;

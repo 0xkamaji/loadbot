@@ -174,6 +174,141 @@ fn public_operations_return_structured_paths_status_and_shortcuts() {
 }
 
 #[test]
+fn headless_library_session() {
+    // Reuse this test binary as a nonterminal caller. --nocapture makes any
+    // accidental backend presentation observable on the parent's pipes.
+    if std::env::var_os("LOADBOT_HEADLESS_SESSION").is_none() {
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "headless_library_session", "--nocapture"])
+            .env("LOADBOT_HEADLESS_SESSION", "1")
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert!(output.stderr.is_empty(), "{output:?}");
+        // Only libtest's preamble is permitted. The child exits before libtest
+        // prints its completion line; backend and tool output must stay in events.
+        assert_eq!(String::from_utf8(output.stdout).unwrap().trim(), "running 1 test");
+        return;
+    }
+    exercise_headless_session();
+    std::process::exit(0);
+}
+
+fn exercise_headless_session() {
+    use loadbot::interaction::{Interaction, OperationStatus};
+    use loadbot::process::{Event, Mode, Stream};
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Default)]
+    struct Frontend { notices: Vec<Notice> }
+    impl Interaction for Frontend {
+        fn notice(&mut self, notice: &Notice) { self.notices.push(notice.clone()); }
+    }
+    let fixture = Fixture::new();
+    let paths = fixture.installed_catalog();
+    let source = fixture.repository("headless tool");
+    fs::create_dir(source.join("scripts with spaces")).unwrap();
+    fs::write(source.join("cwd-token"), "root").unwrap();
+    fs::write(source.join("scripts with spaces/run.sh"),
+        "test -f cwd-token || exit 9\nprintf 'GUI stdout\\n'\nprintf 'GUI stderr\\n' >&2\nprintf 'ran' > cwd-marker\nexit 7\n",
+    ).unwrap();
+    git_command(&source, &["add", "."]);
+    git_command(&source, &["commit", "-m", "headless command"]);
+    let mut frontend = Frontend::default();
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let observed = events.clone();
+    let mut context = OperationContext::new(&mut frontend);
+    context.tool_mode = Mode::Stream;
+    context.process.terminal = false;
+    context.process.observer = Some(Arc::new(move |event| observed.lock().unwrap().push(event)));
+
+    let report = context.run(|context| operations::catalog_list(&paths, context));
+    assert_eq!(report.status(), OperationStatus::Succeeded);
+    let rows = report.result.unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].name, "personal");
+    assert_eq!(rows[0].state, operations::CatalogState::Installed);
+    let report = context.run(|context| operations::catalog_status(&paths, "personal", context));
+    assert!(matches!(report.result.unwrap().file, operations::CatalogValidity::Valid));
+    let report = context.run(|context| operations::tool_add(
+        &paths, "personal", "demo", source.display().to_string(), None, false, false, context,
+    ));
+    assert_eq!(report.status(), OperationStatus::Succeeded);
+    assert!(report.notices.iter().any(|notice| matches!(notice, Notice::ToolAdded { name, .. } if name == "demo")));
+    assert_eq!(report.result.unwrap().notices.len(), report.notices.len());
+    catalog::update(&paths.catalog_file("personal"), |catalog| {
+        catalog.tools.get_mut("demo").unwrap().commands.insert("inspect".into(), catalog::CommandConfig {
+            path: "scripts with spaces/run.sh".into(), description: Some("Inspect project".into()),
+            runner: Some(catalog::Runner::Sh), extra: Default::default(),
+        });
+        Ok(())
+    }).unwrap();
+    let report = context.run(|context| operations::tool_pull(&paths, "demo", Some("personal"), context));
+    assert_eq!(report.status(), OperationStatus::Succeeded, "{report:?}");
+    let report = context.run(|context| operations::tool_list(&paths, context));
+    let tools = report.result.unwrap();
+    assert_eq!(tools.len(), 1);
+    assert!(tools[0].installed);
+    assert_eq!(tools[0].tool.name, "demo");
+    let report = context.run(|context| operations::tool_status(&paths, "demo", Some("personal"), context));
+    let status = report.result.unwrap();
+    assert!(status.installed);
+    assert_eq!(status.repository.unwrap().branch.as_deref(), Some("main"));
+
+    let file = paths.shortcuts().unwrap();
+    let mut shortcut = shortcuts::Shortcut::new("personal".into(), "demo".into(), "scripts with spaces/run.sh".into()).unwrap();
+    shortcut.runner = Some(catalog::Runner::Sh);
+    let report = context.run(|_| shortcuts::save(&file, "personal-inspect", shortcut.clone()));
+    assert_eq!(report.status(), OperationStatus::Succeeded);
+    assert_eq!(shortcuts::shortcut_names(&file).unwrap(), ["personal-inspect"]);
+    let loaded = shortcuts::load(&file).unwrap();
+    assert_eq!(loaded.shortcuts["personal-inspect"], shortcut);
+    let resolved = context.run(|context| operations::all_tools(&paths, context)).result.unwrap();
+    let projects = launcher::project_inventory(&resolved, &loaded);
+    assert_eq!(projects.len(), 1);
+    let project = &projects[0];
+    assert_eq!((project.catalog.as_str(), project.tool.as_str()), ("personal", "demo"));
+    assert_eq!(project.entries.len(), 2);
+    let entry = &project.entries[0];
+    assert_eq!(entry.name, "inspect");
+    assert_eq!(entry.source, launcher::EntrySource::Catalog);
+    assert_eq!(project.entries[1].source, launcher::EntrySource::Personal);
+    assert_eq!(entry.description.as_deref(), Some("Inspect project"));
+
+    events.lock().unwrap().clear();
+    let report = context.run(|context| launcher::launch_command(
+        &paths, &project.catalog, &project.tool, &entry.path, entry.runner, entry.source, context,
+    ));
+    assert_eq!(report.status(), OperationStatus::Failed);
+    assert!(!report.is_partial());
+    assert_eq!(report.result.unwrap_err().downcast_ref::<launcher::ChildExit>().unwrap().code(), 7);
+    let observed = events.lock().unwrap();
+    assert!(matches!(observed.first(), Some(Event::OperationStarted)));
+    assert!(matches!(observed.last(), Some(Event::OperationFinished { outcome: OperationStatus::Failed, partial: false })));
+    // The launcher first inspects Git. Its final process is the selected command.
+    let child_start = observed.iter().rposition(|event| matches!(event, Event::Started { .. })).unwrap();
+    let output = |stream| observed[child_start..].iter().filter_map(|event| match event {
+        Event::Output { stream: actual, bytes } if *actual == stream => Some(bytes.as_slice()),
+        _ => None,
+    }).flatten().copied().collect::<Vec<_>>();
+    assert_eq!(output(Stream::Stdout), b"GUI stdout\n");
+    assert_eq!(output(Stream::Stderr), b"GUI stderr\n");
+    assert!(observed[child_start..].iter().any(|event| matches!(event, Event::Exited { status, .. } if status.code() == Some(7))));
+    drop(observed);
+    assert_eq!(fs::read_to_string(status.path.join("cwd-marker")).unwrap(), "ran");
+    assert!(!status.path.join("scripts with spaces/cwd-marker").exists());
+    let report = context.run(|_| shortcuts::remove_if_matches(&file, "personal-inspect", &shortcut));
+    assert_eq!(report.status(), OperationStatus::Succeeded);
+    assert!(shortcuts::load(&file).unwrap().shortcuts.is_empty());
+    let notice_count = context.notices.len();
+    drop(context);
+    assert_eq!(frontend.notices.len(), notice_count);
+    assert!(frontend.notices.iter().any(|notice| matches!(notice, Notice::ToolInstalled { name, .. } if name == "demo")));
+    // Fixture cleanup happens before the worker exits, including on assertion failure.
+}
+
+#[test]
 fn reports_retain_warnings_and_partial_success_on_failure() {
     let fixture = Fixture::new();
     let paths = fixture.installed_catalog();

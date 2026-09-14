@@ -868,8 +868,10 @@ Loadbot:
 
 ## Backend and CLI organization
 
-Loadbot provides a Rust library as well as the CLI. The backend does not read
-terminal input, check for a TTY, or print Loadbot-owned output. The binary keeps
+Loadbot provides a Rust library as well as the CLI. Shared operations do not parse
+arguments, request terminal input, or print Loadbot-owned output. The CLI decides
+whether a user flow requires a terminal; the process boundary handles terminal
+ownership only for execution modes that permit it. The binary keeps
 its existing command, menu, completion, and output contracts.
 
 - `src/lib.rs` defines the public module surface.
@@ -878,7 +880,8 @@ its existing command, menu, completion, and output contracts.
   validation, locations, and persistence together.
 - `git.rs` keeps Git safeguards, rollback, and Rot-assisted SSH retry logic.
 - `launcher.rs` provides project inventory, directory enumeration, safe target
-  resolution, and child execution. Child stdin/stdout/stderr remain inherited.
+  resolution, and child execution. CLI tools inherit the terminal; nonterminal
+  callers can receive stdout/stderr through structured process events.
 - `interaction.rs` defines typed SSH/check-out decisions and operation reports.
 - `src/cli/` owns argument parsing and dispatch (`args.rs`, `mod.rs`), prompts and
   menus (`menus.rs`), launcher and shortcut UI flows, completion, and rendering
@@ -916,4 +919,8 @@ This optional override names the directory containing `shortcuts.toml`; when uns
 normal platform configuration discovery is unchanged. Library callers can instead
 supply explicit directories with `Paths::with_directories`.
 
-Backend concurrency, persistence recovery, and observable process execution are described in [the Phase 2 backend notes](docs/phase2.md), including cancellation limits and pending verification.
+Backend concurrency, persistence recovery, and observable process execution are described in [the Phase 2 backend notes](docs/phase2.md), including cancellation limits.
+
+[GUI readiness and frontend contracts](docs/gui-readiness.md) describes the module
+boundaries, public call flow, headless verification, Rot compatibility, and the
+direction for a Tauri frontend calling the existing Rust library.

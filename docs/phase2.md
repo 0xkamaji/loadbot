@@ -12,6 +12,8 @@ Configuration and shortcut transactions use a sibling lock beside the TOML file.
 `std::fs::File::try_lock` provides a nonblocking OS-backed exclusive lease.
 An occupied lease returns typed `persistence::Busy`, with the resource path and
 retry guidance. Closing the handle, including process exit, releases the lock.
+Normal lease drop also explicitly unlocks, so a concurrent Unix fork inheriting
+the file description until exec cannot extend a completed operation's lease.
 Lock files are never removed or replaced: deleting them would split protection
 between different file identities. A damaged lock generation is an explicit
 error requiring inspection, not permission to proceed unlocked.
@@ -154,7 +156,8 @@ legacy recovery detection, simultaneous large output, spawn/nonzero status,
 process-tree cancellation, and saved/committed work followed by cancellation or
 push failure. Existing CLI and terminal tests remain enabled.
 
-Native Windows execution and final rustfmt/Clippy checks require CI in the current
-development environment. Phase 2 is not complete until the final Linux and
-Windows required checks pass. PowerShell setup tests are separate from Windows
-Rust coverage.
+Phase 2's required Linux and Windows CI passed at `94bce1e`. New changes still
+require checks on their final revision; a Linux result does not establish native
+Windows compatibility. PowerShell setup tests are separate from Windows Rust
+coverage. See [GUI readiness and frontend contracts](gui-readiness.md) for the
+headless frontend verification and integration direction.

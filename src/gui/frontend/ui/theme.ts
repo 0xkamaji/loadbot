@@ -6,7 +6,6 @@ import manifest from '../../loadbot-gui-assets/spec/asset-manifest.json';
 const images = import.meta.glob<string>([
   '../../loadbot-gui-assets/assets/ui/{buttons,frames,inputs,menus,icons,icons-inverse,checkboxes}/*.png',
   '../../loadbot-gui-assets/assets/terminal/panel.png',
-  '../../loadbot-gui-assets/assets/branding/loadbot-header.png',
 ], { eager: true, query: '?url', import: 'default' });
 
 export function asset(id: string): string {

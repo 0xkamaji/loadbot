@@ -1,22 +1,16 @@
-import type { MenuAdapter, MenuProject } from './types';
+import type { LoadbotAdapter, LoadbotProject } from '../contract';
 
 // Entirely fictional, in-memory data. Nothing here discovers paths or reads catalogs.
-const projects: readonly MenuProject[] = [
+const projects: readonly LoadbotProject[] = [
   {
     catalog: 'personal', tool: 're-toolkit', entries: [
       {
         name: 'Malware triage', path: 'recipes/triage.py', runner: 'python', source: 'catalog',
         description: 'Hashes, strings, file details, reports.',
-        previewFields: [
-          { id: 'input', kind: 'path', label: 'Input folder', pathKind: 'folder', required: true, sampleValue: 'samples/' },
-          { id: 'output', kind: 'path', label: 'Output', pathKind: 'folder', initialValue: 'reports/', sampleValue: 'reports/triage/' },
-          { id: 'report', kind: 'checkbox', label: 'Open report (sample option)' },
-        ],
       },
       {
         name: 'Export functions', path: 'recipes/BinaryNinja/export_functions.py', runner: 'python', source: 'catalog',
         description: 'Export function names from the current analysis database. No input folder is needed.',
-        previewFields: [{ id: 'output', kind: 'path', label: 'Output file', pathKind: 'file', initialValue: 'reports/functions.json', sampleValue: 'reports/functions-review.json' }],
       },
       { name: 'Export strings', path: 'recipes/BinaryNinja/print_strings.py', source: 'personal', description: 'Print strings from the current analysis database. This shortcut has no sample inputs.' },
     ],
@@ -26,10 +20,6 @@ const projects: readonly MenuProject[] = [
       {
         name: 'Inspect recording', path: 'tools/inspect.py', runner: 'python', source: 'catalog',
         description: 'Inspect a sample recording and its center frequency.',
-        previewFields: [
-          { id: 'input', kind: 'path', label: 'Recording file', pathKind: 'file', required: true, sampleValue: 'recordings/example.wav' },
-          { id: 'frequency', kind: 'text', label: 'Center frequency (MHz)', required: true, placeholder: 'e.g. 100.5' },
-        ],
       },
       { name: 'List devices', path: 'tools/devices.sh', runner: 'bash', source: 'catalog', description: 'A no-input shortcut. Device discovery is not connected in this preview.' },
     ],
@@ -51,7 +41,6 @@ const projects: readonly MenuProject[] = [
   ] },
 ];
 
-export const fixtureAdapter: MenuAdapter = {
-  mode: 'fixture',
-  async readProjects() { return projects; },
+export const fixtureAdapter: LoadbotAdapter = {
+  async readInventory() { return structuredClone(projects); },
 };

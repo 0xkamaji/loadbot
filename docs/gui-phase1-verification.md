@@ -1,6 +1,15 @@
 # Phase 1 verification record
 
-## Follow-up status — 2026-09-14
+## Current consolidated baseline
+
+`main` now contains the completed cleanup below, the PowerShell empty-PATH fix and
+regressions, and the Vite/Tauri watcher fix. The maintainer has reported a successful
+native GUI launch. The following sections are a **historical record** of the earlier
+verification environment/publication state, not instructions to resume an old branch.
+For the structural pass starting from `5503ae9ce0cbbd65d54f9b3bf0ae6c6b44e0549f`
+and its fresh check results, see [GUI architecture](gui-architecture.md).
+
+## Historical follow-up status — 2026-09-14
 
 The checkout started clean on `main` at
 `bf4fff5f8167d8203ad5bb697c2b011ba2d0cd64`. Follow-up changes are on the local

@@ -44,36 +44,8 @@
   border-image: var(--loadbot-frames-panel) var(--loadbot-frames-panel-slice) fill stretch;
   padding: var(--loadbot-frames-panel-padding);
 }
-.lb-header {
-  display: flex; align-items: center; gap: var(--lb-space-3); flex-shrink: 0;
-  border: solid transparent;
-  border-width: var(--loadbot-frames-titlebar-border);
-  border-image: var(--loadbot-frames-titlebar) var(--loadbot-frames-titlebar-slice) fill stretch;
-  padding: var(--loadbot-frames-titlebar-padding);
-}
-.lb-mascot { width: 52px; height: 52px; object-fit: contain; flex-shrink: 0; }
-.lb-fixture-badge { margin-left: auto; font-size: 12px; text-align: right; }
-.lb-fixture-badge span { display: block; font-size: 10px; margin-top: var(--lb-space-1); }
-.lb-workspace {
-  display: grid; grid-template-columns: minmax(210px, 30%) minmax(0, 1fr);
-  grid-template-rows: minmax(350px, 1fr);
-  gap: var(--lb-space-2); flex: 1; min-height: 0; overflow: auto;
-}
-.lb-sidebar, .lb-shortcut-panel { display: flex; flex-direction: column; gap: var(--lb-space-2); }
-.lb-shortcut-panel { overflow-y: auto; }
-.lb-shortcut-panel h2 { flex-shrink: 0; }
-.lb-shortcut-panel h2 span { font-size: 14px; }
 .lb-menu-list { min-height: 0; overflow: auto; padding: 2px; flex: 1; }
-.lb-shortcut-panel > .lb-menu-list { flex: 1 0 140px; max-height: 40%; }
-.lb-project-actions { display: grid; gap: var(--lb-space-2); }
-.lb-note, .lb-metadata, .lb-status { font-size: 11px; line-height: 1.6; }
-.lb-metadata { opacity: .85; }
-.lb-details { border-top: 2px solid var(--lb-text); padding-top: var(--lb-space-3); flex-shrink: 0; }
-.lb-details > p { margin-top: var(--lb-space-2); }
-.lb-fields { display: grid; gap: var(--lb-space-2); margin: var(--lb-space-3) 0; }
-.lb-run { display: flex; gap: var(--lb-space-3); align-items: center; }
-.lb-run .lb-button { flex-shrink: 0; min-width: 170px; }
-.lb-run .lb-status { flex: 1; }
+.lb-status { font-size: 11px; line-height: 1.6; }
 .lb-toolbar { display: flex; justify-content: space-between; gap: var(--lb-space-2); flex-shrink: 0; }
 
 .lb-button {
@@ -145,23 +117,9 @@
 .lb-drawer p { margin-top: var(--lb-space-2); font-size: 12px; }
 .lb-drawer:focus-visible { outline-color: var(--lb-terminal-text); }
 
-@container loadbot (max-width: 680px) {
-  .lb-workspace { grid-template-columns: minmax(0, 1fr); grid-template-rows: 235px minmax(480px, 1fr); }
-  .lb-project-actions { grid-template-columns: 1fr 1fr; }
-  .lb-project-actions .lb-note { grid-column: 1 / -1; }
-  .lb-fixture-badge span { display: none; }
-  .lb-header { gap: var(--lb-space-2); }
-  .lb-header h1 { font-size: 22px; }
-  .lb-mascot { width: 44px; height: 44px; }
-}
 @container loadbot (max-width: 440px) {
-  .lb-fixture-badge { font-size: 9px; max-width: 72px; }
-  .lb-header h1 { font-size: 18px; letter-spacing: 1px; }
-  .lb-mascot { width: 36px; height: 36px; }
   .lb-path-selector { grid-template-columns: minmax(0, 1fr); }
   .lb-path-selector .lb-field { grid-template-columns: minmax(0, 1fr); }
   .lb-path-selector > .lb-button { justify-self: start; }
-  .lb-run { flex-direction: column; align-items: stretch; }
   .lb-toolbar .lb-button { font-size: 12px; min-width: 0; }
-  .lb-workspace { grid-template-rows: 235px minmax(620px, 1fr); }
 }

@@ -5,6 +5,10 @@ Vite. The menu uses the approved PNG controls and static mascot from
 `src/gui/loadbot-gui-assets/`. Both reference images were visually inspected.
 This phase's fixture-only scope overrides the handoff's broader backend roadmap.
 
+The consolidated `main` baseline has been launched natively successfully by the
+maintainer. The subsequent structural pass and its local verification are described
+in [GUI capability/application/presentation architecture](gui-architecture.md).
+
 ## Launch
 
 From the repository root, with Node.js **22.12+** and npm installed:
@@ -129,20 +133,26 @@ Paths below are relative to `src/gui/`:
 
 | Location | Responsibility |
 | --- | --- |
-| `frontend/menu/LoadbotMenu.tsx` | Project/shortcut selection, loading/error/empty presentation, isolated sample form state, drawer state. |
-| `frontend/menu/components.tsx` | Window/panel frames, buttons/icon buttons, menu rows/lists, inputs/path selectors, checkboxes, status, bottom drawer. Native HTML semantics; no Tauri calls. |
-| `frontend/menu/theme.ts`, `theme.css` | Central tokens, asset URLs, font, spacing, states, responsive container layout. Nine-slice dimensions and content padding are read directly from the manifest. |
-| `frontend/adapter/types.ts` | Minimal typed inventory projection, read operation, preview field definitions, optional host close callback. |
-| `frontend/adapter/fixtures.ts` | Fictional projects, shared/personal entries, sample control descriptions and values. No filesystem/configuration access. |
-| `frontend/hosts/standalone.tsx`, `host.css` | Standalone mount and viewport sizing; injects the fixture adapter. Also works in a normal browser. |
+| `frontend/loadbot/LoadbotMenu.tsx` | Composition of injected capabilities, application state, and Loadbot presentation. |
+| `frontend/loadbot/contract.ts`, `identity.ts` | Semantic inventory read interface and catalog/source-qualified identities; no widget metadata. |
+| `frontend/loadbot/application/` | Headless deterministic state/actions and optional sample forms; thin React binding. |
+| `frontend/loadbot/view/` | Loadbot layout, labels, sample widgets, unavailable-action presentation, mascot and responsive composition. |
+| `frontend/ui/components.tsx` | Application-neutral frames, buttons, menu rows/lists, inputs/path selectors, checkboxes, status and drawer primitives. |
+| `frontend/ui/theme.ts`, `theme.css` | Approved skin, tokens, asset URLs, font, spacing and control states, using manifest nine-slice measurements. |
+| `frontend/loadbot/fixtures/` | Inventory adapter and separately injected UI-demo configuration. No filesystem/configuration access. |
+| `frontend/hosts/fixtureComposition.ts` | Explicit choice of fixture adapter and sample forms for both current hosts. |
+| `frontend/hosts/standalone.tsx`, `host.css` | Standalone mount and viewport sizing; also works in a normal browser. |
 | `frontend/hosts/embed.tsx`, `embed.html` | Development-only parent-owned overlay and focus lifecycle. |
 | `src-tauri/` | Tauri setup, native window configuration/lifetime, Rust library dependency. Future native calls belong here and in a host-side adapter. |
 
 For another frontend parent:
 
 ```tsx
+import { LoadbotMenu } from './frontend/loadbot/LoadbotMenu';
+import { fixtureMenuDependencies } from './frontend/hosts/fixtureComposition';
+
 <div style={{ width: '100%', height: 600 }}>
-  <LoadbotMenu adapter={fixtureAdapter} host={{ onClose: closeParentOverlay }} />
+  <LoadbotMenu {...fixtureMenuDependencies} host={{ onClose: closeParentOverlay }} />
 </div>
 ```
 
@@ -221,25 +231,26 @@ responses, and the optional close callback.
 See [the verification record](gui-phase1-verification.md) for the actual local
 results and environment limitations.
 
-## Next connections — Phase 2
+## Next phase — read-only data only
 
 1. Add a host-side adapter using `operations::all_tools`, `shortcuts::load`, and
    `launcher::project_inventory` on a worker thread. Preserve catalog qualification
    and `EntrySource`; inventory is not an installation/launchability check. Use
    structured results and notices rather than parsing CLI output.
-2. Connect selected-project status/path and native folder opening through the host.
-   Distinguish catalog rereading from Git synchronization. Add registration/refresh
-   workflows through existing operations and their typed decision/report contracts.
-3. Decide whether any shortcut actually supports inputs/output destinations. The
+2. Add read-only catalog and selected-project status/path projections through the
+   adapter and application state. Distinguish an inventory reread from Git
+   synchronization. Keep registration, synchronization, execution, and native
+   folder-opening actions unavailable in that phase.
+3. Omit the injected sample-form configuration when displaying real data. The
    current `ProjectEntry` has name/path/description/runner/source, **no input schema**;
    `launch_command` has no arbitrary GUI argument list. Do not persist
-   `previewFields` or translate sample folder values into shell strings. Input
-   support needs a small explicit backend contract before live forms can use it.
-4. Connect validated execution through `launcher::launch_command` and fresh
-   `OperationContext`s, with existing containment/installation validation and real
-   reports. Host worker coordination, typed decisions, bounded output and decoding
-   belong outside the menu. Follow `gui-readiness.md` for concurrency/cancellation.
+   UI-only `SampleForms` or translate sample folder values into shell strings.
+   Any future input support needs a separate explicit backend contract.
+4. Preserve structured notices, truthful data provenance, and stale-response
+   handling. Follow `gui-readiness.md` for worker/context rules and
+   `gui-architecture.md` for the new presentation boundary. No read-only adapter
+   implementation is included in this structural pass.
 
-These are future connection points only. A real terminal requires a separately
-designed terminal/PTY lifecycle; the placeholder makes no claim to implement it.
-Rot hosting/transport likewise remains future work.
+Execution and mutation are deferred beyond the next read-only phase. A real
+terminal requires a separately designed terminal/PTY lifecycle; the placeholder
+makes no claim to implement it. Rot hosting/transport likewise remains future work.

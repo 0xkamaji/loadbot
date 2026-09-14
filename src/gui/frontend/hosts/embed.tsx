@@ -1,7 +1,7 @@
 import { StrictMode, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { fixtureAdapter } from '../adapter/fixtures';
-import { LoadbotMenu } from '../menu/LoadbotMenu';
+import { fixtureMenuDependencies } from './fixtureComposition';
+import { LoadbotMenu } from '../loadbot/LoadbotMenu';
 import './host.css';
 
 function EmbeddingExample() {
@@ -18,7 +18,7 @@ function EmbeddingExample() {
     <button ref={launcher} onClick={() => setOpen(true)}>Open Loadbot overlay</button>
     <dialog ref={dialog} className="embedding-dialog" aria-label="Loadbot overlay" onCancel={(event) => { event.preventDefault(); setOpen(false); }}>
       <div className="embedding-container">
-        {open && <LoadbotMenu adapter={fixtureAdapter} host={{ onClose: () => setOpen(false) }} />}
+        {open && <LoadbotMenu {...fixtureMenuDependencies} host={{ onClose: () => setOpen(false) }} />}
       </div>
     </dialog>
   </main>;

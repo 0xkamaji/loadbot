@@ -5,6 +5,9 @@ library directly on a worker thread, constructing its `OperationContext` there.
 The [Phase 1 standalone GUI](gui-phase1.md) now lives in `src/gui/`, with a separate
 Tauri 2 host and an injected fixture adapter. The call flow below describes the
 existing backend contracts for future connections; the GUI does not call them yet.
+The [structural GUI architecture](gui-architecture.md) now separates a semantic
+`LoadbotAdapter`, deterministic application state, Loadbot presentation, and local
+UI primitives. Sample form definitions are not part of the inventory contract.
 
 Rot is a separate Python application. The browser-only embedding example reuses
 the menu inside a parent-owned container without Tauri. It demonstrates frontend

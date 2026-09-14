@@ -220,7 +220,10 @@ mod tests {
         let inherited = lease.file.try_clone().unwrap();
         drop(lease);
         let next = Lease::acquire(&path);
-        assert!(next.is_ok(), "the completed operation still holds its lease");
+        assert!(
+            next.is_ok(),
+            "the completed operation still holds its lease"
+        );
         drop(inherited);
     }
 

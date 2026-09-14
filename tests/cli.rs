@@ -284,7 +284,12 @@ fn successful_registration_survives_sync_network_failure() {
     let Some(fixture) = Fixture::new() else {
         return;
     };
-    assert_success(fixture.add_catalog("personal", true));
+    // Exercise Git's transport rather than its local-clone hardlink optimization.
+    // WSL1 cannot rename a directory with files hard-linked outside that directory.
+    // A file URL works on Unix and Git for Windows, including paths with spaces.
+    let remote_path = fixture.catalog.remote.to_str().unwrap().replace('\\', "/");
+    let remote_url = format!("file:///{}", remote_path.trim_start_matches('/'));
+    assert_success(fixture.loadbot(["catalog", "add", "personal", &remote_url, "--writable"]));
     let config_before = fs::read(fixture.home.join("config.toml")).unwrap();
     let unavailable = fixture.catalog.remote.with_extension("git.offline");
     fs::rename(&fixture.catalog.remote, &unavailable).unwrap();
@@ -923,7 +928,11 @@ fn rot_completion_is_parseable_deterministic_and_context_aware() {
     let home = temporary.path().join("loadbot-home");
     let config_home = temporary.path().join("config-home");
     let shortcuts = config_home.join("loadbot/shortcuts.toml");
-    fs::write(temporary.path().join("print-filesystem-decoy"), "not a command").unwrap();
+    fs::write(
+        temporary.path().join("print-filesystem-decoy"),
+        "not a command",
+    )
+    .unwrap();
     fs::create_dir_all(shortcuts.parent().unwrap()).unwrap();
     fs::write(
         shortcuts,
@@ -980,9 +989,14 @@ path = "triage.py"
     assert_eq!(complete(&["shortcut", "remove", "pri"]), ["print-strings"]);
     assert_eq!(complete(&["catalog", "s"]), ["status", "sync"]);
     for words in [
-        vec![], vec!["unknown"], vec!["run", "missing"], vec!["run", "print-filesystem"],
-        vec!["shortcut", "add", ""], vec!["catalog", "status", ""],
-        vec!["shortcut", "remove", "print-strings", ""], vec!["unknown", ""],
+        vec![],
+        vec!["unknown"],
+        vec!["run", "missing"],
+        vec!["run", "print-filesystem"],
+        vec!["shortcut", "add", ""],
+        vec!["catalog", "status", ""],
+        vec!["shortcut", "remove", "print-strings", ""],
+        vec!["unknown", ""],
     ] {
         assert!(complete(&words).is_empty(), "{words:?}");
     }

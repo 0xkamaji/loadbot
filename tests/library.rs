@@ -188,7 +188,10 @@ fn headless_library_session() {
         assert!(output.stderr.is_empty(), "{output:?}");
         // Only libtest's preamble is permitted. The child exits before libtest
         // prints its completion line; backend and tool output must stay in events.
-        assert_eq!(String::from_utf8(output.stdout).unwrap().trim(), "running 1 test");
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap().trim(),
+            "running 1 test"
+        );
         return;
     }
     exercise_headless_session();
@@ -201,9 +204,13 @@ fn exercise_headless_session() {
     use std::sync::{Arc, Mutex};
 
     #[derive(Default)]
-    struct Frontend { notices: Vec<Notice> }
+    struct Frontend {
+        notices: Vec<Notice>,
+    }
     impl Interaction for Frontend {
-        fn notice(&mut self, notice: &Notice) { self.notices.push(notice.clone()); }
+        fn notice(&mut self, notice: &Notice) {
+            self.notices.push(notice.clone());
+        }
     }
     let fixture = Fixture::new();
     let paths = fixture.installed_catalog();
@@ -230,45 +237,84 @@ fn exercise_headless_session() {
     assert_eq!(rows[0].name, "personal");
     assert_eq!(rows[0].state, operations::CatalogState::Installed);
     let report = context.run(|context| operations::catalog_status(&paths, "personal", context));
-    assert!(matches!(report.result.unwrap().file, operations::CatalogValidity::Valid));
-    let report = context.run(|context| operations::tool_add(
-        &paths, "personal", "demo", source.display().to_string(), None, false, false, context,
+    assert!(matches!(
+        report.result.unwrap().file,
+        operations::CatalogValidity::Valid
     ));
+    let report = context.run(|context| {
+        operations::tool_add(
+            &paths,
+            "personal",
+            "demo",
+            source.display().to_string(),
+            None,
+            false,
+            false,
+            context,
+        )
+    });
     assert_eq!(report.status(), OperationStatus::Succeeded);
-    assert!(report.notices.iter().any(|notice| matches!(notice, Notice::ToolAdded { name, .. } if name == "demo")));
+    assert!(
+        report
+            .notices
+            .iter()
+            .any(|notice| matches!(notice, Notice::ToolAdded { name, .. } if name == "demo"))
+    );
     assert_eq!(report.result.unwrap().notices.len(), report.notices.len());
     catalog::update(&paths.catalog_file("personal"), |catalog| {
-        catalog.tools.get_mut("demo").unwrap().commands.insert("inspect".into(), catalog::CommandConfig {
-            path: "scripts with spaces/run.sh".into(), description: Some("Inspect project".into()),
-            runner: Some(catalog::Runner::Sh), extra: Default::default(),
-        });
+        catalog.tools.get_mut("demo").unwrap().commands.insert(
+            "inspect".into(),
+            catalog::CommandConfig {
+                path: "scripts with spaces/run.sh".into(),
+                description: Some("Inspect project".into()),
+                runner: Some(catalog::Runner::Sh),
+                extra: Default::default(),
+            },
+        );
         Ok(())
-    }).unwrap();
-    let report = context.run(|context| operations::tool_pull(&paths, "demo", Some("personal"), context));
+    })
+    .unwrap();
+    let report =
+        context.run(|context| operations::tool_pull(&paths, "demo", Some("personal"), context));
     assert_eq!(report.status(), OperationStatus::Succeeded, "{report:?}");
     let report = context.run(|context| operations::tool_list(&paths, context));
     let tools = report.result.unwrap();
     assert_eq!(tools.len(), 1);
     assert!(tools[0].installed);
     assert_eq!(tools[0].tool.name, "demo");
-    let report = context.run(|context| operations::tool_status(&paths, "demo", Some("personal"), context));
+    let report =
+        context.run(|context| operations::tool_status(&paths, "demo", Some("personal"), context));
     let status = report.result.unwrap();
     assert!(status.installed);
     assert_eq!(status.repository.unwrap().branch.as_deref(), Some("main"));
 
     let file = paths.shortcuts().unwrap();
-    let mut shortcut = shortcuts::Shortcut::new("personal".into(), "demo".into(), "scripts with spaces/run.sh".into()).unwrap();
+    let mut shortcut = shortcuts::Shortcut::new(
+        "personal".into(),
+        "demo".into(),
+        "scripts with spaces/run.sh".into(),
+    )
+    .unwrap();
     shortcut.runner = Some(catalog::Runner::Sh);
     let report = context.run(|_| shortcuts::save(&file, "personal-inspect", shortcut.clone()));
     assert_eq!(report.status(), OperationStatus::Succeeded);
-    assert_eq!(shortcuts::shortcut_names(&file).unwrap(), ["personal-inspect"]);
+    assert_eq!(
+        shortcuts::shortcut_names(&file).unwrap(),
+        ["personal-inspect"]
+    );
     let loaded = shortcuts::load(&file).unwrap();
     assert_eq!(loaded.shortcuts["personal-inspect"], shortcut);
-    let resolved = context.run(|context| operations::all_tools(&paths, context)).result.unwrap();
+    let resolved = context
+        .run(|context| operations::all_tools(&paths, context))
+        .result
+        .unwrap();
     let projects = launcher::project_inventory(&resolved, &loaded);
     assert_eq!(projects.len(), 1);
     let project = &projects[0];
-    assert_eq!((project.catalog.as_str(), project.tool.as_str()), ("personal", "demo"));
+    assert_eq!(
+        (project.catalog.as_str(), project.tool.as_str()),
+        ("personal", "demo")
+    );
     assert_eq!(project.entries.len(), 2);
     let entry = &project.entries[0];
     assert_eq!(entry.name, "inspect");
@@ -277,34 +323,82 @@ fn exercise_headless_session() {
     assert_eq!(entry.description.as_deref(), Some("Inspect project"));
 
     events.lock().unwrap().clear();
-    let report = context.run(|context| launcher::launch_command(
-        &paths, &project.catalog, &project.tool, &entry.path, entry.runner, entry.source, context,
-    ));
+    let report = context.run(|context| {
+        launcher::launch_command(
+            &paths,
+            &project.catalog,
+            &project.tool,
+            &entry.path,
+            entry.runner,
+            entry.source,
+            context,
+        )
+    });
     assert_eq!(report.status(), OperationStatus::Failed);
     assert!(!report.is_partial());
-    assert_eq!(report.result.unwrap_err().downcast_ref::<launcher::ChildExit>().unwrap().code(), 7);
+    assert_eq!(
+        report
+            .result
+            .unwrap_err()
+            .downcast_ref::<launcher::ChildExit>()
+            .unwrap()
+            .code(),
+        7
+    );
     let observed = events.lock().unwrap();
     assert!(matches!(observed.first(), Some(Event::OperationStarted)));
-    assert!(matches!(observed.last(), Some(Event::OperationFinished { outcome: OperationStatus::Failed, partial: false })));
+    assert!(matches!(
+        observed.last(),
+        Some(Event::OperationFinished {
+            outcome: OperationStatus::Failed,
+            partial: false
+        })
+    ));
     // The launcher first inspects Git. Its final process is the selected command.
-    let child_start = observed.iter().rposition(|event| matches!(event, Event::Started { .. })).unwrap();
-    let output = |stream| observed[child_start..].iter().filter_map(|event| match event {
-        Event::Output { stream: actual, bytes } if *actual == stream => Some(bytes.as_slice()),
-        _ => None,
-    }).flatten().copied().collect::<Vec<_>>();
+    let child_start = observed
+        .iter()
+        .rposition(|event| matches!(event, Event::Started { .. }))
+        .unwrap();
+    let output = |stream| {
+        observed[child_start..]
+            .iter()
+            .filter_map(|event| match event {
+                Event::Output {
+                    stream: actual,
+                    bytes,
+                } if *actual == stream => Some(bytes.as_slice()),
+                _ => None,
+            })
+            .flatten()
+            .copied()
+            .collect::<Vec<_>>()
+    };
     assert_eq!(output(Stream::Stdout), b"GUI stdout\n");
     assert_eq!(output(Stream::Stderr), b"GUI stderr\n");
-    assert!(observed[child_start..].iter().any(|event| matches!(event, Event::Exited { status, .. } if status.code() == Some(7))));
+    assert!(
+        observed[child_start..]
+            .iter()
+            .any(|event| matches!(event, Event::Exited { status, .. } if status.code() == Some(7)))
+    );
     drop(observed);
-    assert_eq!(fs::read_to_string(status.path.join("cwd-marker")).unwrap(), "ran");
+    assert_eq!(
+        fs::read_to_string(status.path.join("cwd-marker")).unwrap(),
+        "ran"
+    );
     assert!(!status.path.join("scripts with spaces/cwd-marker").exists());
-    let report = context.run(|_| shortcuts::remove_if_matches(&file, "personal-inspect", &shortcut));
+    let report =
+        context.run(|_| shortcuts::remove_if_matches(&file, "personal-inspect", &shortcut));
     assert_eq!(report.status(), OperationStatus::Succeeded);
     assert!(shortcuts::load(&file).unwrap().shortcuts.is_empty());
     let notice_count = context.notices.len();
     drop(context);
     assert_eq!(frontend.notices.len(), notice_count);
-    assert!(frontend.notices.iter().any(|notice| matches!(notice, Notice::ToolInstalled { name, .. } if name == "demo")));
+    assert!(
+        frontend
+            .notices
+            .iter()
+            .any(|notice| matches!(notice, Notice::ToolInstalled { name, .. } if name == "demo"))
+    );
     // Fixture cleanup happens before the worker exits, including on assertion failure.
 }
 

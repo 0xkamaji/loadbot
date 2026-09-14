@@ -14,10 +14,12 @@ npm --prefix src/gui ci
 npm --prefix src/gui run desktop
 ```
 
-The desktop opens directly into the menu at 1000 × 680 logical pixels, with
-native decorations, resize/minimize/maximize/close behavior, and a minimum client
-size of 420 × 480. Closing the native window exits the standalone host. Escape
-does not close the standalone menu.
+The desktop is configured to open directly into the menu at 1000 × 680 logical
+pixels, with native decorations and a minimum client size of 420 × 480. Native
+resize/minimize/maximize/close behavior still needs manual verification on a
+graphical desktop; the WSL1 verification environment cannot display this window.
+Escape does not close the standalone menu. See the [verification record](gui-phase1-verification.md)
+for separate local, remote CI, browser, and native results.
 
 Browser-only development (no Rust or Tauri system dependencies):
 
@@ -69,6 +71,44 @@ The root CLI retains its own Rust requirements and dependency graph.
 The host uses the supplied header PNG as its window icon. On Windows, `build.rs`
 places that exact PNG in an ICO container in Cargo's output directory for the
 native resource compiler. No art is redrawn, resized, or added to the handoff.
+
+### Finish native verification from Windows
+
+For the Windows host of the current WSL1 environment, use **native PowerShell**
+in a Windows-local checkout containing the reviewed verification fixes. Use
+Windows-installed Node/npm, Git, Rust MSVC, Visual Studio's C++ workload/Windows
+SDK, and WebView2 as described above. Do not reuse Linux `node_modules` or Cargo
+output through the WSL filesystem.
+
+From that checkout's repository root:
+
+```powershell
+Get-Command node, npm, git, cargo, rustc
+node --version  # Must be 22.12 or newer
+npm --version
+rustup show active-toolchain  # Must be a Windows MSVC toolchain
+git rev-parse HEAD
+npm --prefix src/gui ci
+npm --prefix src/gui run desktop
+```
+
+In the actual native window, compare the supplied `references/01-main-window.png`
+and `references/02-interface-kit.png` beneath `src/gui/loadbot-gui-assets/`:
+
+1. Check mascot, font, near-black/beige skins, and fixed pixel-border corners.
+2. Select `radio`, then return to `re-toolkit`; select different shortcuts and
+   verify their details and sample inputs. Missing input feedback should clear
+   after sample values are supplied; Run must remain disabled.
+3. Set a sample path and checkbox, toggle Terminal twice, and check retained state.
+   The drawer must say it is not connected and offer no shell input.
+4. Use Tab/Shift+Tab, arrow keys, Home/End, Enter/Space; check focus versus selection.
+   Scroll the long project/shortcut labels and resize down to 420 × 480. Run and
+   the toolbar must remain reachable by scrolling.
+5. Exercise native minimize/maximize/restore and Close. Check that closing the
+   window exits the native process; stop the development watcher with Ctrl+C.
+6. Confirm the fixture banner and disabled Run/catalog/folder actions throughout.
+   Record the commit, OS, scale factor, screenshots, and any native-console errors
+   in the verification record. Browser screenshots do not satisfy this step.
 
 ## Build isolation
 
@@ -152,9 +192,12 @@ valid relative asset paths and all asset bytes are preserved.
 
 ```sh
 # Repository root — CLI/library checks need no desktop prerequisites.
-cargo check --locked --all-targets
-cargo clippy --locked --all-targets -- -D warnings
-cargo test --locked
+cargo fmt --all -- --check
+cargo fmt --manifest-path src/gui/src-tauri/Cargo.toml --all -- --check
+cargo check --locked --all-targets --all-features
+cargo clippy --locked --all-targets --all-features -- -D warnings
+cargo test --locked --all-targets --all-features
+cargo test --locked --doc
 sh tests/setup_sh_test.sh
 
 # Frontend checks.

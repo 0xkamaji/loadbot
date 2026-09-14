@@ -92,6 +92,15 @@ Interrupted Git commits/pushes can have side effects even if Git did not return
 success. Inspect Git state and the streamed diagnostics before retrying; there
 is no automatic undo of local commits or remote pushes.
 
+Remote reconciliation checks cancellation before starting its short configuration
+transaction, then defers cancellation through both URL writes and verification.
+On failure it attempts both restorations and verifies the original local URL
+values, preserving an absent explicit push URL. Recovery command failures remain
+in the diagnostic; unverified recovery returns `RemoteRecoveryIncomplete` and a
+failed report with possible partial work. Successful reconciliation is recorded
+before further cancellation checks, so later cancellation retains that completed
+step. The repository lease remains held throughout the transaction and recovery.
+
 CLI launched tools default to `Mode::Inherit`, retaining stdin/stdout/stderr and
 the terminal. A GUI must set `tool_mode = Mode::Stream` and
 `process.terminal = false` for noninteractive tools. Captured/streamed execution

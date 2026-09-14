@@ -243,6 +243,7 @@ impl<T> OperationReport<T> {
     pub fn status(&self) -> OperationStatus {
         match &self.result {
             Ok(_) => OperationStatus::Succeeded,
+            Err(error) if error.downcast_ref::<crate::git::RemoteRecoveryIncomplete>().is_some() => OperationStatus::Failed,
             Err(error) if error.downcast_ref::<crate::persistence::Busy>().is_some() => OperationStatus::Busy,
             Err(error) if error.downcast_ref::<crate::process::Cancelled>().is_some() => OperationStatus::Cancelled,
             Err(_) => OperationStatus::Failed,
@@ -252,6 +253,7 @@ impl<T> OperationReport<T> {
         self.result.as_ref().err().is_some_and(|error| {
             self.notices.iter().any(Notice::completed_mutation)
                 || error.downcast_ref::<crate::persistence::DurabilityUncertain>().is_some()
+                || error.downcast_ref::<crate::git::RemoteRecoveryIncomplete>().is_some()
         })
     }
 }

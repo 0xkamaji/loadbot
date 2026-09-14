@@ -341,23 +341,88 @@ pub fn set_push_url(path: &Path, url: &str) -> Result<()> {
     set_remote_url(path, "remote.origin.pushurl", url)
 }
 
+/// Recovery could not verify the original configuration. Callers must report
+/// possible partial work and retain the checkout for inspection.
+#[derive(Debug)]
+pub struct RemoteRecoveryIncomplete {
+    pub path: PathBuf,
+    diagnostic: String,
+}
+
+impl std::fmt::Display for RemoteRecoveryIncomplete {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "remote configuration recovery is incomplete in {}; inspect Git configuration before retrying: {}", self.path.display(), self.diagnostic)
+    }
+}
+
+impl std::error::Error for RemoteRecoveryIncomplete {}
+
 pub fn reconcile_remote(path: &Path, fetch: &str, push: &str) -> Result<()> {
-    let old_fetch = fetch_url(path)?;
-    let old_push = push_url(path)?;
+    crate::process::current_control().cancellation.check()?;
+    // Once started, both writes, verification, and any recovery must finish
+    // even if the caller cancels. The operation records success before checking
+    // the caller's token again. The caller retains its repository lease.
+    let _transaction = crate::process::critical_scope();
+    let old_fetch = local_remote_urls(path, "remote.origin.url")?;
+    let old_push = local_remote_urls(path, "remote.origin.pushurl")?;
     let result = (|| {
         set_remote_url(path, "remote.origin.pushurl", push)?;
         set_remote_url(path, "remote.origin.url", fetch)?;
-        if fetch_url(path)?.as_deref() != Some(fetch) || push_url(path)?.as_deref() != Some(push) {
+        if local_remote_urls(path, "remote.origin.url")? != [fetch]
+            || local_remote_urls(path, "remote.origin.pushurl")? != [push]
+        {
             bail!("Git did not retain the requested fetch and push URLs");
         }
         Ok(())
     })();
     if let Err(error) = result {
-        restore_remote_url(path, "remote.origin.url", old_fetch.as_deref());
-        restore_remote_url(path, "remote.origin.pushurl", old_push.as_deref());
-        return Err(error);
+        // Attempt both restorations, even if one fails, then verify actual
+        // local values (including absence and multiple configured URLs).
+        let mut failures = Vec::new();
+        for (key, urls) in [("remote.origin.url", &old_fetch), ("remote.origin.pushurl", &old_push)] {
+            if let Err(recovery) = restore_remote_url(path, key, urls) {
+                failures.push(format!("{key}: {recovery:#}"));
+            }
+        }
+        let mut restored = true;
+        for (key, expected) in [("remote.origin.url", &old_fetch), ("remote.origin.pushurl", &old_push)] {
+            match local_remote_urls(path, key) {
+                Ok(actual) if &actual == expected => {}
+                Ok(actual) => {
+                    restored = false;
+                    failures.push(format!("{key}: expected {expected:?}, remaining {actual:?}"));
+                }
+                Err(verification) => {
+                    restored = false;
+                    failures.push(format!("{key}: remaining state unknown: {verification:#}"));
+                }
+            }
+        }
+        if !restored {
+            return Err(error.context(RemoteRecoveryIncomplete {
+                path: path.to_owned(), diagnostic: failures.join("; "),
+            }));
+        }
+        return Err(error.context(if failures.is_empty() {
+            "original remote configuration was restored and verified".to_owned()
+        } else {
+            format!("original remote configuration verified unchanged despite recovery command failures: {}", failures.join("; "))
+        }));
     }
     Ok(())
+}
+
+fn local_remote_urls(path: &Path, key: &str) -> Result<Vec<String>> {
+    let output = raw_output([
+        OsStr::new("-C"), path.as_os_str(), OsStr::new("config"),
+        OsStr::new("--local"), OsStr::new("--null"), OsStr::new("--get-all"), OsStr::new(key),
+    ])?;
+    if output.status.code() == Some(1) { return Ok(Vec::new()); }
+    if !output.status.success() {
+        bail!("could not read {key}: Git exited with {}: {}", output.status, String::from_utf8_lossy(&output.stderr).trim());
+    }
+    let text = String::from_utf8(output.stdout).context("Git remote URL is not UTF-8")?;
+    Ok(text.split_terminator('\0').map(str::to_owned).collect())
 }
 
 fn set_remote_url(path: &Path, key: &str, url: &str) -> Result<()> {
@@ -373,23 +438,26 @@ fn set_remote_url(path: &Path, key: &str, url: &str) -> Result<()> {
     Ok(())
 }
 
-fn restore_remote_url(path: &Path, key: &str, url: Option<&str>) {
-    let mut arguments = vec![
-        OsString::from("-C"),
-        path.as_os_str().to_owned(),
-        OsString::from("config"),
-        OsString::from("--local"),
-    ];
-    if let Some(url) = url {
-        arguments.extend([
-            OsString::from("--replace-all"),
-            OsString::from(key),
-            OsString::from(url),
-        ]);
+fn restore_remote_url(path: &Path, key: &str, urls: &[String]) -> Result<()> {
+    if let Some((first, rest)) = urls.split_first() {
+        set_remote_url(path, key, first)?;
+        for url in rest {
+            checked_output([
+                OsStr::new("-C"), path.as_os_str(), OsStr::new("config"),
+                OsStr::new("--local"), OsStr::new("--add"), OsStr::new(key), OsStr::new(url),
+            ])?;
+        }
     } else {
-        arguments.extend([OsString::from("--unset-all"), OsString::from(key)]);
+        let output = raw_output([
+            OsStr::new("-C"), path.as_os_str(), OsStr::new("config"),
+            OsStr::new("--local"), OsStr::new("--unset-all"), OsStr::new(key),
+        ])?;
+        // Git returns 5 when the requested key is already absent.
+        if !output.status.success() && output.status.code() != Some(5) {
+            bail!("could not remove {key}: Git exited with {}: {}", output.status, String::from_utf8_lossy(&output.stderr).trim());
+        }
     }
-    let _ = raw_output(arguments);
+    Ok(())
 }
 
 fn github_https_repository(url: &str) -> Option<GithubRepository> {

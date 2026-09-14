@@ -915,13 +915,16 @@ fn reconcile_existing_checkout(
         bail!("repository URLs changed while awaiting a decision; retry the operation");
     }
     git::reconcile_remote(destination, canonical_url, &existing_fetch)?;
-    if !git::is_expected_repository(destination, canonical_url)? {
-        bail!("reconciled repository did not match the catalog URL");
-    }
+    // The transaction has verified both URLs. Retain that completed step before
+    // cancellation can interrupt further inspection or subsequent work.
     context.record(Notice::ToolReconciled {
         name: name.to_owned(),
     });
-    Ok(())
+    context.process.cancellation.check()?;
+    if !git::is_expected_repository(destination, canonical_url)? {
+        bail!("reconciled repository did not match the catalog URL");
+    }
+    context.process.cancellation.check()
 }
 
 pub fn tool_update(
@@ -1686,6 +1689,175 @@ mod tests {
             );
             assert_eq!(git::push_url(&repository).unwrap(), None);
         }
+    }
+
+    fn reconciliation_fixture(push: Option<&str>) -> (TempDir, Paths, PathBuf) {
+        let temporary = TempDir::new().unwrap();
+        let paths = Paths::with_root(temporary.path().join("loadbot"));
+        let remote = valid_catalog_remote(temporary.path(), "reconciliation-catalog");
+        catalog_add(
+            &paths, "personal", remote.display().to_string(), false,
+            &mut OperationContext::new(&mut crate::interaction::Unattended),
+        ).unwrap();
+        fs::write(paths.catalog_file("personal"),
+            "version = 1\n[tools.demo]\ntype = \"git\"\nurl = \"https://github.com/owner/repo.git\"\n",
+        ).unwrap();
+        fs::create_dir_all(paths.tools().join("personal")).unwrap();
+        let checkout = repository_with_origin(
+            &paths.tools().join("personal"), "git@github.com:owner/repo.git",
+        );
+        let destination = paths.tool("personal", "demo").unwrap();
+        fs::rename(checkout, &destination).unwrap();
+        if let Some(push) = push { git::set_push_url(&destination, push).unwrap(); }
+        fs::write(destination.join("dirty.txt"), "preserve\n").unwrap();
+        (temporary, paths, destination)
+    }
+
+    fn reconciliation_report(paths: &Paths, context: &mut OperationContext<'_>) -> crate::interaction::OperationReport<()> {
+        context.run(|context| tool_pull_with(
+            paths, "demo", Some("personal"), true, context,
+            || Ok(Vec::new()),
+            |_, _, _, _| panic!("an existing checkout must not be cloned"),
+        ))
+    }
+
+    #[test]
+    fn reconciliation_records_completion_when_cancelled_between_or_after_url_writes() {
+        use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+        use crate::{interaction::OperationStatus, process::Event};
+
+        for cancel_between_writes in [true, false] {
+            let (_temporary, paths, destination) = reconciliation_fixture(None);
+            let mut prompt = TestPrompt::with_confirmations([true]);
+            let mut context = OperationContext::new(&mut prompt);
+            let token = context.process.cancellation.clone();
+            let fetch_write = AtomicBool::new(false);
+            let inspected_destination = destination.clone();
+            context.process.observer = Some(Arc::new(move |event| {
+                match event {
+                    Event::Starting { arguments, .. } => {
+                        let writing_fetch = arguments.iter().any(|arg| arg == "--replace-all")
+                            && arguments.iter().any(|arg| arg == "remote.origin.url");
+                        fetch_write.store(writing_fetch, Ordering::SeqCst);
+                        if writing_fetch {
+                            assert!(crate::persistence::Lease::acquire(&inspected_destination)
+                                .err().unwrap().downcast_ref::<crate::persistence::Busy>().is_some());
+                            if cancel_between_writes { token.cancel(); }
+                        }
+                    }
+                    Event::Exited { status, .. } if fetch_write.load(Ordering::SeqCst) => {
+                        assert!(status.success());
+                        if !cancel_between_writes { token.cancel(); }
+                    }
+                    _ => {}
+                }
+            }));
+            let report = reconciliation_report(&paths, &mut context);
+            assert!(context.process.cancellation.is_cancelled());
+            assert_eq!(report.status(), OperationStatus::Cancelled, "{report:?}");
+            assert!(report.is_partial());
+            assert_eq!(report.notices.iter().filter(|notice| matches!(notice, Notice::ToolReconciled { name } if name == "demo")).count(), 1);
+            assert_eq!(git::fetch_url(&destination).unwrap().as_deref(), Some("https://github.com/owner/repo.git"));
+            assert_eq!(git::push_url(&destination).unwrap().as_deref(), Some("git@github.com:owner/repo.git"));
+            assert_eq!(fs::read_to_string(destination.join("dirty.txt")).unwrap(), "preserve\n");
+            assert!(crate::persistence::Lease::acquire(&destination).is_ok());
+        }
+    }
+
+    #[test]
+    fn reconciliation_recovers_original_urls_after_write_failure_despite_cancellation() {
+        use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+        use crate::{interaction::OperationStatus, process::Event};
+
+        for original_push in [None, Some("git@other:owner/repo.git")] {
+            let (_temporary, paths, destination) = reconciliation_fixture(original_push);
+            let before = fs::read(destination.join(".git/config")).unwrap();
+            let mut prompt = TestPrompt::with_confirmations([true, true]);
+            let mut context = OperationContext::new(&mut prompt);
+            let token = context.process.cancellation.clone();
+            let inject = AtomicBool::new(true);
+            let failing = AtomicBool::new(false);
+            let lock = destination.join(".git/config.lock");
+            context.process.observer = Some(Arc::new(move |event| {
+                match event {
+                    Event::Starting { arguments, .. }
+                        if arguments.iter().any(|arg| arg == "--replace-all")
+                            && arguments.iter().any(|arg| arg == "remote.origin.url")
+                            && inject.swap(false, Ordering::SeqCst) => {
+                        fs::write(&lock, "owned by this test").unwrap();
+                        failing.store(true, Ordering::SeqCst);
+                        token.cancel();
+                    }
+                    Event::Exited { status, .. } if failing.swap(false, Ordering::SeqCst) => {
+                        assert!(!status.success());
+                        fs::remove_file(&lock).unwrap();
+                    }
+                    _ => {}
+                }
+            }));
+            let report = reconciliation_report(&paths, &mut context);
+            assert!(context.process.cancellation.is_cancelled());
+            assert_eq!(report.status(), OperationStatus::Failed, "{report:?}");
+            assert!(!report.is_partial());
+            assert!(!report.notices.iter().any(|notice| matches!(notice, Notice::ToolReconciled { .. })));
+            assert_eq!(git::fetch_url(&destination).unwrap().as_deref(), Some("git@github.com:owner/repo.git"));
+            assert_eq!(git::push_url(&destination).unwrap().as_deref(), original_push);
+            assert_eq!(fs::read(destination.join(".git/config")).unwrap(), before);
+            assert_eq!(fs::read_to_string(destination.join("dirty.txt")).unwrap(), "preserve\n");
+            assert!(crate::persistence::Lease::acquire(&destination).is_ok());
+        }
+    }
+
+    #[test]
+    fn reconciliation_reports_remaining_changes_when_recovery_fails() {
+        use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+        use crate::{interaction::OperationStatus, process::Event};
+
+        let (_temporary, paths, destination) = reconciliation_fixture(None);
+        let mut prompt = TestPrompt::with_confirmations([true]);
+        let mut context = OperationContext::new(&mut prompt);
+        let token = context.process.cancellation.clone();
+        let inject = AtomicBool::new(true);
+        let lock = destination.join(".git/config.lock");
+        let retained_lock = lock.clone();
+        context.process.observer = Some(Arc::new(move |event| {
+            if let Event::Starting { arguments, .. } = event
+                && arguments.iter().any(|arg| arg == "--replace-all")
+                && arguments.iter().any(|arg| arg == "remote.origin.url")
+                && inject.swap(false, Ordering::SeqCst)
+            {
+                fs::write(&lock, "owned by this test").unwrap();
+                token.cancel();
+            }
+        }));
+        let report = reconciliation_report(&paths, &mut context);
+        assert!(context.process.cancellation.is_cancelled());
+        assert_eq!(report.status(), OperationStatus::Failed, "{report:?}");
+        assert!(report.is_partial());
+        assert!(report.result.as_ref().unwrap_err().downcast_ref::<git::RemoteRecoveryIncomplete>().is_some());
+        assert!(!report.notices.iter().any(|notice| matches!(notice, Notice::ToolReconciled { .. })));
+        assert_eq!(git::fetch_url(&destination).unwrap().as_deref(), Some("git@github.com:owner/repo.git"));
+        assert_eq!(git::push_url(&destination).unwrap().as_deref(), Some("git@github.com:owner/repo.git"));
+        assert_eq!(fs::read_to_string(&retained_lock).unwrap(), "owned by this test");
+        fs::remove_file(retained_lock).unwrap();
+        assert!(crate::persistence::Lease::acquire(&destination).is_ok());
+    }
+
+    #[test]
+    fn reconciliation_honors_cancellation_before_the_transaction() {
+        let (_temporary, _paths, destination) = reconciliation_fixture(None);
+        let before = fs::read(destination.join(".git/config")).unwrap();
+        let mut prompt = TestPrompt::default();
+        let mut context = OperationContext::new(&mut prompt);
+        let report = context.run(|context| {
+            let _lease = context.lease(&destination)?;
+            context.process.cancellation.cancel();
+            git::reconcile_remote(&destination, "https://github.com/owner/repo.git", "git@github.com:owner/repo.git")
+        });
+        assert_eq!(report.status(), crate::interaction::OperationStatus::Cancelled);
+        assert!(!report.is_partial());
+        assert!(report.notices.is_empty());
+        assert_eq!(fs::read(destination.join(".git/config")).unwrap(), before);
     }
 
     #[test]

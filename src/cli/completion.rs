@@ -7,9 +7,9 @@ use clap::CommandFactory;
 use clap_complete::CompleteEnv;
 use clap_complete::engine::CompletionCandidate;
 
-use crate::cli::Cli;
-use crate::paths::Paths;
-use crate::shortcuts;
+use super::args::Cli;
+use loadbot::paths::Paths;
+use loadbot::shortcuts;
 
 pub fn complete() {
     CompleteEnv::with_factory(Cli::command).complete();

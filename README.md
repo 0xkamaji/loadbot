@@ -865,3 +865,54 @@ Loadbot:
 - Safe updates require a checked-out branch; detached tags or commits are not updated.
 - URL equivalence removes only surrounding whitespace, a trailing slash, and one trailing `.git`; equivalent SSH and HTTPS URLs remain distinct.
 - There is no catalog discovery service, package resolution, dependency installation, plugin system, arbitrary shell-command execution, background service, or AI feature. Rot integration is limited to read-only SSH identity discovery after a GitHub SSH public-key authentication failure.
+
+## Backend and CLI organization
+
+Loadbot provides a Rust library as well as the CLI. The backend does not read
+terminal input, check for a TTY, or print Loadbot-owned output. The binary keeps
+its existing command, menu, completion, and output contracts.
+
+- `src/lib.rs` defines the public module surface.
+- `operations.rs` contains tool and catalog workflows and structured read results.
+- `catalog.rs`, `config.rs`, `shortcuts.rs`, and `paths.rs` keep their related models,
+  validation, locations, and persistence together.
+- `git.rs` keeps Git safeguards, rollback, and Rot-assisted SSH retry logic.
+- `launcher.rs` provides project inventory, directory enumeration, safe target
+  resolution, and child execution. Child stdin/stdout/stderr remain inherited.
+- `interaction.rs` defines typed SSH/check-out decisions and operation reports.
+- `src/cli/` owns argument parsing and dispatch (`args.rs`, `mod.rs`), prompts and
+  menus (`menus.rs`), launcher and shortcut UI flows, completion, and rendering
+  (`output.rs`). Its `operations.rs` adapts the common backend to CLI output.
+
+A typed command and its equivalent menu selection reach the same CLI dispatcher
+and backend operation. The backend retains name/path validation, repository
+checks, and persistence safeguards; an adapter does not need to recreate them.
+A future GUI can reuse structured tool/catalog queries, shortcut load/save/remove,
+launcher inventory and execution, and the existing mutations.
+
+Use `Paths::discover()` for the established platform locations, or
+`Paths::with_directories(data_directory, configuration_directory)` for explicit
+locations. The configuration directory contains `shortcuts.toml`; constructing
+paths does not create directories. Use `OperationContext` with `Unattended` to
+avoid optional decisions, or implement `Interaction` to choose a verified SSH
+identity and authorize the specific checkout/push-URL changes. The backend still
+performs each operation and its validation.
+
+Successful mutations return a typed `MutationOutcome`.
+`OperationContext::run` returns an `OperationReport` containing the result and
+ordered typed notices. Notices include warnings and successful steps that occurred
+before a later failure. The CLI renders notices immediately to preserve output
+order and stdout/stderr routing, including output preceding a prompt or error.
+Other callers can inspect the report without rendering anything. This is a
+synchronous API; this phase adds no GUI, service, or process-control protocol.
+
+`tests/library.rs` exercises the public API with isolated directories and local
+Git repositories. The existing CLI and setup tests remain the compatibility suite.
+Linux-specific child/PTY checks run locally where their tools are available;
+Windows behavior still requires execution in a Windows environment.
+
+An existing Windows test limitation remains: the process-level CLI tests use an
+`APPDATA` override, but `dirs` resolves Windows configuration through the known-folder
+API. That override does not isolate shortcut storage on Windows. The new public
+library tests use explicit directories; new process-level tests are Linux-only.
+Hardening the existing Windows CLI test harness is separate from this refactor.

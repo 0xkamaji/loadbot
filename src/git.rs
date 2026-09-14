@@ -6,15 +6,15 @@ use std::process::{Command, Output};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
-use crate::interactive::{Prompt, TerminalPrompt, terminal_is_interactive};
+use crate::interaction::Interaction;
 
 const ROT_IDENTITY_VERSION: u32 = 1;
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
-pub(crate) struct RotIdentity {
-    pub(crate) alias: String,
-    pub(crate) username: Option<String>,
-    pub(crate) verification: String,
+pub struct RotIdentity {
+    pub alias: String,
+    pub username: Option<String>,
+    pub verification: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -23,7 +23,7 @@ struct RotIdentityDocument {
     identities: Vec<RotIdentity>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct RepositoryStatus {
     pub branch: Option<String>,
     pub commit: Option<String>,
@@ -45,7 +45,12 @@ struct GithubRepository {
     name: String,
 }
 
-pub fn clone_repository(url: &str, revision: Option<&str>, destination: &Path) -> Result<()> {
+pub fn clone_repository(
+    url: &str,
+    revision: Option<&str>,
+    destination: &Path,
+    interaction: &mut dyn Interaction,
+) -> Result<()> {
     let mut arguments = vec![OsString::from("clone")];
     if let Some(revision) = revision {
         arguments.push(OsString::from("--branch"));
@@ -54,7 +59,7 @@ pub fn clone_repository(url: &str, revision: Option<&str>, destination: &Path) -
     arguments.push(OsString::from("--"));
     arguments.push(OsString::from(url));
     arguments.push(destination.as_os_str().to_owned());
-    checked_network_output(arguments, url)?;
+    checked_network_output(arguments, url, interaction)?;
     Ok(())
 }
 
@@ -158,11 +163,14 @@ pub fn tracked_files(path: &Path) -> Result<Vec<String>> {
         .collect())
 }
 
-pub fn origin_refs(path: &Path) -> Result<Vec<(String, String)>> {
+pub fn origin_refs(
+    path: &Path,
+    interaction: &mut dyn Interaction,
+) -> Result<Vec<(String, String)>> {
     network_query(
         path,
         &["ls-remote", "--refs", "origin"],
-        configured_remote_url(path, false)?.as_deref(),
+        configured_remote_url(path, false)?.as_deref(), interaction
     )?
     .lines()
     .map(|line| {
@@ -174,11 +182,15 @@ pub fn origin_refs(path: &Path) -> Result<Vec<(String, String)>> {
     .collect()
 }
 
-pub fn origin_has_refs(path: &Path) -> Result<bool> {
-    Ok(!origin_refs(path)?.is_empty())
+pub fn origin_has_refs(path: &Path, interaction: &mut dyn Interaction) -> Result<bool> {
+    Ok(!origin_refs(path, interaction)?.is_empty())
 }
 
-pub fn update(path: &Path, configured_revision: Option<&str>) -> Result<(String, String)> {
+pub fn update(
+    path: &Path,
+    configured_revision: Option<&str>,
+    interaction: &mut dyn Interaction,
+) -> Result<(String, String)> {
     let current = status(path)?;
     if current.dirty {
         bail!("working tree has local changes");
@@ -197,7 +209,7 @@ pub fn update(path: &Path, configured_revision: Option<&str>) -> Result<(String,
     network_query(
         path,
         &["fetch", "origin"],
-        configured_remote_url(path, false)?.as_deref(),
+        configured_remote_url(path, false)?.as_deref(), interaction
     )?;
     let target = format!("origin/{branch}");
     query(path, &["merge", "--ff-only", "--", &target])?;
@@ -230,11 +242,11 @@ pub fn path_has_changes(path: &Path, file: &str) -> Result<bool> {
     .is_empty())
 }
 
-pub fn push_origin(path: &Path) -> Result<()> {
+pub fn push_origin(path: &Path, interaction: &mut dyn Interaction) -> Result<()> {
     network_query(
         path,
         &["push", "origin", "HEAD"],
-        configured_remote_url(path, true)?.as_deref(),
+        configured_remote_url(path, true)?.as_deref(), interaction
     )?;
     Ok(())
 }
@@ -288,7 +300,7 @@ pub fn verified_rot_identities() -> Result<Vec<RotIdentity>> {
     query_rot_identities()
 }
 
-pub fn select_verified_rot_identity<P: Prompt>(
+pub fn select_verified_rot_identity<P: Interaction + ?Sized>(
     identities: Vec<RotIdentity>,
     prompt: &mut P,
 ) -> Result<RotIdentity> {
@@ -394,12 +406,17 @@ fn query(path: &Path, arguments: &[&str]) -> Result<String> {
     Ok(stdout_text(&checked_output(command_arguments)?))
 }
 
-fn network_query(path: &Path, arguments: &[&str], known_url: Option<&str>) -> Result<String> {
+fn network_query(
+    path: &Path,
+    arguments: &[&str],
+    known_url: Option<&str>,
+    interaction: &mut dyn Interaction,
+) -> Result<String> {
     let mut command_arguments = vec![OsString::from("-C"), path.as_os_str().to_owned()];
     command_arguments.extend(arguments.iter().map(|argument| OsString::from(*argument)));
     Ok(stdout_text(&checked_network_output(
         command_arguments,
-        known_url.unwrap_or(""),
+        known_url.unwrap_or(""), interaction
     )?))
 }
 
@@ -442,15 +459,18 @@ where
     Ok(output)
 }
 
-fn checked_network_output(arguments: Vec<OsString>, canonical_url: &str) -> Result<Output> {
-    let mut prompt = TerminalPrompt;
+fn checked_network_output(
+    arguments: Vec<OsString>,
+    canonical_url: &str,
+    interaction: &mut dyn Interaction,
+) -> Result<Output> {
     checked_network_output_with(
         arguments,
         canonical_url,
         |arguments| raw_output(arguments),
         query_rot_identities,
-        terminal_is_interactive(),
-        &mut prompt,
+        interaction.can_choose(),
+        interaction,
     )
 }
 
@@ -465,7 +485,7 @@ fn checked_network_output_with<G, I, P>(
 where
     G: FnMut(&[OsString]) -> Result<Output>,
     I: FnMut() -> Result<Vec<RotIdentity>>,
-    P: Prompt,
+    P: Interaction + ?Sized,
 {
     let output = run_git(&arguments)?;
     if output.status.success() {
@@ -542,7 +562,7 @@ fn parse_rot_identities(json: &[u8]) -> Result<Vec<RotIdentity>> {
     Ok(identities)
 }
 
-fn select_rot_identity<P: Prompt>(
+fn select_rot_identity<P: Interaction + ?Sized>(
     identities: Vec<RotIdentity>,
     interactive: bool,
     prompt: &mut P,
@@ -566,23 +586,11 @@ fn select_rot_identity<P: Prompt>(
         );
     }
 
-    let choices = identities
-        .iter()
-        .map(|identity| {
-            format!(
-                "{} -> {}",
-                identity.alias,
-                identity.username.as_deref().expect("verified username")
-            )
-        })
-        .collect::<Vec<_>>();
-    let selected = prompt
-        .select("Choose a Rot-managed GitHub SSH identity:", &choices)?
+    let index = prompt.choose_identity(&identities)?
         .context("SSH identity selection was cancelled")?;
-    let index = choices
-        .iter()
-        .position(|choice| choice == &selected)
-        .context("an invalid SSH identity was selected")?;
+    if index >= identities.len() {
+        anyhow::bail!("an invalid SSH identity was selected");
+    }
     Ok(identities[index].clone())
 }
 
@@ -682,23 +690,11 @@ mod tests {
         }
     }
 
-    impl Prompt for TestPrompt {
-        fn input(&mut self, _label: &str, _default: Option<&str>) -> Result<Option<String>> {
-            unreachable!()
-        }
-
-        fn confirm(&mut self, _label: &str, _default: bool) -> Result<Option<bool>> {
-            unreachable!()
-        }
-
-        fn select(&mut self, _label: &str, choices: &[String]) -> Result<Option<String>> {
+    impl Interaction for TestPrompt {
+        fn choose_identity(&mut self, identities: &[RotIdentity]) -> Result<Option<usize>> {
             self.select_calls += 1;
-            self.choices = choices.to_vec();
-            Ok(self.selection.clone())
-        }
-
-        fn message(&mut self, _message: &str) -> Result<()> {
-            unreachable!()
+            self.choices = identities.iter().map(|identity| format!("{} -> {}", identity.alias, identity.username.as_deref().unwrap())).collect();
+            Ok(self.selection.as_ref().and_then(|selection| self.choices.iter().position(|choice| choice == selection)))
         }
     }
 

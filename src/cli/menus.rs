@@ -2,7 +2,7 @@ use std::io::{self, IsTerminal, Write};
 
 use anyhow::{Context, Result, bail};
 
-use crate::paths;
+use loadbot::paths;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MainMenuAction {

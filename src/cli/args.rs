@@ -51,7 +51,7 @@ pub enum Commands {
     },
     /// Launch an installed file or saved shortcut.
     Run {
-        #[arg(add = ArgValueCompleter::new(crate::completion::shortcut_candidates))]
+        #[arg(add = ArgValueCompleter::new(super::completion::shortcut_candidates))]
         shortcut: Option<String>,
     },
     /// Manage saved shortcuts.
@@ -87,7 +87,7 @@ pub enum ShortcutCommands {
     List,
     /// Remove a saved shortcut definition.
     Remove {
-        #[arg(add = ArgValueCompleter::new(crate::completion::shortcut_candidates))]
+        #[arg(add = ArgValueCompleter::new(super::completion::shortcut_candidates))]
         name: Option<String>,
         #[arg(long, requires = "name")]
         yes: bool,

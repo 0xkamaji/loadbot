@@ -6,6 +6,7 @@ use anyhow::{Context, Result, bail};
 #[derive(Debug, Clone)]
 pub struct Paths {
     root: PathBuf,
+    configuration_directory: Option<PathBuf>,
 }
 
 impl Paths {
@@ -17,7 +18,7 @@ impl Paths {
                 .join("loadbot"),
         };
         let root = absolute(root)?;
-        Ok(Self { root })
+        Ok(Self { root, configuration_directory: None })
     }
 
     pub fn config(&self) -> PathBuf {
@@ -25,6 +26,9 @@ impl Paths {
     }
 
     pub fn shortcuts(&self) -> Result<PathBuf> {
+        if let Some(directory) = &self.configuration_directory {
+            return Ok(directory.join("shortcuts.toml"));
+        }
         Ok(absolute(
             dirs::config_dir()
                 .context("could not determine the operating system's configuration directory")?
@@ -55,9 +59,17 @@ impl Paths {
         Ok(self.tools().join(catalog).join(name))
     }
 
-    #[cfg(test)]
+    /// Select a data root while retaining the platform configuration location.
     pub fn with_root(root: PathBuf) -> Self {
-        Self { root }
+        Self { root, configuration_directory: None }
+    }
+
+    /// Explicit locations for embedding and isolated tests. Neither directory is created.
+    pub fn with_directories(root: PathBuf, configuration_directory: PathBuf) -> Result<Self> {
+        Ok(Self {
+            root: absolute(root)?,
+            configuration_directory: Some(absolute(configuration_directory)?),
+        })
     }
 }
 
@@ -128,9 +140,7 @@ mod tests {
 
     #[test]
     fn tool_paths_require_safe_catalog_and_tool_names() {
-        let paths = Paths {
-            root: PathBuf::from("/loadbot"),
-        };
+        let paths = Paths::with_root(PathBuf::from("/loadbot"));
 
         assert_eq!(
             paths.tool("personal", "re-toolkit").unwrap(),

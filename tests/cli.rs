@@ -135,7 +135,12 @@ fn catalog_registration_clones_and_sets_the_first_default() {
     assert_success_ref(&path);
     assert_eq!(
         stdout(&path),
-        fixture.home.join("catalogs").join("personal").display().to_string()
+        fixture
+            .home
+            .join("catalogs")
+            .join("personal")
+            .display()
+            .to_string()
     );
     let status = fixture.loadbot(["catalog", "status", "personal"]);
     assert_success_ref(&status);
@@ -517,7 +522,9 @@ fn tool_listing_aggregates_catalogs_and_requires_qualification_for_duplicates() 
         stdout(&qualified),
         fixture
             .home
-            .join("tools").join("personal").join("demo")
+            .join("tools")
+            .join("personal")
+            .join("demo")
             .display()
             .to_string()
     );
@@ -1061,7 +1068,10 @@ fn read_only_commands_do_not_create_loadbot_home() {
     for arguments in [["catalog", "list"].as_slice(), ["list"].as_slice()] {
         let output = Command::new(env!("CARGO_BIN_EXE_loadbot"))
             .env("LOADBOT_HOME", &home)
-            .env("LOADBOT_CONFIG_HOME", temporary.path().join("configuration"))
+            .env(
+                "LOADBOT_CONFIG_HOME",
+                temporary.path().join("configuration"),
+            )
             .args(arguments)
             .output()
             .unwrap();
@@ -1190,7 +1200,10 @@ fn bare_loadbot_requires_a_terminal_without_creating_home() {
     let home = temporary.path().join("missing");
     let output = Command::new(env!("CARGO_BIN_EXE_loadbot"))
         .env("LOADBOT_HOME", &home)
-        .env("LOADBOT_CONFIG_HOME", temporary.path().join("configuration"))
+        .env(
+            "LOADBOT_CONFIG_HOME",
+            temporary.path().join("configuration"),
+        )
         .stdin(Stdio::null())
         .output()
         .unwrap();
@@ -1216,7 +1229,10 @@ fn dynamic_completion_preserves_root_and_nested_commands() {
         ),
     ] {
         let output = Command::new(env!("CARGO_BIN_EXE_loadbot"))
-            .env("LOADBOT_CONFIG_HOME", temporary.path().join("configuration"))
+            .env(
+                "LOADBOT_CONFIG_HOME",
+                temporary.path().join("configuration"),
+            )
             .env("COMPLETE", "bash")
             .env("_CLAP_IFS", "\n")
             .env("_CLAP_COMPLETE_INDEX", words.len().to_string())

@@ -15,7 +15,8 @@ fn details(name: &str, shortcut: &Shortcut) -> String {
     if let Some(runner) = shortcut.runner {
         text.push_str(&format!("\nRunner: {}", runner.as_str()));
     }
-    text}
+    text
+}
 
 pub fn list(path: &Path) -> Result<String> {
     let file = load(path)?;
@@ -227,5 +228,4 @@ future = "entry"
         assert!(list(&link).is_err());
         assert_eq!(fs::read(&target).unwrap(), before);
     }
-
 }

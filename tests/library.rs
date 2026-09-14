@@ -6,13 +6,12 @@ use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use loadbot::{
-    catalog, config, git, launcher,
+    catalog, config, git,
     interaction::{Notice, OperationContext, Unattended},
-    operations,
+    launcher, operations,
     paths::Paths,
     shortcuts,
 };
-
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 struct Fixture(PathBuf);
@@ -293,14 +292,18 @@ fn shell_launchers_keep_spaces_working_directory_and_exit_code() {
         }
         .unwrap_err();
         assert_eq!(
-            error.downcast_ref::<launcher::ChildExit>()
+            error
+                .downcast_ref::<launcher::ChildExit>()
                 .unwrap_or_else(|| panic!("{runner:?}: {error:#}"))
                 .code(),
             7
         );
         let expected_cwd = if runner.is_none() { &scripts } else { &root };
         let other_cwd = if runner.is_none() { &root } else { &scripts };
-        assert_eq!(fs::read_to_string(expected_cwd.join("cwd-marker")).unwrap(), "ran");
+        assert_eq!(
+            fs::read_to_string(expected_cwd.join("cwd-marker")).unwrap(),
+            "ran"
+        );
         assert!(!other_cwd.join("cwd-marker").exists());
         fs::remove_file(expected_cwd.join("cwd-marker")).unwrap();
     }
@@ -471,15 +474,19 @@ fn saving_validates_public_records_before_touching_storage() {
                         "personal"
                     }
                     .into(),
-                    tool: if field == "tool" { "../outside" } else { "demo" }.into(),
+                    tool: if field == "tool" {
+                        "../outside"
+                    } else {
+                        "demo"
+                    }
+                    .into(),
                     path: "run.sh".into(),
                     description: None,
                     runner: None,
                     extra: Default::default(),
                 }
             } else {
-                shortcuts::Shortcut::new("personal".into(), "demo".into(), "run.sh".into())
-                    .unwrap()
+                shortcuts::Shortcut::new("personal".into(), "demo".into(), "run.sh".into()).unwrap()
             };
             if !direct {
                 if field == "catalog" {
@@ -505,7 +512,10 @@ fn saving_validates_public_records_before_touching_storage() {
     shortcuts::save(&existing, "new", valid).unwrap();
     let loaded = shortcuts::load(&existing).unwrap();
     assert_eq!(loaded.extra["custom"].as_str(), Some("keep"));
-    assert_eq!(loaded.shortcuts["old"].extra["future"].as_integer(), Some(42));
+    assert_eq!(
+        loaded.shortcuts["old"].extra["future"].as_integer(),
+        Some(42)
+    );
     assert_eq!(loaded.shortcuts.len(), 2);
 }
 
@@ -571,8 +581,18 @@ fn explicit_configuration_override_isolates_cli_and_completion() {
     let platform = fixture.0.join("platform");
     let shortcut =
         shortcuts::Shortcut::new("personal".into(), "demo".into(), "run.sh".into()).unwrap();
-    shortcuts::save(&isolated.join("shortcuts.toml"), "isolated", shortcut.clone()).unwrap();
-    shortcuts::save(&platform.join("loadbot/shortcuts.toml"), "platform", shortcut).unwrap();
+    shortcuts::save(
+        &isolated.join("shortcuts.toml"),
+        "isolated",
+        shortcut.clone(),
+    )
+    .unwrap();
+    shortcuts::save(
+        &platform.join("loadbot/shortcuts.toml"),
+        "platform",
+        shortcut,
+    )
+    .unwrap();
     let before = fs::read(platform.join("loadbot/shortcuts.toml")).unwrap();
     for (args, expected) in [
         (vec!["rot", "complete", "run", ""], "[\"isolated\"]\n"),
@@ -613,13 +633,18 @@ fn catalog_query_keeps_progress_output_before_a_later_error() {
     let fixture = Fixture::new();
     let paths = fixture.paths();
     fs::create_dir_all(paths.catalog("second")).unwrap();
-    fs::write(paths.config(), "version = 1\n[catalogs.first]\nurl = 'first.git'\n[catalogs.second]\nurl = 'second.git'\n").unwrap();
+    fs::write(
+        paths.config(),
+        "version = 1\n[catalogs.first]\nurl = 'first.git'\n[catalogs.second]\nurl = 'second.git'\n",
+    )
+    .unwrap();
     let empty_path = fixture.0.join("no-programs");
     fs::create_dir(&empty_path).unwrap();
     for (args, expected) in [
         (
             vec!["catalog", "list"],
-            "NAME\tSTATE\tACCESS\tDEFAULT\tURL\nfirst\tmissing\tread-only\tno\tfirst.git\n".to_owned(),
+            "NAME\tSTATE\tACCESS\tDEFAULT\tURL\nfirst\tmissing\tread-only\tno\tfirst.git\n"
+                .to_owned(),
         ),
         (
             vec!["catalog", "status", "second"],

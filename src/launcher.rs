@@ -169,6 +169,12 @@ fn script_argument(
 ) -> Result<()> {
     #[cfg(windows)]
     if matches!(interpreter, "sh" | "bash") {
+        // Rust searches an explicitly supplied child PATH before System32.
+        // Merely inheriting PATH lets the WSL bash.exe win over Git Bash even
+        // when Git is first on PATH. Preserve its value, but honor that order.
+        if let Some(path) = std::env::var_os("PATH") {
+            command.env("PATH", path);
+        }
         // Windows canonical paths use the verbatim namespace, which POSIX
         // shells cannot open. Use a relative POSIX path from the existing child
         // cwd instead of guessing a Git/MSYS drive or WSL mount mapping.

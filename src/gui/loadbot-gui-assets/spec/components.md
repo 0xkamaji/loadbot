@@ -18,7 +18,7 @@ All table paths are relative to assets/. Not every screenshot symbol has a match
 
 ## Scaling and geometry
 
-All manifest paths are relative to the package root. `nine_slice` order is top, right, bottom, left. Use either the master PNG with a nine-slice facility or its nine exported pieces, never both. Keep corners fixed; stretch horizontal edges horizontally and vertical edges vertically, with nearest-neighbor sampling. Fill the center in both directions. Do not stretch the entire master bitmap to the target rectangle.
+All manifest paths are relative to `src/gui/loadbot-gui-assets/` in the repository. `nine_slice` order is top, right, bottom, left. Use either the master PNG with a nine-slice facility or its nine exported pieces, never both. Keep corners fixed; stretch horizontal edges horizontally and vertical edges vertically, with nearest-neighbor sampling. Fill the center in both directions. Do not stretch the entire master bitmap to the target rectangle.
 
 The window uses 12px slices, panel/titlebar/input 8px, buttons/menu rows 6px, and the transparent input focus ring 4px. Check the manifest for every asset instead of assuming one border width. The beige terminal uses 8px slices. The focus ring is an overlay over the input skin; it does not replace its background.
 

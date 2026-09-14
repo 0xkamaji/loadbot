@@ -2,10 +2,15 @@
 
 Loadbot exposes a synchronous Rust library. A Tauri-based GUI can call this
 library directly on a worker thread, constructing its `OperationContext` there.
-The Python Rotbot application does not need Python bindings merely to launch a
-Loadbot GUI executable. If embedding or deeper integration later requires it,
-use an explicit process/IPC boundary. This pass implements no Tauri application,
-bindings, IPC, daemon, or terminal adapter.
+The [Phase 1 standalone GUI](gui-phase1.md) now lives in `src/gui/`, with a separate
+Tauri 2 host and an injected fixture adapter. The call flow below describes the
+existing backend contracts for future connections; the GUI does not call them yet.
+
+Rot is a separate Python application. The browser-only embedding example reuses
+the menu inside a parent-owned container without Tauri. It demonstrates frontend
+reuse only: future Rot hosting and backend transport still need design and
+implementation. Phase 1 adds no Python bindings, server, cross-process protocol,
+or terminal adapter, and does not modify Rot.
 
 ## Current module responsibilities
 

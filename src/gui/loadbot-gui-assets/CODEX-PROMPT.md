@@ -1,6 +1,6 @@
 # Paste this into Codex in the Loadbot repository
 
-Implement a standalone Loadbot GUI using this `loadbot-gui` handoff folder as the visual source of truth.
+Implement a standalone Loadbot GUI using the handoff at `src/gui/loadbot-gui-assets/` as the visual source of truth. Handoff paths below are relative to that directory.
 
 First read START-HERE.md, spec/layout.md, spec/components.md, spec/integration.md, and spec/acceptance.md. Inspect references/01-main-window.png and references/02-interface-kit.png, then consult spec/asset-manifest.json for the actual runtime assets. Inspect the repository's existing instructions, UI stack, Loadbot catalog, and execution APIs before choosing an implementation approach.
 

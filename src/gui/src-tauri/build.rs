@@ -1,0 +1,20 @@
+fn main() {
+    let mut attributes = tauri_build::Attributes::new();
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        // Windows resources require an ICO container. Embed the approved 100x100
+        // PNG byte-for-byte, without resampling or generating replacement artwork.
+        let source = "../loadbot-gui-assets/assets/branding/loadbot-header.png";
+        println!("cargo:rerun-if-changed={source}");
+        let png = std::fs::read(source).expect("approved Loadbot header PNG is missing");
+        let mut ico = vec![0, 0, 1, 0, 1, 0, 100, 100, 0, 0, 1, 0, 32, 0];
+        ico.extend_from_slice(&(png.len() as u32).to_le_bytes());
+        ico.extend_from_slice(&22_u32.to_le_bytes());
+        ico.extend_from_slice(&png);
+        let path =
+            std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("loadbot.ico");
+        std::fs::write(&path, ico).expect("could not write Windows icon container");
+        attributes = attributes
+            .windows_attributes(tauri_build::WindowsAttributes::new().window_icon_path(path));
+    }
+    tauri_build::try_build(attributes).expect("could not prepare the Loadbot desktop host");
+}

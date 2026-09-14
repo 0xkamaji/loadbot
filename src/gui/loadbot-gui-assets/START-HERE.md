@@ -6,7 +6,7 @@ This package contains artwork, reference screenshots, reusable CSS, and implemen
 
 ## Give this to Codex
 
-Put this entire `loadbot-gui` folder in the Loadbot repository, preserving its structure. Open `CODEX-PROMPT.md` and give Codex that prompt. Start with `references/01-main-window.png` for the intended composition.
+The handoff is at `src/gui/loadbot-gui-assets/` in the Loadbot repository. Preserve this directory and its structure. Paths in this document are relative to that directory. Open `CODEX-PROMPT.md` and give Codex that prompt. Start with `references/01-main-window.png` for the intended composition.
 
 ## What is where
 

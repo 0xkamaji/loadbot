@@ -1,0 +1,19 @@
+[package]
+name = "loadbot-desktop"
+version = "0.1.0"
+edition = "2024"
+description = "Standalone Loadbot menu — Phase 1 fixture preview"
+license = "MIT"
+
+# An independent workspace/lockfile keeps Tauri out of the CLI dependency graph.
+[workspace]
+
+[features]
+custom-protocol = ["tauri/custom-protocol"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+loadbot = { path = "../../.." }
+tauri = { version = "2", features = [] }

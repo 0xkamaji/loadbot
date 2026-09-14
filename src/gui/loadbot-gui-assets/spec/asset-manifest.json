@@ -1,7 +1,7 @@
 {
   "version": "1.0.0",
   "application": "Standalone Loadbot GUI",
-  "path_base": "All file and pieces paths are relative to the loadbot-gui package root, not this spec directory.",
+  "path_base": "All file and pieces paths are relative to src/gui/loadbot-gui-assets/ in the repository, not this spec directory.",
   "pixel_unit": 1,
   "scaling": "nearest-neighbor; integer UI zoom preferred",
   "states": [

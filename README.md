@@ -55,6 +55,12 @@ The Loadbot executable and Loadbot source repository do not have to live beneath
 
 ## Build and Install
 
+The optional **Phase 1 desktop GUI** uses Tauri 2 and React, with clearly marked
+fixture data. See [desktop development and browser preview](docs/gui-phase1.md)
+for launch commands, prerequisites, reusable component boundaries, and validation.
+Its separate Cargo workspace keeps desktop dependencies out of the normal CLI
+builds and tests below.
+
 Loadbot requires Git and a Rust toolchain with Cargo 1.85 or newer because the crate uses Rust edition 2024. Cargo downloads the crate dependencies declared by `Cargo.toml` and `Cargo.lock`; the setup scripts do not install individual Rust crates.
 
 ```bash
@@ -907,7 +913,8 @@ ordered typed notices. Notices include warnings and successful steps that occurr
 before a later failure. The CLI renders notices immediately to preserve output
 order and stdout/stderr routing, including output preceding a prompt or error.
 Other callers can inspect the report without rendering anything. This is a
-synchronous API; this phase adds no GUI, service, or process-control protocol.
+synchronous API; it adds no service or process-control protocol. The separate
+Phase 1 GUI currently uses an injected fixture adapter.
 
 `tests/library.rs` exercises the public API with isolated directories and local
 Git repositories. The existing CLI and setup tests remain the compatibility suite.

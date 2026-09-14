@@ -1,0 +1,11 @@
+/* Viewport ownership belongs to the host, never to the reusable menu. */
+html, body, #root { width: 100%; height: 100%; margin: 0; }
+body { background: #0e0e0c; }
+.embedding-page { padding: 24px; color: #dfc6a0; font: 14px/1.6 LoadbotMono, monospace; }
+.embedding-page > button { font: inherit; padding: 12px; background: #171512; border: 1px solid #dfc6a0; color: inherit; cursor: pointer; }
+.embedding-dialog { padding: 0; border: 0; background: transparent; max-width: none; max-height: none; }
+.embedding-dialog::backdrop { background: rgb(0 0 0 / 75%); }
+.embedding-container { width: min(1000px, calc(100vw - 48px)); height: min(680px, calc(100dvh - 64px)); }
+@media (max-width: 600px) {
+  .embedding-container { width: calc(100vw - 16px); height: calc(100dvh - 32px); }
+}

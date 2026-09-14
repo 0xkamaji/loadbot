@@ -931,3 +931,8 @@ Backend concurrency, persistence recovery, and observable process execution are 
 [GUI readiness and frontend contracts](docs/gui-readiness.md) describes the module
 boundaries, public call flow, headless verification, Rot compatibility, and the
 direction for a Tauri frontend calling the existing Rust library.
+
+[GUI architecture](docs/gui-architecture.md) describes the current fixture-backed
+adapter, headless application state, reusable presentation primitives, and host
+composition, including the intended future alternative-host and cosmetic-personality
+boundaries. The real read-only data adapter remains the next, separate phase.

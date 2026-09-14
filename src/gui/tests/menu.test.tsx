@@ -1,9 +1,9 @@
 import { act, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
-import { fixtureAdapter } from '../frontend/adapter/fixtures';
-import type { MenuAdapter, MenuProject } from '../frontend/adapter/types';
-import { LoadbotMenu } from '../frontend/menu/LoadbotMenu';
+import { fixtureMenuDependencies } from '../frontend/hosts/fixtureComposition';
+import type { LoadbotAdapter, LoadbotProject } from '../frontend/loadbot/contract';
+import { LoadbotMenu } from '../frontend/loadbot/LoadbotMenu';
 
 const projectRows = () => within(screen.getByRole('group', { name: 'Projects' }));
 const shortcutRows = () => within(screen.getByRole('group', { name: 'Shortcuts' }));
@@ -11,7 +11,7 @@ const shortcutRows = () => within(screen.getByRole('group', { name: 'Shortcuts' 
 describe('injected menu outside Tauri', () => {
   it('changes project/shortcut, resets isolated forms, and preserves state through the drawer', async () => {
     const user = userEvent.setup();
-    render(<LoadbotMenu adapter={fixtureAdapter} />);
+    render(<LoadbotMenu {...fixtureMenuDependencies} />);
     await screen.findByRole('heading', { name: 'Malware triage' });
     expect(screen.getByRole('status')).toHaveTextContent('Input required: input folder');
     await user.click(screen.getByRole('button', { name: 'Use sample input folder' }));
@@ -42,7 +42,7 @@ describe('injected menu outside Tauri', () => {
 
   it('keeps selection distinct from arrow-key focus and supports native activation', async () => {
     const user = userEvent.setup();
-    render(<LoadbotMenu adapter={fixtureAdapter} />);
+    render(<LoadbotMenu {...fixtureMenuDependencies} />);
     const selected = await projectRows().findByRole('button', { name: 're-toolkit personal' });
     selected.focus();
     await user.keyboard('{ArrowDown}');
@@ -58,7 +58,7 @@ describe('injected menu outside Tauri', () => {
   });
 
   it('renders a supplied adapter in an ordinary parent and delegates close to that parent', async () => {
-    const adapter: MenuAdapter = { mode: 'fixture', readProjects: vi.fn(async () => [{ catalog: 'test', tool: 'injected', entries: [] }]) };
+    const adapter: LoadbotAdapter = { readInventory: vi.fn(async () => [{ catalog: 'test', tool: 'injected', entries: [] }]) };
     const close = vi.fn();
     const user = userEvent.setup();
     render(<div style={{ width: 700, height: 500 }}><LoadbotMenu adapter={adapter} host={{ onClose: close }} /></div>);
@@ -68,20 +68,20 @@ describe('injected menu outside Tauri', () => {
     expect(close).not.toHaveBeenCalled();
     await user.click(screen.getByRole('button', { name: 'Close Loadbot menu' }));
     expect(close).toHaveBeenCalledOnce();
-    expect(adapter.readProjects).toHaveBeenCalledOnce();
+    expect(adapter.readInventory).toHaveBeenCalledOnce();
   });
 
   it('ignores stale adapter responses and displays empty/error results honestly', async () => {
-    let resolve!: (projects: readonly MenuProject[]) => void;
-    const slow: MenuAdapter = { mode: 'fixture', readProjects: () => new Promise((done) => { resolve = done; }) };
-    const empty: MenuAdapter = { mode: 'fixture', readProjects: async () => [] };
+    let resolve!: (projects: readonly LoadbotProject[]) => void;
+    const slow: LoadbotAdapter = { readInventory: () => new Promise((done) => { resolve = done; }) };
+    const empty: LoadbotAdapter = { readInventory: async () => [] };
     const view = render(<LoadbotMenu adapter={slow} />);
     await act(async () => {});
     view.rerender(<LoadbotMenu adapter={empty} />);
     await screen.findByText('No fixture projects available.');
     await act(async () => resolve([{ catalog: 'old', tool: 'stale', entries: [] }]));
     expect(screen.queryByRole('button', { name: 'stale old' })).not.toBeInTheDocument();
-    view.rerender(<LoadbotMenu adapter={{ mode: 'fixture', readProjects: async () => { throw new Error('Fixture read failed'); } }} />);
+    view.rerender(<LoadbotMenu adapter={{ readInventory: async () => { throw new Error('Fixture read failed'); } }} />);
     expect(await screen.findByText('Fixture unavailable: Fixture read failed')).toBeInTheDocument();
   });
 });

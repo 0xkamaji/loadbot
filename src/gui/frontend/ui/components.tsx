@@ -2,8 +2,12 @@ import { useId, useRef, type ButtonHTMLAttributes, type HTMLAttributes, type Inp
 import { asset, themeStyle } from './theme';
 import './theme.css';
 
-export function WindowFrame({ children }: { children: ReactNode }) {
-  return <section className="lb-theme lb-window" style={themeStyle} aria-label="Loadbot menu">{children}</section>;
+export interface ShellCallbacks {
+  onClose?: () => void;
+}
+
+export function ApplicationFrame({ label, children }: { label: string; children: ReactNode }) {
+  return <section className="lb-theme lb-window" style={themeStyle} aria-label={label}>{children}</section>;
 }
 
 export function Panel({ className = '', ...props }: HTMLAttributes<HTMLElement>) {
@@ -60,17 +64,12 @@ export function InputControl({ label, id, ...props }: InputHTMLAttributes<HTMLIn
   </label>;
 }
 
-export function PathSelector({ label, value, onChange, sampleValue, pathKind, required, describedBy }: {
-  label: string; value: string; onChange: (value: string) => void;
-  sampleValue: string; pathKind: 'file' | 'folder'; required?: boolean; describedBy?: string;
+export function PathSelector({ action, ...input }: InputHTMLAttributes<HTMLInputElement> & {
+  label: string; action: ReactNode;
 }) {
   return <div className="lb-path-selector">
-    <InputControl label={label} value={value} onChange={(event) => onChange(event.target.value)} required={required}
-      aria-invalid={required && !value.trim() ? true : undefined} aria-describedby={describedBy}
-      placeholder={`Choose a sample ${pathKind}…`} title={value} spellCheck={false} />
-    <Button onClick={() => onChange(sampleValue)} aria-label={`Use sample ${label.toLowerCase()}`} title={`Set the sample value “${sampleValue}”; no filesystem access`}>
-      {value ? 'Change sample' : `Sample ${pathKind}…`}
-    </Button>
+    <InputControl {...input} />
+    {action}
   </div>;
 }
 
@@ -82,10 +81,8 @@ export function StatusDisplay({ children, id }: { children: ReactNode; id?: stri
   return <p className="lb-status" id={id} role="status" aria-live="polite">{children}</p>;
 }
 
-export function BottomDrawer({ open, id }: { open: boolean; id: string }) {
-  return <section id={id} className="lb-drawer" aria-label="Terminal placeholder" hidden={!open} tabIndex={0}>
-    <h2>TERMINAL / NOT CONNECTED</h2>
-    <p>Layout placeholder for a future terminal.</p>
-    <p>No shell session, command input, or output is connected.</p>
+export function BottomDrawer({ open, id, label, children }: { open: boolean; id: string; label: string; children: ReactNode }) {
+  return <section id={id} className="lb-drawer" aria-label={label} hidden={!open} tabIndex={0}>
+    {children}
   </section>;
 }

@@ -293,6 +293,7 @@ function Test-LoadbotPathContains {
     )
     $wanted = Get-NormalizedLoadbotPath $Entry
     foreach ($candidate in ($PathValue -split [IO.Path]::PathSeparator)) {
+        if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
         if ([string]::Equals((Get-NormalizedLoadbotPath $candidate), $wanted, [StringComparison]::OrdinalIgnoreCase)) {
             return $true
         }

@@ -46,6 +46,12 @@ jobs:
       - name: Install stable Rust
         run: rustup toolchain install stable --profile minimal
       - run: rustup default stable
+      - name: Test setup PATH handling (PowerShell 7)
+        shell: pwsh
+        run: ./tests/setup_path_test.ps1
+      - name: Test setup PATH handling (Windows PowerShell)
+        shell: powershell
+        run: ./tests/setup_path_test.ps1
       - name: Diagnose Windows shell resolution
         shell: pwsh
         run: |

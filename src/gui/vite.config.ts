@@ -14,7 +14,14 @@ export default defineConfig({
     },
   }],
   clearScreen: false,
-  server: { port: 1420, strictPort: true },
+  server: {
+    port: 1420,
+    strictPort: true,
+    watch: {
+      // Tauri watches Rust sources; Vite must not watch Cargo's locked Windows DLLs.
+      ignored: ['**/src-tauri/**'],
+    },
+  },
   // The separate browser embedding entry is deliberately dev-only.
   build: { target: 'es2022' },
   test: {

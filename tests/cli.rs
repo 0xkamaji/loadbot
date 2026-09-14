@@ -135,7 +135,7 @@ fn catalog_registration_clones_and_sets_the_first_default() {
     assert_success_ref(&path);
     assert_eq!(
         stdout(&path),
-        fixture.home.join("catalogs/personal").display().to_string()
+        fixture.home.join("catalogs").join("personal").display().to_string()
     );
     let status = fixture.loadbot(["catalog", "status", "personal"]);
     assert_success_ref(&status);
@@ -517,7 +517,7 @@ fn tool_listing_aggregates_catalogs_and_requires_qualification_for_duplicates() 
         stdout(&qualified),
         fixture
             .home
-            .join("tools/personal/demo")
+            .join("tools").join("personal").join("demo")
             .display()
             .to_string()
     );
@@ -554,8 +554,8 @@ fn duplicate_tools_install_and_operate_independently_by_catalog() {
 
     assert_success(fixture.loadbot(["pull", "demo", "--catalog", "personal"]));
     assert_success(fixture.loadbot(["pull", "demo", "--catalog", "public"]));
-    let personal = fixture.home.join("tools/personal/demo");
-    let public = fixture.home.join("tools/public/demo");
+    let personal = fixture.home.join("tools").join("personal").join("demo");
+    let public = fixture.home.join("tools").join("public").join("demo");
     assert!(personal.join("README.md").is_file());
     assert!(public.join("README.md").is_file());
     let list = fixture.loadbot(["list"]);

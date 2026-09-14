@@ -272,27 +272,38 @@ fn identity_decisions_are_typed_and_cancellation_is_preserved() {
     assert!(git::select_verified_rot_identity(identities, &mut Choose(Some(99))).is_err());
 }
 
-#[cfg(unix)]
 #[test]
-fn launcher_keeps_child_exit_code_and_working_directory() {
+fn shell_launchers_keep_spaces_working_directory_and_exit_code() {
     let fixture = Fixture::new();
-    let root = fixture.0.join("tool");
-    fs::create_dir_all(root.join("scripts")).unwrap();
-    let script = root.join("scripts/run.sh");
+    let root = fixture.0.join("tool with spaces");
+    let scripts = root.join("scripts with spaces");
+    fs::create_dir_all(&scripts).unwrap();
+    let relative = Path::new("scripts with spaces").join("-run with spaces.sh");
     fs::write(
-        &script,
-        "pwd > cwd.txt\nprintf 'child stdout\\n'\nprintf 'child stderr\\n' >&2\nexit 7\n",
+        root.join(&relative),
+        "printf 'child stdout\\n'\nprintf 'child stderr\\n' >&2\nprintf 'ran' > cwd-marker\nexit 7\n",
     )
     .unwrap();
-    let error = launcher::launch_with_runner(&script, &root, catalog::Runner::Sh).unwrap_err();
-    assert_eq!(
-        error.downcast_ref::<launcher::ChildExit>().unwrap().code(),
-        7
-    );
-    assert_eq!(
-        fs::read_to_string(root.join("cwd.txt")).unwrap().trim(),
-        root.to_str().unwrap()
-    );
+    // safe_target produces the verbatim Windows path that previously failed.
+    let target = launcher::safe_target(&root, &relative).unwrap();
+    for runner in [None, Some(catalog::Runner::Sh), Some(catalog::Runner::Bash)] {
+        let error = match runner {
+            None => launcher::launch_file(&target),
+            Some(runner) => launcher::launch_with_runner(&target, &root, runner),
+        }
+        .unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<launcher::ChildExit>()
+                .unwrap_or_else(|| panic!("{runner:?}: {error:#}"))
+                .code(),
+            7
+        );
+        let expected_cwd = if runner.is_none() { &scripts } else { &root };
+        let other_cwd = if runner.is_none() { &root } else { &scripts };
+        assert_eq!(fs::read_to_string(expected_cwd.join("cwd-marker")).unwrap(), "ran");
+        assert!(!other_cwd.join("cwd-marker").exists());
+        fs::remove_file(expected_cwd.join("cwd-marker")).unwrap();
+    }
 }
 
 fn binary() -> PathBuf {

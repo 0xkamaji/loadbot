@@ -46,5 +46,12 @@ jobs:
       - name: Install stable Rust
         run: rustup toolchain install stable --profile minimal
       - run: rustup default stable
+      - name: Diagnose Windows shell resolution
+        shell: pwsh
+        run: |
+          where.exe sh
+          where.exe bash
+          sh --version
+          bash --version
       - name: Run tests
         run: cargo test --all-targets --all-features

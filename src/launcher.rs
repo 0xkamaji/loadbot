@@ -114,7 +114,8 @@ pub fn launch_file(target: &Path) -> Result<()> {
     };
     for interpreter in interpreters {
         let mut command = Command::new(interpreter);
-        command.arg(target);
+        let working_directory = target.parent().unwrap_or_else(|| Path::new("."));
+        script_argument(&mut command, target, working_directory, interpreter)?;
         match run_command(command, target) {
             Err(error)
                 if error
@@ -144,7 +145,7 @@ pub fn launch_with_runner(target: &Path, working_directory: &Path, runner: Runne
     };
     for executable in executables {
         let mut command = Command::new(executable);
-        command.arg(target);
+        script_argument(&mut command, target, working_directory, executable)?;
         match run_command_in(command, target, working_directory) {
             Err(error)
                 if error
@@ -158,6 +159,68 @@ pub fn launch_with_runner(target: &Path, working_directory: &Path, runner: Runne
         runner.as_str(),
         target.display()
     )
+}
+
+fn script_argument(
+    command: &mut Command,
+    target: &Path,
+    working_directory: &Path,
+    interpreter: &str,
+) -> Result<()> {
+    #[cfg(windows)]
+    if matches!(interpreter, "sh" | "bash") {
+        // Windows canonical paths use the verbatim namespace, which POSIX
+        // shells cannot open. Use a relative POSIX path from the existing child
+        // cwd instead of guessing a Git/MSYS drive or WSL mount mapping.
+        // Canonicalize both sides before deriving it; never undo safe_target's
+        // repository containment validation or change the child's cwd.
+        let directory = fs::canonicalize(working_directory)?;
+        let target = fs::canonicalize(target)?;
+        let relative = target
+            .strip_prefix(&directory)
+            .context("shell script must be within its working directory")?;
+        let mut argument = std::ffi::OsString::from(".");
+        for component in relative.components() {
+            argument.push("/");
+            argument.push(component.as_os_str());
+        }
+        command.arg(argument);
+        return Ok(());
+    }
+    #[cfg(not(windows))]
+    let _ = (working_directory, interpreter);
+    command.arg(target);
+    Ok(())
+}
+
+#[cfg(all(test, windows))]
+mod shell_path_tests {
+    use super::*;
+
+    #[test]
+    fn only_posix_shells_receive_relative_arguments() {
+        let temporary = tempfile::TempDir::new().unwrap();
+        let root = temporary.path().join("tool with spaces");
+        let relative = Path::new("scripts with spaces").join("run.sh");
+        fs::create_dir_all(root.join("scripts with spaces")).unwrap();
+        fs::write(root.join(&relative), "exit 0\n").unwrap();
+        let target = safe_target(&root, &relative).unwrap();
+        assert!(matches!(
+            target.components().next(),
+            Some(std::path::Component::Prefix(prefix)) if prefix.kind().is_verbatim()
+        ));
+
+        for interpreter in ["sh", "bash", "python", "pwsh", "powershell"] {
+            let mut command = Command::new(interpreter);
+            script_argument(&mut command, &target, &root, interpreter).unwrap();
+            let expected = if matches!(interpreter, "sh" | "bash") {
+                std::ffi::OsStr::new("./scripts with spaces/run.sh")
+            } else {
+                target.as_os_str()
+            };
+            assert_eq!(command.get_args().collect::<Vec<_>>(), [expected]);
+        }
+    }
 }
 
 fn run_command(command: Command, target: &Path) -> Result<()> {

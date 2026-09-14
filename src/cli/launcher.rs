@@ -1,6 +1,6 @@
-use loadbot::launcher::{safe_target, launch_file, EntrySource};
 #[cfg(all(test, unix))]
 use loadbot::launcher::launch_with_runner;
+use loadbot::launcher::{EntrySource, launch_file, safe_target};
 use std::collections::{BTreeMap, BTreeSet};
 #[cfg(test)]
 use std::fs;
@@ -219,22 +219,45 @@ fn run_project_menu<P: Prompt>(paths: &Paths, prompt: &mut P, project: &Project)
 }
 
 fn launch_entry(paths: &Paths, project: &Project, entry: &ProjectEntry) -> Result<()> {
-    super::output::with_context(|context| loadbot::launcher::launch_command(paths, &project.catalog, &project.tool, &entry.path, entry.runner, entry.source, context))
+    super::output::with_context(|context| {
+        loadbot::launcher::launch_command(
+            paths,
+            &project.catalog,
+            &project.tool,
+            &entry.path,
+            entry.runner,
+            entry.source,
+            context,
+        )
+    })
 }
 
 fn project_inventory(
     tools: &[ResolvedTool],
     shortcut_file: &shortcuts::ShortcutFile,
 ) -> Vec<Project> {
-    let projects: BTreeMap<_, _> = loadbot::launcher::project_inventory(tools, shortcut_file).into_iter().map(|project| {
-        let key = ProjectKey { tool: project.tool, catalog: project.catalog };
-        let entries = project.entries.into_iter().map(|entry| ProjectEntry {
-            name: entry.name, label: String::new(), path: entry.path,
-            description: entry.description, runner: entry.runner,
-            source: entry.source,
-        }).collect::<Vec<_>>();
-        (key, entries)
-    }).collect();
+    let projects: BTreeMap<_, _> = loadbot::launcher::project_inventory(tools, shortcut_file)
+        .into_iter()
+        .map(|project| {
+            let key = ProjectKey {
+                tool: project.tool,
+                catalog: project.catalog,
+            };
+            let entries = project
+                .entries
+                .into_iter()
+                .map(|entry| ProjectEntry {
+                    name: entry.name,
+                    label: String::new(),
+                    path: entry.path,
+                    description: entry.description,
+                    runner: entry.runner,
+                    source: entry.source,
+                })
+                .collect::<Vec<_>>();
+            (key, entries)
+        })
+        .collect();
     let duplicate_names: BTreeSet<_> = projects
         .keys()
         .filter(|key| {
@@ -264,7 +287,14 @@ fn project_inventory(
                 let qualify =
                     conflicts.contains(&entry.name) || matches!(entry.name.as_str(), BACK | EXIT);
                 entry.label = if qualify {
-                    format!("{} [{}]", entry.name, match entry.source { EntrySource::Catalog => "shared", EntrySource::Personal => "personal" })
+                    format!(
+                        "{} [{}]",
+                        entry.name,
+                        match entry.source {
+                            EntrySource::Catalog => "shared",
+                            EntrySource::Personal => "personal",
+                        }
+                    )
                 } else {
                     entry.name.clone()
                 };
@@ -292,14 +322,23 @@ fn project_inventory(
 fn browse<P: Prompt>(prompt: &mut P, root: &Path, root_label: &str) -> Result<Option<PathBuf>> {
     let mut relative = PathBuf::new();
     loop {
-        let mut entries: Vec<_> = loadbot::launcher::browse_directory(root, &relative)?.into_iter().map(|entry| BrowserEntry {
-            label: if entry.is_directory { format!("{}/", entry.name) } else { entry.name },
-            path: entry.path,
-            is_directory: entry.is_directory,
-        }).collect();
+        let mut entries: Vec<_> = loadbot::launcher::browse_directory(root, &relative)?
+            .into_iter()
+            .map(|entry| BrowserEntry {
+                label: if entry.is_directory {
+                    format!("{}/", entry.name)
+                } else {
+                    entry.name
+                },
+                path: entry.path,
+                is_directory: entry.is_directory,
+            })
+            .collect();
 
         entries.sort_by(|left, right| {
-            right.is_directory.cmp(&left.is_directory)
+            right
+                .is_directory
+                .cmp(&left.is_directory)
                 .then_with(|| left.label.cmp(&right.label))
         });
         let back = if relative.as_os_str().is_empty() {

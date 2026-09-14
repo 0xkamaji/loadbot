@@ -103,26 +103,47 @@ mod tests {
         for (args, expected) in [
             (vec!["add"], ShortcutCommands::Add),
             (vec!["list"], ShortcutCommands::List),
-            (vec!["remove"], ShortcutCommands::Remove { name: None, yes: false }),
-            (vec!["remove", "demo"], ShortcutCommands::Remove { name: Some("demo".to_owned()), yes: false }),
-            (vec!["remove", "demo", "--yes"], ShortcutCommands::Remove { name: Some("demo".to_owned()), yes: true }),
+            (
+                vec!["remove"],
+                ShortcutCommands::Remove {
+                    name: None,
+                    yes: false,
+                },
+            ),
+            (
+                vec!["remove", "demo"],
+                ShortcutCommands::Remove {
+                    name: Some("demo".to_owned()),
+                    yes: false,
+                },
+            ),
+            (
+                vec!["remove", "demo", "--yes"],
+                ShortcutCommands::Remove {
+                    name: Some("demo".to_owned()),
+                    yes: true,
+                },
+            ),
         ] {
-            let parsed = Cli::try_parse_from(["loadbot", "shortcut"].into_iter().chain(args)).unwrap();
-            assert_eq!(parsed.command, Some(Commands::Shortcut { command: Some(expected) }));
+            let parsed =
+                Cli::try_parse_from(["loadbot", "shortcut"].into_iter().chain(args)).unwrap();
+            assert_eq!(
+                parsed.command,
+                Some(Commands::Shortcut {
+                    command: Some(expected)
+                })
+            );
         }
         assert!(Cli::try_parse_from(["loadbot", "shortcut", "remove", "--yes"]).is_err());
     }
 
     #[test]
     fn bare_command_is_optional() {
-        assert!(
-            Cli::try_parse_from(["loadbot"])
-                .unwrap()
-                .command
-                .is_none()
-        );
+        assert!(Cli::try_parse_from(["loadbot"]).unwrap().command.is_none());
         assert_eq!(
-            Cli::try_parse_from(["loadbot", "shortcut"]).unwrap().command,
+            Cli::try_parse_from(["loadbot", "shortcut"])
+                .unwrap()
+                .command,
             Some(Commands::Shortcut { command: None })
         );
     }
@@ -131,8 +152,7 @@ mod tests {
     fn direct_tool_arguments_are_preserved() {
         for command in ["pull", "update", "path", "status"] {
             let parsed =
-                Cli::try_parse_from(["loadbot", command, "demo", "--catalog", "personal"])
-                    .unwrap();
+                Cli::try_parse_from(["loadbot", command, "demo", "--catalog", "personal"]).unwrap();
             let (name, catalog) = match parsed.command.unwrap() {
                 Commands::Pull { name, catalog }
                 | Commands::Update { name, catalog }
@@ -144,11 +164,21 @@ mod tests {
             assert_eq!(catalog.as_deref(), Some("personal"));
         }
         let parsed = Cli::try_parse_from([
-            "loadbot", "add", "demo", "local.git", "--revision", "main", "--catalog",
-            "personal", "--commit", "--push",
+            "loadbot",
+            "add",
+            "demo",
+            "local.git",
+            "--revision",
+            "main",
+            "--catalog",
+            "personal",
+            "--commit",
+            "--push",
         ])
         .unwrap();
-        assert!(matches!(parsed.command, Some(Commands::Add { name: Some(name), git_url: Some(url), revision: Some(revision), catalog: Some(catalog), commit: true, push: true }) if name == "demo" && url == "local.git" && revision == "main" && catalog == "personal"));
+        assert!(
+            matches!(parsed.command, Some(Commands::Add { name: Some(name), git_url: Some(url), revision: Some(revision), catalog: Some(catalog), commit: true, push: true }) if name == "demo" && url == "local.git" && revision == "main" && catalog == "personal")
+        );
         assert!(Cli::try_parse_from(["loadbot", "add", "--push"]).is_err());
     }
 

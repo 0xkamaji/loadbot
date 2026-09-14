@@ -43,17 +43,29 @@ pub struct Shortcut {
 
 impl Shortcut {
     pub fn new(catalog: String, tool: String, path: String) -> Result<Self> {
-        paths::validate_name(&catalog).context("invalid shortcut catalog")?;
-        paths::validate_name(&tool).context("invalid shortcut tool")?;
-        relative_path(&path)?;
-        Ok(Self {
+        let shortcut = Self {
             catalog,
             tool,
             path,
             description: None,
             runner: None,
             extra: BTreeMap::new(),
-        })
+        };
+        shortcut.validate()?;
+        Ok(shortcut)
+    }
+
+    /// Validate the complete record, including fields changed after construction.
+    pub fn validate(&self) -> Result<()> {
+        self.validate_names()?;
+        relative_path(&self.path)?;
+        Ok(())
+    }
+
+    fn validate_names(&self) -> Result<()> {
+        paths::validate_name(&self.catalog).context("invalid shortcut catalog")?;
+        paths::validate_name(&self.tool).context("invalid shortcut tool")?;
+        Ok(())
     }
 }
 
@@ -79,8 +91,7 @@ pub fn load(path: &Path) -> Result<ShortcutFile> {
     }
     for (name, shortcut) in &shortcuts.shortcuts {
         paths::validate_name(name).context("invalid shortcut name")?;
-        paths::validate_name(&shortcut.catalog).context("invalid shortcut catalog")?;
-        paths::validate_name(&shortcut.tool).context("invalid shortcut tool")?;
+        shortcut.validate_names()?;
         relative_path(&shortcut.path)
             .with_context(|| format!("shortcut '{name}' contains an unsafe path"))?;
     }
@@ -89,7 +100,7 @@ pub fn load(path: &Path) -> Result<ShortcutFile> {
 
 pub fn save(path: &Path, name: &str, shortcut: Shortcut) -> Result<()> {
     paths::validate_name(name).context("invalid shortcut name")?;
-    relative_path(&shortcut.path)?;
+    shortcut.validate()?;
     let mut shortcuts = load(path)?;
     if shortcuts.shortcuts.contains_key(name) {
         bail!("shortcut '{name}' already exists");

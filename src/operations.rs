@@ -7,7 +7,7 @@ use anyhow::{Context, Result, bail};
 use crate::catalog::{self, CatalogFile, ResolvedTool, ToolConfig};
 use crate::config::{self, CatalogSource, LocalConfig};
 use crate::git;
-use crate::interaction::{Interaction, OperationContext, Notice, MutationOutcome};
+use crate::interaction::{Interaction, MutationOutcome, Notice, OperationContext};
 use crate::paths::{self, Paths};
 
 #[derive(Debug, Clone)]
@@ -109,7 +109,9 @@ where
             )
         })?;
         created_clone = true;
-        if let Err(error) = git::clone_repository(&source.url, None, &destination, context.interaction) {
+        if let Err(error) =
+            git::clone_repository(&source.url, None, &destination, context.interaction)
+        {
             return Err(cleanup_catalog_add_failure(
                 &destination,
                 error,
@@ -153,15 +155,24 @@ where
             }
             return Err(error).context("catalog registration failed after validation");
         }
-        context.record(Notice::CatalogRegistered { name: name.to_owned() });
+        context.record(Notice::CatalogRegistered {
+            name: name.to_owned(),
+        });
     } else {
-        context.record(Notice::CatalogAlreadyRegistered { name: name.to_owned() });
+        context.record(Notice::CatalogAlreadyRegistered {
+            name: name.to_owned(),
+        });
     }
 
     if created_clone {
-        context.record(Notice::CatalogInstalled { name: name.to_owned(), path: destination.clone() });
+        context.record(Notice::CatalogInstalled {
+            name: name.to_owned(),
+            path: destination.clone(),
+        });
     } else {
-        context.record(Notice::CatalogAlreadyInstalled { name: name.to_owned() });
+        context.record(Notice::CatalogAlreadyInstalled {
+            name: name.to_owned(),
+        });
     }
     Ok(())
 }
@@ -212,7 +223,9 @@ pub fn catalog_initialize(
     } else {
         fs::create_dir_all(paths.catalogs())
             .with_context(|| format!("could not create {}", paths.catalogs().display()))?;
-        if let Err(error) = git::clone_repository(&source.url, None, &destination, context.interaction) {
+        if let Err(error) =
+            git::clone_repository(&source.url, None, &destination, context.interaction)
+        {
             cleanup_failed_clone(&destination);
             return Err(error).context("could not clone the catalog to initialize");
         }
@@ -310,20 +323,33 @@ pub fn catalog_initialize(
             }
             return Err(error).context("catalog was validated, but registration failed");
         }
-        context.record(Notice::CatalogRegistered { name: name.to_owned() });
+        context.record(Notice::CatalogRegistered {
+            name: name.to_owned(),
+        });
     } else {
-        context.record(Notice::CatalogAlreadyRegistered { name: name.to_owned() });
+        context.record(Notice::CatalogAlreadyRegistered {
+            name: name.to_owned(),
+        });
     }
     if created_clone {
-        context.record(Notice::CatalogInstalled { name: name.to_owned(), path: destination.clone() });
+        context.record(Notice::CatalogInstalled {
+            name: name.to_owned(),
+            path: destination.clone(),
+        });
     } else {
-        context.record(Notice::CatalogAlreadyInstalled { name: name.to_owned() });
+        context.record(Notice::CatalogAlreadyInstalled {
+            name: name.to_owned(),
+        });
     }
     if create_catalog {
-        context.record(Notice::CatalogCreated { name: name.to_owned() });
+        context.record(Notice::CatalogCreated {
+            name: name.to_owned(),
+        });
     }
     if already_initialized {
-        context.record(Notice::CatalogAlreadyInitialized { name: name.to_owned() });
+        context.record(Notice::CatalogAlreadyInitialized {
+            name: name.to_owned(),
+        });
         return Ok(context.outcome_since(notice_start));
     }
 
@@ -348,7 +374,9 @@ pub fn catalog_initialize(
         }
         git::push_origin(&destination, context.interaction)
             .context("initial catalog was committed locally, but pushing it failed")?;
-        context.record(Notice::InitialCatalogPushed { name: name.to_owned() });
+        context.record(Notice::InitialCatalogPushed {
+            name: name.to_owned(),
+        });
     } else if commit {
         context.record(Notice::InitialCatalogNotPushed);
     }
@@ -360,22 +388,38 @@ pub fn catalog_list(
     context: &mut OperationContext<'_>,
 ) -> Result<Vec<CatalogSummary>> {
     let local = config::load(&paths.config())?;
-    context.record(Notice::CatalogListStarted { empty: local.catalogs.is_empty() });
     let mut rows = Vec::new();
     for (name, source) in &local.catalogs {
         let destination = paths.catalog(name);
-        let state = if !path_exists(&destination) { CatalogState::Missing }
-            else if git::is_expected_repository(&destination, &source.url)? { CatalogState::Installed }
-            else { CatalogState::Mismatch };
-        let row = CatalogSummary { name: name.clone(), source: source.clone(), state,
-            default: local.default_catalog.as_deref() == Some(name) };
-        context.record(Notice::CatalogListed(row.clone()));
+        context.record(Notice::CatalogResolved {
+            name: name.clone(),
+            path: destination.clone(),
+            source: source.clone(),
+        });
+        let state = if !path_exists(&destination) {
+            CatalogState::Missing
+        } else if git::is_expected_repository(&destination, &source.url)? {
+            CatalogState::Installed
+        } else {
+            CatalogState::Mismatch
+        };
+        let row = CatalogSummary {
+            name: name.clone(),
+            source: source.clone(),
+            state,
+            default: local.default_catalog.as_deref() == Some(name),
+        };
+        context.record(Notice::CatalogInspected(row.clone()));
         rows.push(row);
     }
     Ok(rows)
 }
 
-pub fn catalog_sync(paths: &Paths, name: &str, context: &mut OperationContext<'_>) -> Result<MutationOutcome> {
+pub fn catalog_sync(
+    paths: &Paths,
+    name: &str,
+    context: &mut OperationContext<'_>,
+) -> Result<MutationOutcome> {
     let notice_start = context.notices.len();
     let local = config::load(&paths.config())?;
     let source = configured_catalog(&local, name)?;
@@ -383,9 +427,16 @@ pub fn catalog_sync(paths: &Paths, name: &str, context: &mut OperationContext<'_
     let (old_commit, new_commit) = git::update(&destination, None, context.interaction)
         .with_context(|| format!("refusing to sync catalog '{name}'"))?;
     if old_commit == new_commit {
-        context.record(Notice::CatalogCurrent { name: name.to_owned(), new_commit });
+        context.record(Notice::CatalogCurrent {
+            name: name.to_owned(),
+            new_commit,
+        });
     } else {
-        context.record(Notice::CatalogSynced { name: name.to_owned(), old_commit, new_commit });
+        context.record(Notice::CatalogSynced {
+            name: name.to_owned(),
+            old_commit,
+            new_commit,
+        });
     }
     Ok(context.outcome_since(notice_start))
 }
@@ -398,19 +449,37 @@ pub fn catalog_status(
     let local = config::load(&paths.config())?;
     let source = configured_catalog(&local, name)?.clone();
     let destination = paths.catalog(name);
-    context.record(Notice::CatalogStatusHeader { name: name.to_owned(), path: destination.clone(), source: source.clone() });
+    context.record(Notice::CatalogResolved {
+        name: name.to_owned(),
+        path: destination.clone(),
+        source: source.clone(),
+    });
     let is_repository = path_exists(&destination) && git::is_repository(&destination)?;
-    let repository = if is_repository { Some(git::status(&destination)?) } else { None };
+    let repository = if is_repository {
+        Some(git::status(&destination)?)
+    } else {
+        None
+    };
     context.record(Notice::RepositoryInspected(repository.clone()));
     let catalog_path = paths.catalog_file(name);
-    let file = if path_exists(&destination) && !is_repository { CatalogValidity::Unmanaged }
-        else if !catalog_path.is_file() { CatalogValidity::Missing }
-        else { match catalog::load(&catalog_path) {
+    let file = if path_exists(&destination) && !is_repository {
+        CatalogValidity::Unmanaged
+    } else if !catalog_path.is_file() {
+        CatalogValidity::Missing
+    } else {
+        match catalog::load(&catalog_path) {
             Ok(_) => CatalogValidity::Valid,
             Err(error) => CatalogValidity::Invalid(format!("{error:#}")),
-        }};
+        }
+    };
     context.record(Notice::CatalogFileInspected(file.clone()));
-    Ok(CatalogStatus { name: name.to_owned(), path: destination, source, repository, file })
+    Ok(CatalogStatus {
+        name: name.to_owned(),
+        path: destination,
+        source,
+        repository,
+        file,
+    })
 }
 
 pub fn catalog_path(paths: &Paths, name: &str) -> Result<PathBuf> {
@@ -472,7 +541,9 @@ pub fn catalog_migrate(
         cleanup_failed_clone(&destination);
         return Err(error);
     }
-    context.record(Notice::CatalogMigrated { name: name.to_owned() });
+    context.record(Notice::CatalogMigrated {
+        name: name.to_owned(),
+    });
     context.record(Notice::CatalogUncommitted);
     Ok(context.outcome_since(notice_start))
 }
@@ -520,7 +591,10 @@ pub fn tool_add(
     }
     let changed = if let Some(existing) = catalog_file.tools.get(name) {
         if existing.has_source(&definition) {
-            context.record(Notice::ToolAlreadyDefined { name: name.to_owned(), catalog_name: catalog_name.to_owned() });
+            context.record(Notice::ToolAlreadyDefined {
+                name: name.to_owned(),
+                catalog_name: catalog_name.to_owned(),
+            });
             false
         } else {
             bail!(
@@ -535,7 +609,10 @@ pub fn tool_add(
         }
         catalog_file.tools.insert(name.to_owned(), definition);
         catalog::save(&catalog_path, &catalog_file)?;
-        context.record(Notice::ToolAdded { name: name.to_owned(), catalog_name: catalog_name.to_owned() });
+        context.record(Notice::ToolAdded {
+            name: name.to_owned(),
+            catalog_name: catalog_name.to_owned(),
+        });
         true
     };
 
@@ -554,20 +631,22 @@ pub fn tool_add(
     if push {
         git::push_origin(&repository, context.interaction)
             .context("tool definition was saved and committed, but pushing the catalog failed")?;
-        context.record(Notice::CatalogPushed { catalog_name: catalog_name.to_owned() });
+        context.record(Notice::CatalogPushed {
+            catalog_name: catalog_name.to_owned(),
+        });
     }
     Ok(context.outcome_since(notice_start))
 }
 
 pub fn tool_list(paths: &Paths, context: &mut OperationContext<'_>) -> Result<Vec<ToolSummary>> {
     let tools = all_tools(paths, context)?;
-    if tools.is_empty() { context.record(Notice::NoTools); }
     let mut rows = Vec::new();
-    for (index, tool) in tools.into_iter().enumerate() {
+    for tool in tools {
         let destination = paths.tool(&tool.catalog, &tool.name)?;
-        let installed = path_exists(&destination) && git::is_expected_repository(&destination, &tool.definition.url)?;
+        let installed = path_exists(&destination)
+            && git::is_expected_repository(&destination, &tool.definition.url)?;
         let row = ToolSummary { tool, installed };
-        context.record(Notice::ToolListed { row: row.clone(), first: index == 0 });
+        context.record(Notice::ToolInspected(row.clone()));
         rows.push(row);
     }
     Ok(rows)
@@ -580,8 +659,15 @@ pub fn tool_pull(
     context: &mut OperationContext<'_>,
 ) -> Result<MutationOutcome> {
     let notice_start = context.notices.len();
-    tool_pull_with(paths, name, catalog_name, context.interaction.can_choose(), context,
-        git::verified_rot_identities, git::clone_repository)?;
+    tool_pull_with(
+        paths,
+        name,
+        catalog_name,
+        context.interaction.can_choose(),
+        context,
+        git::verified_rot_identities,
+        git::clone_repository,
+    )?;
     Ok(context.outcome_since(notice_start))
 }
 
@@ -607,7 +693,9 @@ where
         let repository_match =
             repository_match_with_identities(&destination, &tool.definition.url, &mut identities)?;
         if repository_match == git::RepositoryMatch::Exact {
-            context.record(Notice::ToolAlreadyInstalled { name: name.to_owned() });
+            context.record(Notice::ToolAlreadyInstalled {
+                name: name.to_owned(),
+            });
             offer_ssh_push(
                 &destination,
                 &tool.definition.url,
@@ -640,7 +728,8 @@ where
     if let Err(error) = clone_repository(
         &tool.definition.url,
         tool.definition.revision.as_deref(),
-        &destination, context.interaction
+        &destination,
+        context.interaction,
     ) {
         cleanup_failed_clone(&destination);
         return Err(error).context(format!("could not clone tool '{name}'"));
@@ -648,7 +737,10 @@ where
     if !git::is_expected_repository(&destination, &tool.definition.url)? {
         bail!("cloned tool is not the configured Git repository");
     }
-    context.record(Notice::ToolInstalled { name: name.to_owned(), path: destination.clone() });
+    context.record(Notice::ToolInstalled {
+        name: name.to_owned(),
+        path: destination.clone(),
+    });
     offer_ssh_push(
         &destination,
         &tool.definition.url,
@@ -698,9 +790,7 @@ where
     let Ok(available) = identities() else {
         return Ok(());
     };
-    if available.is_empty()
-        || !context.interaction.configure_push()?
-    {
+    if available.is_empty() || !context.interaction.configure_push()? {
         return Ok(());
     }
     let identity = git::select_verified_rot_identity(available, context.interaction)?;
@@ -724,7 +814,9 @@ fn reconcile_existing_checkout(
             "destination is the configured GitHub repository but uses a different transport\nFetch URL: {existing_fetch}\nCatalog URL: {canonical_url}\nRun 'loadbot pull {name}' interactively to reconcile its fetch and push URLs."
         );
     }
-    if !context.interaction.reconcile_checkout(&existing_fetch, canonical_url)?
+    if !context
+        .interaction
+        .reconcile_checkout(&existing_fetch, canonical_url)?
     {
         bail!(
             "repository URL mismatch was not changed\nFetch URL: {existing_fetch}\nCatalog URL: {canonical_url}"
@@ -732,7 +824,9 @@ fn reconcile_existing_checkout(
     }
     if let Some(existing_push) = git::push_url(destination)?
         && existing_push != existing_fetch
-        && !context.interaction.replace_push(&existing_push, &existing_fetch)?
+        && !context
+            .interaction
+            .replace_push(&existing_push, &existing_fetch)?
     {
         bail!("existing push URL was preserved; repository URLs were not changed");
     }
@@ -740,7 +834,9 @@ fn reconcile_existing_checkout(
     if !git::is_expected_repository(destination, canonical_url)? {
         bail!("reconciled repository did not match the catalog URL");
     }
-    context.record(Notice::ToolReconciled { name: name.to_owned() });
+    context.record(Notice::ToolReconciled {
+        name: name.to_owned(),
+    });
     Ok(())
 }
 
@@ -768,12 +864,23 @@ pub fn tool_update(
         bail!("destination is not the configured Git repository");
     }
 
-    let (old_commit, new_commit) = git::update(&destination, tool.definition.revision.as_deref(), context.interaction)
-        .with_context(|| format!("refusing to update '{name}'"))?;
+    let (old_commit, new_commit) = git::update(
+        &destination,
+        tool.definition.revision.as_deref(),
+        context.interaction,
+    )
+    .with_context(|| format!("refusing to update '{name}'"))?;
     if old_commit == new_commit {
-        context.record(Notice::ToolCurrent { name: name.to_owned(), new_commit });
+        context.record(Notice::ToolCurrent {
+            name: name.to_owned(),
+            new_commit,
+        });
     } else {
-        context.record(Notice::ToolUpdated { name: name.to_owned(), old_commit, new_commit });
+        context.record(Notice::ToolUpdated {
+            name: name.to_owned(),
+            old_commit,
+            new_commit,
+        });
     }
     Ok(context.outcome_since(notice_start))
 }
@@ -786,14 +893,29 @@ pub fn tool_status(
 ) -> Result<ToolStatus> {
     let tool = resolve_tool(paths, name, catalog_name, context)?;
     let destination = paths.tool(&tool.catalog, &tool.name)?;
-    context.record(Notice::ToolStatusHeader { name: name.to_owned(), catalog: tool.catalog.clone(), path: destination.clone() });
-    let installed = path_exists(&destination) && git::is_expected_repository(&destination, &tool.definition.url)?;
-    context.record(Notice::ToolSourceInspected { installed, url: tool.definition.url.clone(), revision: tool.definition.revision.clone() });
+    context.record(Notice::ToolResolved {
+        tool: tool.clone(),
+        path: destination.clone(),
+    });
+    let installed = path_exists(&destination)
+        && git::is_expected_repository(&destination, &tool.definition.url)?;
+    context.record(Notice::ToolSourceInspected {
+        installed,
+        url: tool.definition.url.clone(),
+        revision: tool.definition.revision.clone(),
+    });
     let repository = if path_exists(&destination) && git::is_repository(&destination)? {
         Some(git::status(&destination)?)
-    } else { None };
+    } else {
+        None
+    };
     context.record(Notice::RepositoryInspected(repository.clone()));
-    Ok(ToolStatus { tool, path: destination, installed, repository })
+    Ok(ToolStatus {
+        tool,
+        path: destination,
+        installed,
+        repository,
+    })
 }
 
 pub fn tool_path(
@@ -1064,7 +1186,10 @@ fn validate_url(url: &str) -> Result<()> {
 }
 
 fn warn_skipped_catalog(name: &str, error: &anyhow::Error, context: &mut OperationContext<'_>) {
-    context.record(Notice::SkippedCatalog { name: name.to_owned(), diagnostic: format!("{error:#}") });
+    context.record(Notice::SkippedCatalog {
+        name: name.to_owned(),
+        diagnostic: format!("{error:#}"),
+    });
 }
 
 fn cleanup_failed_clone(destination: &Path) {
@@ -1135,11 +1260,23 @@ mod tests {
             self.confirm_calls += 1;
             Ok(self.confirmations.pop_front().unwrap_or(false))
         }
-        fn reconcile_checkout(&mut self, _: &str, _: &str) -> Result<bool> { self.configure_push() }
-        fn replace_push(&mut self, _: &str, _: &str) -> Result<bool> { self.configure_push() }
+        fn reconcile_checkout(&mut self, _: &str, _: &str) -> Result<bool> {
+            self.configure_push()
+        }
+        fn replace_push(&mut self, _: &str, _: &str) -> Result<bool> {
+            self.configure_push()
+        }
         fn choose_identity(&mut self, identities: &[git::RotIdentity]) -> Result<Option<usize>> {
             self.select_calls += 1;
-            Ok(self.selection.as_ref().and_then(|selected| identities.iter().position(|identity| format!("{} -> {}", identity.alias, identity.username.as_deref().unwrap()) == *selected)))
+            Ok(self.selection.as_ref().and_then(|selected| {
+                identities.iter().position(|identity| {
+                    format!(
+                        "{} -> {}",
+                        identity.alias,
+                        identity.username.as_deref().unwrap()
+                    ) == *selected
+                })
+            }))
         }
     }
 
@@ -1452,10 +1589,16 @@ mod tests {
         let mut prompt = TestPrompt::default();
         let mut queries = 0;
 
-        offer_ssh_push(&repository, origin, true, &mut OperationContext::new(&mut prompt), &mut || {
-            queries += 1;
-            Ok(vec![identity("github-work", "owner")])
-        })
+        offer_ssh_push(
+            &repository,
+            origin,
+            true,
+            &mut OperationContext::new(&mut prompt),
+            &mut || {
+                queries += 1;
+                Ok(vec![identity("github-work", "owner")])
+            },
+        )
         .unwrap();
 
         assert_eq!(
@@ -1476,7 +1619,8 @@ mod tests {
             &paths,
             "personal",
             catalog_remote.display().to_string(),
-            false, &mut OperationContext::new(&mut crate::interaction::Unattended)
+            false,
+            &mut OperationContext::new(&mut crate::interaction::Unattended),
         )
         .unwrap();
         fs::write(
@@ -1491,7 +1635,13 @@ mod tests {
         );
         fs::rename(checkout, paths.tool("personal", "demo").unwrap()).unwrap();
 
-        let error = installed_tool_path(&paths, "demo", "personal", &mut OperationContext::new(&mut crate::interaction::Unattended)).unwrap_err();
+        let error = installed_tool_path(
+            &paths,
+            "demo",
+            "personal",
+            &mut OperationContext::new(&mut crate::interaction::Unattended),
+        )
+        .unwrap_err();
 
         assert!(
             error
@@ -1515,7 +1665,8 @@ mod tests {
             &paths,
             "personal",
             catalog_remote.display().to_string(),
-            false, &mut OperationContext::new(&mut crate::interaction::Unattended)
+            false,
+            &mut OperationContext::new(&mut crate::interaction::Unattended),
         )
         .unwrap();
         let canonical = "https://github.com/owner/repo.git";
@@ -1562,7 +1713,8 @@ mod tests {
             "personal",
             remote.display().to_string(),
             true,
-            |_, _| bail!("injected configuration failure"), &mut OperationContext::new(&mut crate::interaction::Unattended)
+            |_, _| bail!("injected configuration failure"),
+            &mut OperationContext::new(&mut crate::interaction::Unattended),
         )
         .unwrap_err();
 
@@ -1578,8 +1730,14 @@ mod tests {
         let paths = Paths::with_root(temporary.path().join("loadbot"));
         let remote = populated_remote(temporary.path(), "not-a-catalog");
 
-        let error =
-            catalog_add(&paths, "invalid", remote.display().to_string(), false, &mut OperationContext::new(&mut crate::interaction::Unattended)).unwrap_err();
+        let error = catalog_add(
+            &paths,
+            "invalid",
+            remote.display().to_string(),
+            false,
+            &mut OperationContext::new(&mut crate::interaction::Unattended),
+        )
+        .unwrap_err();
 
         assert!(format!("{error:#}").contains("not a valid catalog"));
         assert!(!paths.catalog("invalid").exists());
@@ -1595,7 +1753,8 @@ mod tests {
         git::clone_repository(
             &remote.display().to_string(),
             None,
-            &paths.catalog("personal"), &mut crate::interaction::Unattended
+            &paths.catalog("personal"),
+            &mut crate::interaction::Unattended,
         )
         .unwrap();
         fs::write(paths.catalog("personal").join("keep.txt"), "keep\n").unwrap();
@@ -1606,7 +1765,8 @@ mod tests {
                 "personal",
                 remote.display().to_string(),
                 true,
-                |_, _| bail!("injected configuration failure"), &mut OperationContext::new(&mut crate::interaction::Unattended)
+                |_, _| bail!("injected configuration failure"),
+                &mut OperationContext::new(&mut crate::interaction::Unattended)
             )
             .is_err()
         );
@@ -1625,24 +1785,67 @@ mod tests {
         let paths = Paths::with_root(temporary.path().join("loadbot"));
         let expected = valid_catalog_remote(temporary.path(), "expected");
         let wrong = valid_catalog_remote(temporary.path(), "wrong");
-        catalog_add(&paths, "personal", expected.display().to_string(), true, &mut OperationContext::new(&mut crate::interaction::Unattended)).unwrap();
+        catalog_add(
+            &paths,
+            "personal",
+            expected.display().to_string(),
+            true,
+            &mut OperationContext::new(&mut crate::interaction::Unattended),
+        )
+        .unwrap();
         let config_before = fs::read(paths.config()).unwrap();
 
         fs::remove_dir_all(paths.catalog("personal")).unwrap();
-        assert!(available_catalog_names(&paths, &mut OperationContext::new(&mut crate::interaction::Unattended)).unwrap().is_empty());
-        assert!(writable_catalogs(&paths, &mut OperationContext::new(&mut crate::interaction::Unattended)).unwrap().is_empty());
-        assert_eq!(default_writable_catalog(&paths, &mut OperationContext::new(&mut crate::interaction::Unattended)).unwrap(), None);
+        assert!(
+            available_catalog_names(
+                &paths,
+                &mut OperationContext::new(&mut crate::interaction::Unattended)
+            )
+            .unwrap()
+            .is_empty()
+        );
+        assert!(
+            writable_catalogs(
+                &paths,
+                &mut OperationContext::new(&mut crate::interaction::Unattended)
+            )
+            .unwrap()
+            .is_empty()
+        );
+        assert_eq!(
+            default_writable_catalog(
+                &paths,
+                &mut OperationContext::new(&mut crate::interaction::Unattended)
+            )
+            .unwrap(),
+            None
+        );
         assert_eq!(catalog_names(&paths).unwrap(), ["personal"]);
         assert_eq!(fs::read(paths.config()).unwrap(), config_before);
 
         git::clone_repository(
             &wrong.display().to_string(),
             None,
-            &paths.catalog("personal"), &mut crate::interaction::Unattended
+            &paths.catalog("personal"),
+            &mut crate::interaction::Unattended,
         )
         .unwrap();
-        assert!(available_catalog_names(&paths, &mut OperationContext::new(&mut crate::interaction::Unattended)).unwrap().is_empty());
-        assert!(writable_catalogs(&paths, &mut OperationContext::new(&mut crate::interaction::Unattended)).unwrap().is_empty());
+        assert!(
+            available_catalog_names(
+                &paths,
+                &mut OperationContext::new(&mut crate::interaction::Unattended)
+            )
+            .unwrap()
+            .is_empty()
+        );
+        assert!(
+            writable_catalogs(
+                &paths,
+                &mut OperationContext::new(&mut crate::interaction::Unattended)
+            )
+            .unwrap()
+            .is_empty()
+        );
         assert_eq!(fs::read(paths.config()).unwrap(), config_before);
     }
 
@@ -1653,14 +1856,34 @@ mod tests {
         let remote = empty_remote(temporary.path(), "new-catalog");
         let url = remote.display().to_string();
 
-        catalog_initialize(&paths, "personal", url.clone(), true, false, false, &mut OperationContext::new(&mut crate::interaction::Unattended)).unwrap();
+        catalog_initialize(
+            &paths,
+            "personal",
+            url.clone(),
+            true,
+            false,
+            false,
+            &mut OperationContext::new(&mut crate::interaction::Unattended),
+        )
+        .unwrap();
         assert_eq!(
             catalog::load(&paths.catalog_file("personal")).unwrap(),
             CatalogFile::default()
         );
         assert_eq!(git::head_commit(&paths.catalog("personal")).unwrap(), None);
-        assert!(!git::origin_has_refs(&paths.catalog("personal"), &mut crate::interaction::Unattended).unwrap());
-        catalog_status(&paths, "personal", &mut OperationContext::new(&mut crate::interaction::Unattended)).unwrap();
+        assert!(
+            !git::origin_has_refs(
+                &paths.catalog("personal"),
+                &mut crate::interaction::Unattended
+            )
+            .unwrap()
+        );
+        catalog_status(
+            &paths,
+            "personal",
+            &mut OperationContext::new(&mut crate::interaction::Unattended),
+        )
+        .unwrap();
         assert_eq!(
             paths.tool("personal", "demo").unwrap(),
             paths.tools().join("personal/demo")
@@ -1674,16 +1897,40 @@ mod tests {
             ["config", "user.email", "loadbot@example.test"],
             Some(&paths.catalog("personal")),
         );
-        catalog_initialize(&paths, "personal", url.clone(), true, true, true, &mut OperationContext::new(&mut crate::interaction::Unattended)).unwrap();
+        catalog_initialize(
+            &paths,
+            "personal",
+            url.clone(),
+            true,
+            true,
+            true,
+            &mut OperationContext::new(&mut crate::interaction::Unattended),
+        )
+        .unwrap();
         assert!(
             git::head_commit(&paths.catalog("personal"))
                 .unwrap()
                 .is_some()
         );
-        assert!(git::origin_has_refs(&paths.catalog("personal"), &mut crate::interaction::Unattended).unwrap());
+        assert!(
+            git::origin_has_refs(
+                &paths.catalog("personal"),
+                &mut crate::interaction::Unattended
+            )
+            .unwrap()
+        );
 
         let before = git::head_commit(&paths.catalog("personal")).unwrap();
-        catalog_initialize(&paths, "personal", url, true, true, true, &mut OperationContext::new(&mut crate::interaction::Unattended)).unwrap();
+        catalog_initialize(
+            &paths,
+            "personal",
+            url,
+            true,
+            true,
+            true,
+            &mut OperationContext::new(&mut crate::interaction::Unattended),
+        )
+        .unwrap();
         assert_eq!(
             git::head_commit(&paths.catalog("personal")).unwrap(),
             before
@@ -1701,7 +1948,8 @@ mod tests {
             populated.display().to_string(),
             true,
             false,
-            false, &mut OperationContext::new(&mut crate::interaction::Unattended)
+            false,
+            &mut OperationContext::new(&mut crate::interaction::Unattended),
         )
         .unwrap_err();
         assert!(format!("{error:#}").contains("not an empty"));
@@ -1727,7 +1975,8 @@ mod tests {
             populated.display().to_string(),
             true,
             false,
-            false, &mut OperationContext::new(&mut crate::interaction::Unattended)
+            false,
+            &mut OperationContext::new(&mut crate::interaction::Unattended),
         )
         .unwrap_err();
         assert!(format!("{error:#}").contains("not an empty or already initialized"));
@@ -1741,7 +1990,8 @@ mod tests {
             empty.display().to_string(),
             true,
             false,
-            false, &mut OperationContext::new(&mut crate::interaction::Unattended)
+            false,
+            &mut OperationContext::new(&mut crate::interaction::Unattended),
         )
         .unwrap();
         fs::write(
@@ -1756,7 +2006,8 @@ mod tests {
             empty.display().to_string(),
             true,
             false,
-            false, &mut OperationContext::new(&mut crate::interaction::Unattended)
+            false,
+            &mut OperationContext::new(&mut crate::interaction::Unattended),
         )
         .unwrap_err();
         assert!(format!("{error:#}").contains("conflicting data"));
@@ -1769,10 +2020,28 @@ mod tests {
         let paths = Paths::with_root(temporary.path().join("loadbot"));
         let remote = empty_remote(temporary.path(), "dirty");
         let url = remote.display().to_string();
-        catalog_initialize(&paths, "dirty", url.clone(), true, false, false, &mut OperationContext::new(&mut crate::interaction::Unattended)).unwrap();
+        catalog_initialize(
+            &paths,
+            "dirty",
+            url.clone(),
+            true,
+            false,
+            false,
+            &mut OperationContext::new(&mut crate::interaction::Unattended),
+        )
+        .unwrap();
         fs::write(paths.catalog("dirty").join("unrelated.txt"), "keep\n").unwrap();
 
-        let error = catalog_initialize(&paths, "dirty", url, true, true, false, &mut OperationContext::new(&mut crate::interaction::Unattended)).unwrap_err();
+        let error = catalog_initialize(
+            &paths,
+            "dirty",
+            url,
+            true,
+            true,
+            false,
+            &mut OperationContext::new(&mut crate::interaction::Unattended),
+        )
+        .unwrap_err();
         assert!(format!("{error:#}").contains("unrelated changes"));
         assert_eq!(
             fs::read_to_string(paths.catalog("dirty").join("unrelated.txt")).unwrap(),

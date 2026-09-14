@@ -170,7 +170,8 @@ pub fn origin_refs(
     network_query(
         path,
         &["ls-remote", "--refs", "origin"],
-        configured_remote_url(path, false)?.as_deref(), interaction
+        configured_remote_url(path, false)?.as_deref(),
+        interaction,
     )?
     .lines()
     .map(|line| {
@@ -209,7 +210,8 @@ pub fn update(
     network_query(
         path,
         &["fetch", "origin"],
-        configured_remote_url(path, false)?.as_deref(), interaction
+        configured_remote_url(path, false)?.as_deref(),
+        interaction,
     )?;
     let target = format!("origin/{branch}");
     query(path, &["merge", "--ff-only", "--", &target])?;
@@ -246,7 +248,8 @@ pub fn push_origin(path: &Path, interaction: &mut dyn Interaction) -> Result<()>
     network_query(
         path,
         &["push", "origin", "HEAD"],
-        configured_remote_url(path, true)?.as_deref(), interaction
+        configured_remote_url(path, true)?.as_deref(),
+        interaction,
     )?;
     Ok(())
 }
@@ -416,7 +419,8 @@ fn network_query(
     command_arguments.extend(arguments.iter().map(|argument| OsString::from(*argument)));
     Ok(stdout_text(&checked_network_output(
         command_arguments,
-        known_url.unwrap_or(""), interaction
+        known_url.unwrap_or(""),
+        interaction,
     )?))
 }
 
@@ -586,7 +590,8 @@ fn select_rot_identity<P: Interaction + ?Sized>(
         );
     }
 
-    let index = prompt.choose_identity(&identities)?
+    let index = prompt
+        .choose_identity(&identities)?
         .context("SSH identity selection was cancelled")?;
     if index >= identities.len() {
         anyhow::bail!("an invalid SSH identity was selected");
@@ -693,8 +698,20 @@ mod tests {
     impl Interaction for TestPrompt {
         fn choose_identity(&mut self, identities: &[RotIdentity]) -> Result<Option<usize>> {
             self.select_calls += 1;
-            self.choices = identities.iter().map(|identity| format!("{} -> {}", identity.alias, identity.username.as_deref().unwrap())).collect();
-            Ok(self.selection.as_ref().and_then(|selection| self.choices.iter().position(|choice| choice == selection)))
+            self.choices = identities
+                .iter()
+                .map(|identity| {
+                    format!(
+                        "{} -> {}",
+                        identity.alias,
+                        identity.username.as_deref().unwrap()
+                    )
+                })
+                .collect();
+            Ok(self
+                .selection
+                .as_ref()
+                .and_then(|selection| self.choices.iter().position(|choice| choice == selection)))
         }
     }
 

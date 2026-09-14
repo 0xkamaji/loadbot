@@ -18,7 +18,15 @@ impl Paths {
                 .join("loadbot"),
         };
         let root = absolute(root)?;
-        Ok(Self { root, configuration_directory: None })
+        let configuration_directory = env::var_os("LOADBOT_CONFIG_HOME")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+            .map(absolute)
+            .transpose()?;
+        Ok(Self {
+            root,
+            configuration_directory,
+        })
     }
 
     pub fn config(&self) -> PathBuf {
@@ -61,7 +69,10 @@ impl Paths {
 
     /// Select a data root while retaining the platform configuration location.
     pub fn with_root(root: PathBuf) -> Self {
-        Self { root, configuration_directory: None }
+        Self {
+            root,
+            configuration_directory: None,
+        }
     }
 
     /// Explicit locations for embedding and isolated tests. Neither directory is created.

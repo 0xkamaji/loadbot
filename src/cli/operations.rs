@@ -1,25 +1,36 @@
 //! CLI adapter: render backend results; domain validation lives in the library.
-use anyhow::Result;
-use std::path::PathBuf;
-use loadbot::{operations as backend, paths::Paths, catalog::ResolvedTool};
 use super::output;
+use anyhow::Result;
+use loadbot::{catalog::ResolvedTool, operations as backend, paths::Paths};
+use std::path::PathBuf;
 
 pub fn catalog_add(paths: &Paths, name: &str, url: String, writable: bool) -> Result<()> {
-    output::with_context(|context| backend::catalog_add(paths, name, url, writable, context)).map(|_| ())
+    output::with_context(|context| backend::catalog_add(paths, name, url, writable, context))
+        .map(|_| ())
 }
 
-pub fn catalog_initialize(paths: &Paths,
+pub fn catalog_initialize(
+    paths: &Paths,
     name: &str,
     url: String,
     writable: bool,
     commit: bool,
     push: bool,
 ) -> Result<()> {
-    output::with_context(|context| backend::catalog_initialize(paths, name, url, writable, commit, push, context)).map(|_| ())
+    output::with_context(|context| {
+        backend::catalog_initialize(paths, name, url, writable, commit, push, context)
+    })
+    .map(|_| ())
 }
 
 pub fn catalog_list(paths: &Paths) -> Result<()> {
-    output::with_context(|context| backend::catalog_list(paths, context)).map(|_| ())
+    let rows = output::with_query(output::Query::CatalogList, |context| {
+        backend::catalog_list(paths, context)
+    })?;
+    if rows.is_empty() {
+        println!("no catalogs configured");
+    }
+    Ok(())
 }
 
 pub fn catalog_sync(paths: &Paths, name: &str) -> Result<()> {
@@ -39,7 +50,8 @@ pub fn catalog_migrate(paths: &Paths, name: &str, url: String) -> Result<()> {
     output::with_context(|context| backend::catalog_migrate(paths, name, url, context)).map(|_| ())
 }
 
-pub fn tool_add(paths: &Paths,
+pub fn tool_add(
+    paths: &Paths,
     catalog_name: &str,
     name: &str,
     url: String,
@@ -47,27 +59,50 @@ pub fn tool_add(paths: &Paths,
     commit: bool,
     push: bool,
 ) -> Result<()> {
-    output::with_context(|context| backend::tool_add(paths, catalog_name, name, url, revision, commit, push, context)).map(|_| ())
+    output::with_context(|context| {
+        backend::tool_add(
+            paths,
+            catalog_name,
+            name,
+            url,
+            revision,
+            commit,
+            push,
+            context,
+        )
+    })
+    .map(|_| ())
 }
 
 pub fn tool_list(paths: &Paths) -> Result<()> {
-    output::with_context(|context| backend::tool_list(paths, context)).map(|_| ())
+    let rows = output::with_context(|context| backend::tool_list(paths, context))?;
+    if rows.is_empty() {
+        println!("no tools configured in registered catalogs");
+    }
+    Ok(())
 }
 
 pub fn tool_pull(paths: &Paths, name: &str, catalog_name: Option<&str>) -> Result<()> {
-    output::with_context(|context| backend::tool_pull(paths, name, catalog_name, context)).map(|_| ())
+    output::with_context(|context| backend::tool_pull(paths, name, catalog_name, context))
+        .map(|_| ())
 }
 
 pub fn tool_update(paths: &Paths, name: &str, catalog_name: Option<&str>) -> Result<()> {
-    output::with_context(|context| backend::tool_update(paths, name, catalog_name, context)).map(|_| ())
+    output::with_context(|context| backend::tool_update(paths, name, catalog_name, context))
+        .map(|_| ())
 }
 
 pub fn tool_status(paths: &Paths, name: &str, catalog_name: Option<&str>) -> Result<()> {
-    output::with_context(|context| backend::tool_status(paths, name, catalog_name, context)).map(|_| ())
+    output::with_context(|context| backend::tool_status(paths, name, catalog_name, context))
+        .map(|_| ())
 }
 
 pub fn tool_path(paths: &Paths, name: &str, catalog_name: Option<&str>) -> Result<()> {
-    println!("{}", output::with_context(|context| backend::tool_path(paths, name, catalog_name, context))?.display());
+    println!(
+        "{}",
+        output::with_context(|context| backend::tool_path(paths, name, catalog_name, context))?
+            .display()
+    );
     Ok(())
 }
 

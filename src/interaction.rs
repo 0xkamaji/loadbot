@@ -22,7 +22,7 @@ pub trait Interaction {
     fn replace_push(&mut self, _existing: &str, _replacement: &str) -> Result<bool> {
         Ok(false)
     }
-    /// Optional immediate presentation. The context also retains every notice on failure.
+    /// Immediate domain progress notification, also retained by the context on failure.
     fn notice(&mut self, _notice: &Notice) {}
 }
 
@@ -65,23 +65,15 @@ impl<'a> OperationContext<'a> {
 
 #[derive(Debug, Clone)]
 pub enum Notice {
-    CatalogListStarted {
-        empty: bool,
-    },
-    CatalogListed(crate::operations::CatalogSummary),
-    NoTools,
-    ToolListed {
-        row: crate::operations::ToolSummary,
-        first: bool,
-    },
-    CatalogStatusHeader {
+    CatalogInspected(crate::operations::CatalogSummary),
+    ToolInspected(crate::operations::ToolSummary),
+    CatalogResolved {
         name: String,
         path: PathBuf,
         source: crate::config::CatalogSource,
     },
-    ToolStatusHeader {
-        name: String,
-        catalog: String,
+    ToolResolved {
+        tool: crate::catalog::ResolvedTool,
         path: PathBuf,
     },
     ToolSourceInspected {

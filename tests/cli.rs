@@ -3,9 +3,7 @@ use std::fs;
 #[cfg(unix)]
 use std::io::Write;
 use std::path::{Path, PathBuf};
-#[cfg(unix)]
-use std::process::Stdio;
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 
 use tempfile::TempDir;
 
@@ -53,6 +51,7 @@ impl Fixture {
             .env("LOADBOT_HOME", &self.home)
             .env("XDG_CONFIG_HOME", &self.config_home)
             .env("APPDATA", &self.config_home)
+            .env("LOADBOT_CONFIG_HOME", self.config_home.join("loadbot"))
             .args(arguments)
             .output()
             .unwrap()
@@ -810,6 +809,7 @@ fn catalog_sync_exposes_new_interactive_command_with_inherited_terminal_io() {
         .env("LOADBOT_HOME", &fixture.home)
         .env("XDG_CONFIG_HOME", &fixture.config_home)
         .env("APPDATA", &fixture.config_home)
+        .env("LOADBOT_CONFIG_HOME", fixture.config_home.join("loadbot"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -895,6 +895,7 @@ fn run_completion_only_returns_matching_shortcut_names() {
         .env("LOADBOT_HOME", &fixture.home)
         .env("XDG_CONFIG_HOME", &fixture.config_home)
         .env("APPDATA", &fixture.config_home)
+        .env("LOADBOT_CONFIG_HOME", fixture.config_home.join("loadbot"))
         .env("COMPLETE", "bash")
         .env("_CLAP_IFS", "\u{b}")
         .env("_CLAP_COMPLETE_INDEX", "2")
@@ -937,6 +938,7 @@ path = "triage.py"
             .env("LOADBOT_HOME", &home)
             .env("XDG_CONFIG_HOME", &config_home)
             .env("APPDATA", &config_home)
+            .env("LOADBOT_CONFIG_HOME", config_home.join("loadbot"))
             .args(["rot", "complete"])
             .args(words)
             .output()
@@ -960,7 +962,10 @@ path = "triage.py"
     );
     assert_eq!(complete(&["run", ""]), ["bn-triage", "print-strings"]);
     assert_eq!(complete(&["run", "pri"]), ["print-strings"]);
-    assert_eq!(complete(&["shortcut", "remove", ""]), ["bn-triage", "print-strings"]);
+    assert_eq!(
+        complete(&["shortcut", "remove", ""]),
+        ["bn-triage", "print-strings"]
+    );
     assert_eq!(complete(&["shortcut", ""]), ["add", "list", "remove"]);
     assert_eq!(complete(&[""]), root);
 }
@@ -1056,6 +1061,7 @@ fn read_only_commands_do_not_create_loadbot_home() {
     for arguments in [["catalog", "list"].as_slice(), ["list"].as_slice()] {
         let output = Command::new(env!("CARGO_BIN_EXE_loadbot"))
             .env("LOADBOT_HOME", &home)
+            .env("LOADBOT_CONFIG_HOME", temporary.path().join("configuration"))
             .args(arguments)
             .output()
             .unwrap();
@@ -1184,6 +1190,7 @@ fn bare_loadbot_requires_a_terminal_without_creating_home() {
     let home = temporary.path().join("missing");
     let output = Command::new(env!("CARGO_BIN_EXE_loadbot"))
         .env("LOADBOT_HOME", &home)
+        .env("LOADBOT_CONFIG_HOME", temporary.path().join("configuration"))
         .stdin(Stdio::null())
         .output()
         .unwrap();
@@ -1194,12 +1201,22 @@ fn bare_loadbot_requires_a_terminal_without_creating_home() {
 
 #[test]
 fn dynamic_completion_preserves_root_and_nested_commands() {
+    let temporary = TempDir::new().unwrap();
     for (words, expected) in [
-        (vec![""], vec!["add", "catalog", "list", "path", "pull", "run", "shortcut", "status", "update"]),
+        (
+            vec![""],
+            vec![
+                "add", "catalog", "list", "path", "pull", "run", "shortcut", "status", "update",
+            ],
+        ),
         (vec!["shortcut", ""], vec!["add", "list", "remove"]),
-        (vec!["catalog", ""], vec!["add", "list", "migrate", "path", "status", "sync"]),
+        (
+            vec!["catalog", ""],
+            vec!["add", "list", "migrate", "path", "status", "sync"],
+        ),
     ] {
         let output = Command::new(env!("CARGO_BIN_EXE_loadbot"))
+            .env("LOADBOT_CONFIG_HOME", temporary.path().join("configuration"))
             .env("COMPLETE", "bash")
             .env("_CLAP_IFS", "\n")
             .env("_CLAP_COMPLETE_INDEX", words.len().to_string())
@@ -1235,6 +1252,7 @@ fn bare_shortcut_without_tty_does_not_create_or_modify_state() {
             .env("LOADBOT_HOME", &home)
             .env("XDG_CONFIG_HOME", &config)
             .env("APPDATA", &config)
+            .env("LOADBOT_CONFIG_HOME", config.join("loadbot"))
             .args(["shortcut"])
             .stdin(Stdio::null())
             .output()
@@ -1261,6 +1279,7 @@ fn shortcut_list_remove_and_completion_work_without_installed_tools() {
             .env("LOADBOT_HOME", &home)
             .env("XDG_CONFIG_HOME", &config)
             .env("APPDATA", &config)
+            .env("LOADBOT_CONFIG_HOME", config.join("loadbot"))
             .args(args)
             .stdin(Stdio::null())
             .output()
@@ -1306,17 +1325,22 @@ future = "entry"
     assert!(stderr(&invoke(&["shortcut", "remove", "alpha"])).contains("interactive terminal"));
     assert!(stderr(&invoke(&["shortcut", "remove", "absent", "--yes"])).contains("does not exist"));
     let rot = invoke(&["rot", "complete", "shortcut", "remove", ""]);
-    assert_eq!(serde_json::from_slice::<Vec<String>>(&rot.stdout).unwrap(), ["alpha", "zebra"]);
+    assert_eq!(
+        serde_json::from_slice::<Vec<String>>(&rot.stdout).unwrap(),
+        ["alpha", "zebra"]
+    );
     let shell = Command::new(env!("CARGO_BIN_EXE_loadbot"))
         .env("XDG_CONFIG_HOME", &config)
         .env("APPDATA", &config)
+        .env("LOADBOT_CONFIG_HOME", config.join("loadbot"))
         .env("COMPLETE", "bash")
         .env("_CLAP_IFS", "\n")
         .env("_CLAP_COMPLETE_INDEX", "3")
         .env("_CLAP_COMPLETE_COMP_TYPE", "9")
         .env("_CLAP_COMPLETE_SPACE", "false")
         .args(["--", "loadbot", "shortcut", "remove", "al"])
-        .output().unwrap();
+        .output()
+        .unwrap();
     assert_success_ref(&shell);
     assert_eq!(stdout(&shell), "alpha");
     let removed = invoke(&["shortcut", "remove", "zebra", "--yes"]);
@@ -1324,7 +1348,10 @@ future = "entry"
     assert_eq!(stdout(&removed), "removed shortcut 'zebra'");
     let parsed: toml::Value = toml::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
     assert_eq!(parsed["future"].as_str(), Some("preserved"));
-    assert_eq!(parsed["shortcuts"]["alpha"]["future"].as_str(), Some("entry"));
+    assert_eq!(
+        parsed["shortcuts"]["alpha"]["future"].as_str(),
+        Some("entry")
+    );
     assert_success(invoke(&["shortcut", "remove", "alpha", "--yes"]));
     assert!(file.is_file());
     assert!(stdout(&invoke(&["shortcut", "list"])).contains("No shortcuts"));
@@ -1351,14 +1378,22 @@ fn shortcut_menu_list_remove_and_cancel_use_existing_flows() {
     let terminal = |input: &[u8]| {
         let executable = env!("CARGO_BIN_EXE_loadbot");
         let mut child = Command::new("script")
-            .args(["-q", "-e", "-c", &format!("{executable} shortcut"), "/dev/null"])
+            .args([
+                "-q",
+                "-e",
+                "-c",
+                &format!("{executable} shortcut"),
+                "/dev/null",
+            ])
             .env("LOADBOT_HOME", temp.path().join("home"))
             .env("XDG_CONFIG_HOME", &config)
             .env("APPDATA", &config)
+            .env("LOADBOT_CONFIG_HOME", config.join("loadbot"))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .spawn().unwrap();
+            .spawn()
+            .unwrap();
         child.stdin.take().unwrap().write_all(input).unwrap();
         child.wait_with_output().unwrap()
     };

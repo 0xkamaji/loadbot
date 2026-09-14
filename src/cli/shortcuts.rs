@@ -1,6 +1,9 @@
-use std::path::Path;
 use anyhow::{Context, Result, bail};
-use loadbot::{paths, shortcuts::{load, remove, Shortcut}};
+use loadbot::{
+    paths,
+    shortcuts::{Shortcut, load, remove},
+};
+use std::path::Path;
 fn details(name: &str, shortcut: &Shortcut) -> String {
     let mut text = format!(
         "Name: {name}\nCatalog: {}\nTool: {}\nPath: {}",
@@ -12,8 +15,7 @@ fn details(name: &str, shortcut: &Shortcut) -> String {
     if let Some(runner) = shortcut.runner {
         text.push_str(&format!("\nRunner: {}", runner.as_str()));
     }
-    text
-}
+    text}
 
 pub fn list(path: &Path) -> Result<String> {
     let file = load(path)?;
@@ -72,10 +74,12 @@ pub fn remove_with_prompt<P: super::menus::Prompt>(
 
 #[cfg(test)]
 mod tests {
-use super::*;
-use std::fs;
+    use super::*;
+    use std::fs;
     fn fixture(path: &Path) {
-        fs::write(path, r#"version = 1
+        fs::write(
+            path,
+            r#"version = 1
 future = "top-level"
 [shortcuts.zebra]
 catalog = "missing"
@@ -88,7 +92,9 @@ path = "alpha.sh"
 description = "Alpha description"
 runner = "bash"
 future = "entry"
-"#).unwrap();
+"#,
+        )
+        .unwrap();
     }
 
     #[test]
@@ -170,10 +176,14 @@ future = "entry"
             fixture(&path);
             let before = fs::read(&path).unwrap();
             let mut prompt = RemovalPrompt {
-                selection: selection.map(str::to_owned), confirmation,
-                selections: 0, messages: Vec::new(),
+                selection: selection.map(str::to_owned),
+                confirmation,
+                selections: 0,
+                messages: Vec::new(),
             };
-            let result = remove_with_prompt(&path, named.then(|| "alpha".to_owned()), yes, &mut prompt).unwrap();
+            let result =
+                remove_with_prompt(&path, named.then(|| "alpha".to_owned()), yes, &mut prompt)
+                    .unwrap();
             assert_eq!(result.is_some(), removed);
             assert_eq!(prompt.selections, usize::from(!named));
             if !removed {
@@ -208,7 +218,12 @@ future = "entry"
         fixture(&target);
         let before = fs::read(&target).unwrap();
         std::os::unix::fs::symlink(&target, &link).unwrap();
-        assert!(remove(&link, "alpha").unwrap_err().to_string().contains("symlink"));
+        assert!(
+            remove(&link, "alpha")
+                .unwrap_err()
+                .to_string()
+                .contains("symlink")
+        );
         assert!(list(&link).is_err());
         assert_eq!(fs::read(&target).unwrap(), before);
     }

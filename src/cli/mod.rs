@@ -1,9 +1,9 @@
 mod args;
 pub(crate) mod completion;
-mod menus;
 mod launcher;
-mod output;
+mod menus;
 mod operations;
+mod output;
 mod shortcuts;
 
 use loadbot::paths;
@@ -76,9 +76,7 @@ fn collect_main_command<P: Prompt>(prompt: &mut P) -> Result<Option<Commands>> {
             name: None,
             catalog: None,
         }),
-        Some(MainMenuAction::ManageShortcuts) => Some(Commands::Shortcut {
-            command: None,
-        }),
+        Some(MainMenuAction::ManageShortcuts) => Some(Commands::Shortcut { command: None }),
         Some(MainMenuAction::ManageCatalogs) => Some(Commands::Catalog { command: None }),
         Some(MainMenuAction::Exit) | None => None,
     })
@@ -165,7 +163,8 @@ where
             Ok(())
         }
         ShortcutCommands::Remove { name, yes } => {
-            if let Some(name) = shortcuts::remove_with_prompt(&paths.shortcuts()?, name, yes, prompt)?
+            if let Some(name) =
+                shortcuts::remove_with_prompt(&paths.shortcuts()?, name, yes, prompt)?
             {
                 println!("removed shortcut '{name}'");
             }
@@ -540,7 +539,12 @@ mod tests {
             assert_eq!(label, "Shortcuts:");
             assert_eq!(
                 choices,
-                &["Add a shortcut", "List shortcuts", "Remove a shortcut", "Cancel"]
+                &[
+                    "Add a shortcut",
+                    "List shortcuts",
+                    "Remove a shortcut",
+                    "Cancel"
+                ]
             );
             Ok(self.0.map(str::to_owned))
         }

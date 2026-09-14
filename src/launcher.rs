@@ -1,12 +1,17 @@
-use std::collections::BTreeMap;
 use crate::catalog::ResolvedTool;
 use crate::interaction::OperationContext;
+use crate::{
+    catalog::Runner,
+    operations,
+    paths::{self, Paths},
+    shortcuts::{self, Shortcut},
+};
+use anyhow::{Context, Result, bail};
+use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
-use anyhow::{Context, Result, bail};
-use crate::{operations, paths::{self, Paths}, shortcuts::{self, Shortcut}, catalog::Runner};
 #[derive(Debug)]
 pub struct ChildExit {
     code: i32,
@@ -48,10 +53,12 @@ pub fn run_shortcut_from(
         .shortcuts
         .get(name)
         .with_context(|| format!("shortcut '{name}' does not exist"))?;
-    let target = resolve_target(paths, shortcut, context).with_context(|| broken_message(name, shortcut))?;
+    let target =
+        resolve_target(paths, shortcut, context).with_context(|| broken_message(name, shortcut))?;
     match shortcut.runner {
         Some(runner) => {
-            let root = operations::installed_tool_path(paths, &shortcut.tool, &shortcut.catalog, context)?;
+            let root =
+                operations::installed_tool_path(paths, &shortcut.tool, &shortcut.catalog, context)?;
             launch_with_runner(&target, &root, runner)
         }
         None => launch_file(&target),
@@ -229,7 +236,9 @@ pub fn launch_command(
     let target = safe_target(&root, &relative)?;
     match runner {
         Some(runner) => launch_with_runner(&target, &root, runner),
-        None if source == EntrySource::Catalog => launch_with_runner(&target, &root, Runner::Direct),
+        None if source == EntrySource::Catalog => {
+            launch_with_runner(&target, &root, Runner::Direct)
+        }
         None => launch_file(&target),
     }
 }
@@ -298,10 +307,21 @@ pub fn project_inventory(
             });
     }
 
-    projects.into_iter().map(|(key, mut entries)| {
-        entries.sort_by(|left, right| left.name.cmp(&right.name).then_with(|| left.source.cmp(&right.source)));
-        Project { tool: key.tool, catalog: key.catalog, entries }
-    }).collect()
+    projects
+        .into_iter()
+        .map(|(key, mut entries)| {
+            entries.sort_by(|left, right| {
+                left.name
+                    .cmp(&right.name)
+                    .then_with(|| left.source.cmp(&right.source))
+            });
+            Project {
+                tool: key.tool,
+                catalog: key.catalog,
+                entries,
+            }
+        })
+        .collect()
 }
 
 #[derive(Debug)]
@@ -316,15 +336,53 @@ pub fn browse_directory(root: &Path, relative: &Path) -> Result<Vec<BrowserEntry
     if !relative.as_os_str().is_empty() {
         shortcuts::portable_path(relative)?;
     }
+    // Resolve the root once, then reject symlinks at every selected component.
+    // Filtering the returned entries alone does not protect direct API callers.
+    let canonical_root = fs::canonicalize(root)
+        .with_context(|| format!("could not resolve tool directory {}", root.display()))?;
+    if fs::symlink_metadata(root)?.file_type().is_symlink() {
+        bail!("refusing to browse a symlink tool directory");
+    }
+    let mut selected = canonical_root.clone();
+    for component in relative.components() {
+        selected.push(component);
+        let metadata = fs::symlink_metadata(&selected)
+            .with_context(|| format!("could not inspect directory {}", selected.display()))?;
+        if metadata.file_type().is_symlink() {
+            bail!("refusing to browse a symlink directory");
+        }
+        if !metadata.is_dir() {
+            bail!("selected path is not a directory");
+        }
+    }
+    let canonical_directory = fs::canonicalize(&selected)?;
+    if !canonical_directory.starts_with(&canonical_root) {
+        bail!("selected directory escapes its tool repository");
+    }
     let directory = root.join(relative);
     let mut entries = Vec::new();
-    for entry in fs::read_dir(&directory).with_context(|| format!("could not browse {}", directory.display()))? {
+    for entry in fs::read_dir(&directory)
+        .with_context(|| format!("could not browse {}", directory.display()))?
+    {
         let entry = entry?;
         let file_type = entry.file_type()?;
-        if file_type.is_symlink() || (!file_type.is_dir() && !file_type.is_file()) { continue; }
-        let Some(name) = entry.file_name().to_str().map(str::to_owned) else { continue; };
-        entries.push(BrowserEntry { name, path: entry.path(), is_directory: file_type.is_dir() });
+        if file_type.is_symlink() || (!file_type.is_dir() && !file_type.is_file()) {
+            continue;
+        }
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        entries.push(BrowserEntry {
+            name,
+            path: entry.path(),
+            is_directory: file_type.is_dir(),
+        });
     }
-    entries.sort_by(|left, right| right.is_directory.cmp(&left.is_directory).then_with(|| left.name.cmp(&right.name)));
+    entries.sort_by(|left, right| {
+        right
+            .is_directory
+            .cmp(&left.is_directory)
+            .then_with(|| left.name.cmp(&right.name))
+    });
     Ok(entries)
 }

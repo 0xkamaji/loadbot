@@ -36,7 +36,8 @@ pub fn collect_main_menu<P: Prompt>(prompt: &mut P) -> Result<Option<MainMenuAct
     let Some(selection) = prompt.select("Loadbot:", &choices)? else {
         return Ok(None);
     };
-    entries.into_iter()
+    entries
+        .into_iter()
         .find_map(|(label, action)| (label == selection).then_some(Some(action)))
         .context("invalid main menu selection")
 }

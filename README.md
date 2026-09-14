@@ -25,7 +25,7 @@ LOADBOT_HOME/
 - `catalogs/<name>/` is a complete Git clone. Its versioned `catalog.toml` is authoritative for portable tool definitions.
 - `tools/<catalog>/<name>/` is the local clone of a tool installed from that catalog. Catalog namespaces allow the same tool name to be installed independently from multiple catalogs.
 
-The default root is `~/.local/share/loadbot/` on Linux and `%LOCALAPPDATA%\loadbot\` on native Windows. `LOADBOT_HOME` overrides the root for portable or isolated use. Read-only commands do not create it.
+The default root is `~/.local/share/loadbot/` on Linux and `%LOCALAPPDATA%\loadbot\` on native Windows. `LOADBOT_HOME` overrides the root for portable or isolated use. `LOADBOT_CONFIG_HOME` optionally overrides the directory containing `shortcuts.toml`; otherwise the normal platform configuration directory is used. Read-only commands do not create these directories.
 
 Personal launcher shortcuts are stored separately in the platform configuration directory at `loadbot/shortcuts.toml` (`~/.config/loadbot/shortcuts.toml` on Linux). They contain a catalog name, tool name, and repository-relative file path, never an absolute installation path. Shortcuts are not written to `config.toml`, catalog repositories, or `catalog.toml`.
 
@@ -911,8 +911,7 @@ Git repositories. The existing CLI and setup tests remain the compatibility suit
 Linux-specific child/PTY checks run locally where their tools are available;
 Windows behavior still requires execution in a Windows environment.
 
-An existing Windows test limitation remains: the process-level CLI tests use an
-`APPDATA` override, but `dirs` resolves Windows configuration through the known-folder
-API. That override does not isolate shortcut storage on Windows. The new public
-library tests use explicit directories; new process-level tests are Linux-only.
-Hardening the existing Windows CLI test harness is separate from this refactor.
+CLI tests set `LOADBOT_CONFIG_HOME` to isolated temporary storage on every platform.
+This optional override names the directory containing `shortcuts.toml`; when unset,
+normal platform configuration discovery is unchanged. Library callers can instead
+supply explicit directories with `Paths::with_directories`.

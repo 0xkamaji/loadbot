@@ -58,6 +58,8 @@ pub fn catalog_add(
     writable: bool,
     context: &mut OperationContext<'_>,
 ) -> Result<MutationOutcome> {
+    let _process_scope = crate::process::scope(&context.process);
+    context.process.cancellation.check()?;
     let notice_start = context.notices.len();
     catalog_add_with_save(paths, name, url, writable, config::save, context)?;
     Ok(context.outcome_since(notice_start))
@@ -76,7 +78,9 @@ where
 {
     paths::validate_name(name)?;
     validate_url(&url)?;
+    let _repository_lease = context.lease(&paths.catalog(name))?;
     let mut local = config::load(&paths.config())?;
+    let original_local = local.clone();
     let source = CatalogSource::new(url, writable);
     let destination = paths.catalog(name);
     let existing_differs = local
@@ -110,7 +114,7 @@ where
         })?;
         created_clone = true;
         if let Err(error) =
-            git::clone_repository(&source.url, None, &destination, context.interaction)
+            git::clone_repository(&source.url, None, &destination, context)
         {
             return Err(cleanup_catalog_add_failure(
                 &destination,
@@ -145,7 +149,7 @@ where
         if local.default_catalog.is_none() {
             local.default_catalog = Some(name.to_owned());
         }
-        if let Err(error) = save_config(&paths.config(), &local) {
+        if let Err(error) = merge_registration(&paths.config(), &original_local, &local, save_config) {
             if created_clone {
                 return Err(cleanup_catalog_add_failure(
                     &destination,
@@ -177,6 +181,30 @@ where
     Ok(())
 }
 
+fn merge_registration(
+    path: &Path,
+    original: &LocalConfig,
+    desired: &LocalConfig,
+    save: impl FnOnce(&Path, &LocalConfig) -> Result<()>,
+) -> Result<()> {
+    let _lease = crate::persistence::Lease::acquire(path)?;
+    let mut current = config::load(path)?;
+    for (name, source) in &desired.catalogs {
+        if original.catalogs.get(name) == Some(source) { continue; }
+        if current.catalogs.get(name) != original.catalogs.get(name) {
+            return Err(crate::persistence::Busy { resource: path.to_owned() }.into());
+        }
+        if current.catalogs.keys().any(|key| key != name && key.eq_ignore_ascii_case(name)) {
+            bail!("catalog name '{name}' conflicts with a concurrently registered catalog");
+        }
+        current.catalogs.insert(name.clone(), source.clone());
+    }
+    if current.default_catalog.is_none() {
+        current.default_catalog = desired.default_catalog.clone();
+    }
+    save(path, &current)
+}
+
 pub fn catalog_initialize(
     paths: &Paths,
     name: &str,
@@ -186,6 +214,8 @@ pub fn catalog_initialize(
     push: bool,
     context: &mut OperationContext<'_>,
 ) -> Result<MutationOutcome> {
+    let _process_scope = crate::process::scope(&context.process);
+    context.process.cancellation.check()?;
     let notice_start = context.notices.len();
     paths::validate_name(name)?;
     validate_url(&url)?;
@@ -196,7 +226,9 @@ pub fn catalog_initialize(
         bail!("pushing the initial catalog requires committing it first");
     }
 
+    let _repository_lease = context.lease(&paths.catalog(name))?;
     let mut local = config::load(&paths.config())?;
+    let original_local = local.clone();
     let source = CatalogSource::new(url, true);
     let destination = paths.catalog(name);
     let existing_differs = local
@@ -223,10 +255,11 @@ pub fn catalog_initialize(
     } else {
         fs::create_dir_all(paths.catalogs())
             .with_context(|| format!("could not create {}", paths.catalogs().display()))?;
-        if let Err(error) =
-            git::clone_repository(&source.url, None, &destination, context.interaction)
+        fs::create_dir(&destination).context("catalog destination appeared before clone; nothing removed")?;
+        if let Err(mut error) =
+            git::clone_repository(&source.url, None, &destination, context)
         {
-            cleanup_failed_clone(&destination);
+            error = cleanup_failed_clone(&destination, error);
             return Err(error).context("could not clone the catalog to initialize");
         }
         created_clone = true;
@@ -243,7 +276,7 @@ pub fn catalog_initialize(
             bail!("refusing to initialize catalog '{name}': working tree has unrelated changes");
         }
 
-        let refs = git::origin_refs(&destination, context.interaction)?;
+        let refs = git::origin_refs(&destination, context)?;
         let head = git::head_commit(&destination)?;
         let branch = git::current_branch(&destination)?;
         let tracked = git::tracked_files(&destination)?;
@@ -293,17 +326,17 @@ pub fn catalog_initialize(
     })();
     let (already_initialized, create_catalog) = match preparation {
         Ok(state) => state,
-        Err(error) => {
+        Err(mut error) => {
             if created_clone {
-                cleanup_failed_clone(&destination);
+                error = cleanup_failed_clone(&destination, error);
             }
             return Err(error);
         }
     };
 
-    if create_catalog && let Err(error) = catalog::save(&catalog_path, &CatalogFile::default()) {
+    if create_catalog && let Err(mut error) = catalog::save(&catalog_path, &CatalogFile::default()) {
         if created_clone {
-            cleanup_failed_clone(&destination);
+            error = cleanup_failed_clone(&destination, error);
         }
         return Err(error).context("could not create initial catalog.toml");
     }
@@ -314,12 +347,12 @@ pub fn catalog_initialize(
         if local.default_catalog.is_none() {
             local.default_catalog = Some(name.to_owned());
         }
-        if let Err(error) = config::save(&paths.config(), &local) {
-            if create_catalog {
+        if let Err(mut error) = merge_registration(&paths.config(), &original_local, &local, config::save) {
+            if create_catalog && cleanup_is_safe(&error) {
                 let _ = fs::remove_file(&catalog_path);
             }
             if created_clone {
-                cleanup_failed_clone(&destination);
+                error = cleanup_failed_clone(&destination, error);
             }
             return Err(error).context("catalog was validated, but registration failed");
         }
@@ -353,10 +386,11 @@ pub fn catalog_initialize(
         return Ok(context.outcome_since(notice_start));
     }
 
+    context.process.cancellation.check()?;
     if commit {
         if git::path_has_changes(&destination, "catalog.toml")? {
             let commit_hash =
-                git::commit_file(&destination, "catalog.toml", "Initialize Loadbot catalog")
+                git::commit_file_with_interaction(&destination, "catalog.toml", "Initialize Loadbot catalog", context)
                     .context("catalog.toml was created, but committing it failed")?;
             context.record(Notice::InitialCatalogCommitted { commit_hash });
         } else if git::head_commit(&destination)?.is_some() {
@@ -368,11 +402,12 @@ pub fn catalog_initialize(
         context.record(Notice::InitialCatalogUncommitted);
     }
 
+    context.process.cancellation.check()?;
     if push {
-        if git::origin_has_refs(&destination, context.interaction)? {
+        if git::origin_has_refs(&destination, context)? {
             bail!("refusing to push because the remote is no longer empty");
         }
-        git::push_origin(&destination, context.interaction)
+        git::push_origin(&destination, context)
             .context("initial catalog was committed locally, but pushing it failed")?;
         context.record(Notice::InitialCatalogPushed {
             name: name.to_owned(),
@@ -387,9 +422,12 @@ pub fn catalog_list(
     paths: &Paths,
     context: &mut OperationContext<'_>,
 ) -> Result<Vec<CatalogSummary>> {
+    let _process_scope = crate::process::scope(&context.process);
+    context.process.cancellation.check()?;
     let local = config::load(&paths.config())?;
     let mut rows = Vec::new();
     for (name, source) in &local.catalogs {
+        context.process.cancellation.check()?;
         let destination = paths.catalog(name);
         context.record(Notice::CatalogResolved {
             name: name.clone(),
@@ -420,11 +458,15 @@ pub fn catalog_sync(
     name: &str,
     context: &mut OperationContext<'_>,
 ) -> Result<MutationOutcome> {
+    let _process_scope = crate::process::scope(&context.process);
+    context.process.cancellation.check()?;
     let notice_start = context.notices.len();
+    paths::validate_name(name)?;
+    let _repository_lease = context.lease(&paths.catalog(name))?;
     let local = config::load(&paths.config())?;
     let source = configured_catalog(&local, name)?;
     let destination = checked_catalog_repository(paths, name, source)?;
-    let (old_commit, new_commit) = git::update(&destination, None, context.interaction)
+    let (old_commit, new_commit) = git::update(&destination, None, context)
         .with_context(|| format!("refusing to sync catalog '{name}'"))?;
     if old_commit == new_commit {
         context.record(Notice::CatalogCurrent {
@@ -446,6 +488,8 @@ pub fn catalog_status(
     name: &str,
     context: &mut OperationContext<'_>,
 ) -> Result<CatalogStatus> {
+    let _process_scope = crate::process::scope(&context.process);
+    context.process.cancellation.check()?;
     let local = config::load(&paths.config())?;
     let source = configured_catalog(&local, name)?.clone();
     let destination = paths.catalog(name);
@@ -465,7 +509,10 @@ pub fn catalog_status(
     let file = if path_exists(&destination) && !is_repository {
         CatalogValidity::Unmanaged
     } else if !catalog_path.is_file() {
-        CatalogValidity::Missing
+        match crate::persistence::read_optional(&catalog_path) {
+            Err(error) => CatalogValidity::Invalid(format!("{error:#}")),
+            Ok(_) => CatalogValidity::Missing,
+        }
     } else {
         match catalog::load(&catalog_path) {
             Ok(_) => CatalogValidity::Valid,
@@ -494,9 +541,13 @@ pub fn catalog_migrate(
     url: String,
     context: &mut OperationContext<'_>,
 ) -> Result<MutationOutcome> {
+    let _process_scope = crate::process::scope(&context.process);
+    context.process.cancellation.check()?;
     let notice_start = context.notices.len();
     paths::validate_name(name)?;
     validate_url(&url)?;
+    let _repository_lease = context.lease(&paths.catalog(name))?;
+    let original_bytes = crate::persistence::read_optional(&paths.config())?;
     let legacy = config::load_legacy(&paths.config())?;
     let destination = paths.catalog(name);
     if path_exists(&destination) {
@@ -505,8 +556,9 @@ pub fn catalog_migrate(
 
     fs::create_dir_all(paths.catalogs())
         .with_context(|| format!("could not create {}", paths.catalogs().display()))?;
-    if let Err(error) = git::clone_repository(&url, None, &destination, context.interaction) {
-        cleanup_failed_clone(&destination);
+    fs::create_dir(&destination).context("migration destination appeared before clone; nothing removed")?;
+    if let Err(mut error) = git::clone_repository(&url, None, &destination, context) {
+        error = cleanup_failed_clone(&destination, error);
         return Err(error).context("could not clone migration catalog");
     }
 
@@ -534,11 +586,15 @@ pub fn catalog_migrate(
             catalogs,
             extra: legacy.extra,
         };
+        let _configuration_lease = crate::persistence::Lease::acquire(&paths.config())?;
+        if crate::persistence::read_optional(&paths.config())? != original_bytes {
+            return Err(crate::persistence::Busy { resource: paths.config() }.into());
+        }
         config::save(&paths.config(), &local)
             .context("catalog.toml was written, but replacing the legacy configuration failed")
     })();
-    if let Err(error) = migration_result {
-        cleanup_failed_clone(&destination);
+    if let Err(mut error) = migration_result {
+        error = cleanup_failed_clone(&destination, error);
         return Err(error);
     }
     context.record(Notice::CatalogMigrated {
@@ -559,6 +615,8 @@ pub fn tool_add(
     push: bool,
     context: &mut OperationContext<'_>,
 ) -> Result<MutationOutcome> {
+    let _process_scope = crate::process::scope(&context.process);
+    context.process.cancellation.check()?;
     let notice_start = context.notices.len();
     paths::validate_name(name)?;
     paths::validate_name(catalog_name)?;
@@ -570,6 +628,7 @@ pub fn tool_add(
         bail!("pushing a catalog change requires --commit");
     }
 
+    let _repository_lease = context.lease(&paths.catalog(catalog_name))?;
     let local = config::load(&paths.config())?;
     let source = configured_catalog(&local, catalog_name)?;
     if !source.writable {
@@ -616,10 +675,11 @@ pub fn tool_add(
         true
     };
 
+    context.process.cancellation.check()?;
     if commit {
         if git::path_has_changes(&repository, "catalog.toml")? {
             let message = format!("Add {name} to Loadbot catalog");
-            let commit_hash = git::commit_file(&repository, "catalog.toml", &message)
+            let commit_hash = git::commit_file_with_interaction(&repository, "catalog.toml", &message, context)
                 .context("tool definition was saved, but committing the catalog change failed")?;
             context.record(Notice::CatalogCommitted { commit_hash });
         } else if changed {
@@ -628,8 +688,9 @@ pub fn tool_add(
             context.record(Notice::CatalogAlreadyCommitted);
         }
     }
+    context.process.cancellation.check()?;
     if push {
-        git::push_origin(&repository, context.interaction)
+        git::push_origin(&repository, context)
             .context("tool definition was saved and committed, but pushing the catalog failed")?;
         context.record(Notice::CatalogPushed {
             catalog_name: catalog_name.to_owned(),
@@ -639,9 +700,12 @@ pub fn tool_add(
 }
 
 pub fn tool_list(paths: &Paths, context: &mut OperationContext<'_>) -> Result<Vec<ToolSummary>> {
+    let _process_scope = crate::process::scope(&context.process);
+    context.process.cancellation.check()?;
     let tools = all_tools(paths, context)?;
     let mut rows = Vec::new();
     for tool in tools {
+        context.process.cancellation.check()?;
         let destination = paths.tool(&tool.catalog, &tool.name)?;
         let installed = path_exists(&destination)
             && git::is_expected_repository(&destination, &tool.definition.url)?;
@@ -658,12 +722,14 @@ pub fn tool_pull(
     catalog_name: Option<&str>,
     context: &mut OperationContext<'_>,
 ) -> Result<MutationOutcome> {
+    let _process_scope = crate::process::scope(&context.process);
+    context.process.cancellation.check()?;
     let notice_start = context.notices.len();
     tool_pull_with(
         paths,
         name,
         catalog_name,
-        context.interaction.can_choose(),
+        context.can_choose(),
         context,
         git::verified_rot_identities,
         git::clone_repository,
@@ -686,6 +752,13 @@ where
 {
     let tool = resolve_tool(paths, name, catalog_name, context)?;
     let destination = paths.tool(&tool.catalog, &tool.name)?;
+    let _repository_lease = context.lease(&destination)?;
+    let _configuration_snapshot = context.watch(&paths.config())?;
+    let _catalog_snapshot = context.watch(&paths.catalog_file(&tool.catalog))?;
+    let current_tool = resolve_tool(paths, name, catalog_name, context)?;
+    if current_tool.definition != tool.definition {
+        return Err(crate::persistence::Busy { resource: destination }.into());
+    }
     if path_exists(&destination) {
         if !git::is_repository(&destination)? {
             bail!("destination exists but is not a Git repository");
@@ -725,22 +798,31 @@ where
         .parent()
         .context("tool destination has no parent directory")?;
     fs::create_dir_all(parent).with_context(|| format!("could not create {}", parent.display()))?;
-    if let Err(error) = clone_repository(
+    fs::create_dir(&destination).context("tool destination appeared before clone; nothing removed")?;
+    if let Err(mut error) = clone_repository(
         &tool.definition.url,
         tool.definition.revision.as_deref(),
         &destination,
-        context.interaction,
+        context,
     ) {
-        cleanup_failed_clone(&destination);
+        error = cleanup_failed_clone(&destination, error);
         return Err(error).context(format!("could not clone tool '{name}'"));
     }
-    if !git::is_expected_repository(&destination, &tool.definition.url)? {
-        bail!("cloned tool is not the configured Git repository");
+    let validation = (|| -> Result<()> {
+        context.process.cancellation.check()?;
+        if !git::is_expected_repository(&destination, &tool.definition.url)? {
+            bail!("cloned tool is not the configured Git repository");
+        }
+        Ok(())
+    })();
+    if let Err(error) = validation {
+        return Err(cleanup_failed_clone(&destination, error));
     }
     context.record(Notice::ToolInstalled {
         name: name.to_owned(),
         path: destination.clone(),
     });
+    context.process.cancellation.check()?;
     offer_ssh_push(
         &destination,
         &tool.definition.url,
@@ -763,8 +845,7 @@ where
     if direct != git::RepositoryMatch::Mismatch {
         return Ok(direct);
     }
-    let aliases = identities()
-        .unwrap_or_default()
+    let aliases = optional_identities(identities())?
         .into_iter()
         .map(|identity| identity.alias)
         .collect::<Vec<_>>();
@@ -787,15 +868,16 @@ where
     {
         return Ok(());
     }
-    let Ok(available) = identities() else {
-        return Ok(());
-    };
-    if available.is_empty() || !context.interaction.configure_push()? {
+    let available = optional_identities(identities())?;
+    if available.is_empty() || !context.configure_push()? {
         return Ok(());
     }
-    let identity = git::select_verified_rot_identity(available, context.interaction)?;
+    let identity = git::select_verified_rot_identity(available, context)?;
     let push_url = git::github_ssh_push_url(canonical_url, &identity.alias)
         .context("could not derive the GitHub SSH push URL")?;
+    if git::push_url(destination)?.is_some() || !git::is_expected_repository(destination, canonical_url)? {
+        bail!("repository URLs changed while awaiting a decision; retry the operation");
+    }
     git::set_push_url(destination, &push_url)?;
     context.record(Notice::PushUrlConfigured { push_url });
     Ok(())
@@ -815,20 +897,22 @@ fn reconcile_existing_checkout(
         );
     }
     if !context
-        .interaction
         .reconcile_checkout(&existing_fetch, canonical_url)?
     {
         bail!(
             "repository URL mismatch was not changed\nFetch URL: {existing_fetch}\nCatalog URL: {canonical_url}"
         );
     }
-    if let Some(existing_push) = git::push_url(destination)?
-        && existing_push != existing_fetch
+    let original_push = git::push_url(destination)?;
+    if let Some(existing_push) = original_push.as_ref()
+        && existing_push != &existing_fetch
         && !context
-            .interaction
-            .replace_push(&existing_push, &existing_fetch)?
+            .replace_push(existing_push, &existing_fetch)?
     {
         bail!("existing push URL was preserved; repository URLs were not changed");
+    }
+    if git::fetch_url(destination)?.as_deref() != Some(&existing_fetch) || git::push_url(destination)? != original_push {
+        bail!("repository URLs changed while awaiting a decision; retry the operation");
     }
     git::reconcile_remote(destination, canonical_url, &existing_fetch)?;
     if !git::is_expected_repository(destination, canonical_url)? {
@@ -846,9 +930,18 @@ pub fn tool_update(
     catalog_name: Option<&str>,
     context: &mut OperationContext<'_>,
 ) -> Result<MutationOutcome> {
+    let _process_scope = crate::process::scope(&context.process);
+    context.process.cancellation.check()?;
     let notice_start = context.notices.len();
     let tool = resolve_tool(paths, name, catalog_name, context)?;
     let destination = paths.tool(&tool.catalog, &tool.name)?;
+    let _repository_lease = context.lease(&destination)?;
+    let _configuration_snapshot = context.watch(&paths.config())?;
+    let _catalog_snapshot = context.watch(&paths.catalog_file(&tool.catalog))?;
+    let current_tool = resolve_tool(paths, name, catalog_name, context)?;
+    if current_tool.definition != tool.definition {
+        return Err(crate::persistence::Busy { resource: destination }.into());
+    }
     if !path_exists(&destination) {
         bail!("tool '{name}' is not installed; run 'loadbot pull {name}' first");
     }
@@ -867,7 +960,7 @@ pub fn tool_update(
     let (old_commit, new_commit) = git::update(
         &destination,
         tool.definition.revision.as_deref(),
-        context.interaction,
+        context,
     )
     .with_context(|| format!("refusing to update '{name}'"))?;
     if old_commit == new_commit {
@@ -891,6 +984,8 @@ pub fn tool_status(
     catalog_name: Option<&str>,
     context: &mut OperationContext<'_>,
 ) -> Result<ToolStatus> {
+    let _process_scope = crate::process::scope(&context.process);
+    context.process.cancellation.check()?;
     let tool = resolve_tool(paths, name, catalog_name, context)?;
     let destination = paths.tool(&tool.catalog, &tool.name)?;
     context.record(Notice::ToolResolved {
@@ -924,6 +1019,8 @@ pub fn tool_path(
     catalog_name: Option<&str>,
     context: &mut OperationContext<'_>,
 ) -> Result<PathBuf> {
+    let _process_scope = crate::process::scope(&context.process);
+    context.process.cancellation.check()?;
     let tool = resolve_tool(paths, name, catalog_name, context)?;
     paths.tool(&tool.catalog, &tool.name)
 }
@@ -934,6 +1031,8 @@ pub fn installed_tool_path(
     catalog_name: &str,
     context: &mut OperationContext<'_>,
 ) -> Result<PathBuf> {
+    let _process_scope = crate::process::scope(&context.process);
+    context.process.cancellation.check()?;
     let tool = resolve_tool(paths, name, Some(catalog_name), context)?;
     let destination = paths.tool(&tool.catalog, &tool.name)?;
     if !path_exists(&destination) {
@@ -961,8 +1060,7 @@ fn equivalent_github_checkout(destination: &Path, configured_url: &str) -> Resul
     if direct != git::RepositoryMatch::Mismatch {
         return Ok(false);
     }
-    let aliases = git::verified_rot_identities()
-        .unwrap_or_default()
+    let aliases = optional_identities(git::verified_rot_identities())?
         .into_iter()
         .map(|identity| identity.alias)
         .collect::<Vec<_>>();
@@ -976,8 +1074,11 @@ pub fn installed_tools(
     paths: &Paths,
     context: &mut OperationContext<'_>,
 ) -> Result<Vec<ResolvedTool>> {
+    let _process_scope = crate::process::scope(&context.process);
+    context.process.cancellation.check()?;
     let mut installed = Vec::new();
     for tool in all_tools(paths, context)? {
+        context.process.cancellation.check()?;
         let destination = paths.tool(&tool.catalog, &tool.name)?;
         if path_exists(&destination)
             && git::is_expected_repository(&destination, &tool.definition.url)?
@@ -989,23 +1090,27 @@ pub fn installed_tools(
 }
 
 pub fn all_tools(paths: &Paths, context: &mut OperationContext<'_>) -> Result<Vec<ResolvedTool>> {
+    let _process_scope = crate::process::scope(&context.process);
+    context.process.cancellation.check()?;
     let local = config::load(&paths.config())?;
     let mut tools = Vec::new();
     let mut portable_names = BTreeMap::new();
     for (catalog_name, source) in &local.catalogs {
+        context.process.cancellation.check()?;
         if let Err(error) = checked_catalog_repository(paths, catalog_name, source) {
-            warn_skipped_catalog(catalog_name, &error, context);
+            warn_skipped_catalog(catalog_name, error, context)?;
             continue;
         }
         let catalog_file = match catalog::load(&paths.catalog_file(catalog_name)) {
             Ok(catalog_file) => catalog_file,
             Err(error) => {
-                warn_skipped_catalog(catalog_name, &error, context);
+                warn_skipped_catalog(catalog_name, error, context)?;
                 continue;
             }
         };
         let mut normalized_names = BTreeMap::new();
         for (name, definition) in catalog_file.tools {
+            context.process.cancellation.check()?;
             paths::validate_name(&name).with_context(|| {
                 format!("catalog '{catalog_name}' contains an unsafe tool name")
             })?;
@@ -1044,6 +1149,8 @@ pub fn resolve_tool(
     catalog_name: Option<&str>,
     context: &mut OperationContext<'_>,
 ) -> Result<ResolvedTool> {
+    let _process_scope = crate::process::scope(&context.process);
+    context.process.cancellation.check()?;
     paths::validate_name(name)?;
     if let Some(catalog_name) = catalog_name {
         paths::validate_name(catalog_name)?;
@@ -1083,6 +1190,8 @@ pub fn resolve_tool(
 }
 
 pub fn writable_catalogs(paths: &Paths, context: &mut OperationContext<'_>) -> Result<Vec<String>> {
+    let _process_scope = crate::process::scope(&context.process);
+    context.process.cancellation.check()?;
     let local = config::load(&paths.config())?;
     available_catalogs(paths, &local, true, context)
 }
@@ -1091,6 +1200,8 @@ pub fn default_writable_catalog(
     paths: &Paths,
     context: &mut OperationContext<'_>,
 ) -> Result<Option<String>> {
+    let _process_scope = crate::process::scope(&context.process);
+    context.process.cancellation.check()?;
     let local = config::load(&paths.config())?;
     let Some(name) = local.default_catalog else {
         return Ok(None);
@@ -1098,7 +1209,7 @@ pub fn default_writable_catalog(
     let Some(source) = local.catalogs.get(&name) else {
         return Ok(None);
     };
-    if !source.writable || !catalog_is_available(paths, &name, source, context) {
+    if !source.writable || !catalog_is_available(paths, &name, source, context)? {
         return Ok(None);
     }
     Ok(Some(name))
@@ -1115,6 +1226,8 @@ pub fn available_catalog_names(
     paths: &Paths,
     context: &mut OperationContext<'_>,
 ) -> Result<Vec<String>> {
+    let _process_scope = crate::process::scope(&context.process);
+    context.process.cancellation.check()?;
     let local = config::load(&paths.config())?;
     available_catalogs(paths, &local, false, context)
 }
@@ -1127,10 +1240,11 @@ fn available_catalogs(
 ) -> Result<Vec<String>> {
     let mut names = Vec::new();
     for (name, source) in &local.catalogs {
+        context.process.cancellation.check()?;
         if writable_only && !source.writable {
             continue;
         }
-        if catalog_is_available(paths, name, source, context) {
+        if catalog_is_available(paths, name, source, context)? {
             names.push(name.clone());
         }
     }
@@ -1142,14 +1256,14 @@ fn catalog_is_available(
     name: &str,
     source: &CatalogSource,
     context: &mut OperationContext<'_>,
-) -> bool {
+) -> Result<bool> {
     let result = checked_catalog_repository(paths, name, source)
         .and_then(|_| catalog::load(&paths.catalog_file(name)).map(|_| ()));
     if let Err(error) = result {
-        warn_skipped_catalog(name, &error, context);
-        return false;
+        warn_skipped_catalog(name, error, context)?;
+        return Ok(false);
     }
-    true
+    Ok(true)
 }
 
 fn configured_catalog<'a>(local: &'a LocalConfig, name: &str) -> Result<&'a CatalogSource> {
@@ -1185,15 +1299,37 @@ fn validate_url(url: &str) -> Result<()> {
     Ok(())
 }
 
-fn warn_skipped_catalog(name: &str, error: &anyhow::Error, context: &mut OperationContext<'_>) {
+fn aborts_operation(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<crate::process::Cancelled>().is_some()
+        || error.downcast_ref::<crate::process::CleanupIncomplete>().is_some()
+        || error.downcast_ref::<crate::persistence::Busy>().is_some()
+}
+
+fn optional_identities(result: Result<Vec<git::RotIdentity>>) -> Result<Vec<git::RotIdentity>> {
+    match result {
+        Ok(identities) => Ok(identities),
+        Err(error) if aborts_operation(&error) => Err(error),
+        Err(_) => Ok(Vec::new()),
+    }
+}
+
+fn warn_skipped_catalog(name: &str, error: anyhow::Error, context: &mut OperationContext<'_>) -> Result<()> {
+    if aborts_operation(&error) { return Err(error); }
     context.record(Notice::SkippedCatalog {
         name: name.to_owned(),
         diagnostic: format!("{error:#}"),
     });
+    context.process.cancellation.check()
 }
 
-fn cleanup_failed_clone(destination: &Path) {
-    let _ = remove_failed_clone(destination);
+fn cleanup_is_safe(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<crate::persistence::Busy>().is_none()
+        && error.downcast_ref::<crate::process::CleanupIncomplete>().is_none()
+        && error.downcast_ref::<crate::persistence::DurabilityUncertain>().is_none()
+}
+
+fn cleanup_failed_clone(destination: &Path, error: anyhow::Error) -> anyhow::Error {
+    cleanup_catalog_add_failure(destination, error, "clone operation failed")
 }
 
 fn cleanup_catalog_add_failure(
@@ -1201,6 +1337,9 @@ fn cleanup_catalog_add_failure(
     error: anyhow::Error,
     context: &str,
 ) -> anyhow::Error {
+    if !cleanup_is_safe(&error) {
+        return error.context("checkout retained because cleanup is not safe");
+    }
     match remove_failed_clone(destination) {
         Ok(()) => error.context(context.to_owned()),
         Err(cleanup_error) => error.context(format!(
@@ -1685,7 +1824,8 @@ mod tests {
             &mut OperationContext::new(&mut prompt),
             || bail!("Rot unavailable"),
             |url, _, destination, _interaction| {
-                fs::create_dir(destination).unwrap();
+                assert!(destination.is_dir());
+                assert_eq!(fs::read_dir(destination).unwrap().count(), 0);
                 git(["init", "--quiet"], Some(destination));
                 git(["remote", "add", "origin", url], Some(destination));
                 Ok(())
@@ -2042,7 +2182,7 @@ mod tests {
             &mut OperationContext::new(&mut crate::interaction::Unattended),
         )
         .unwrap_err();
-        assert!(format!("{error:#}").contains("unrelated changes"));
+        assert!(format!("{error:#}").contains("unrelated changes"), "{error:#}");
         assert_eq!(
             fs::read_to_string(paths.catalog("dirty").join("unrelated.txt")).unwrap(),
             "keep\n"

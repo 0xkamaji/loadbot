@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus, Stdio};
+use std::process::{Command, ExitStatus};
 #[derive(Debug)]
 pub struct ChildExit {
     code: i32,
@@ -53,15 +53,17 @@ pub fn run_shortcut_from(
         .shortcuts
         .get(name)
         .with_context(|| format!("shortcut '{name}' does not exist"))?;
+    let root = paths.tool(&shortcut.catalog, &shortcut.tool)?;
+    let _repository_lease = context.lease(&root)?;
     let target =
         resolve_target(paths, shortcut, context).with_context(|| broken_message(name, shortcut))?;
     match shortcut.runner {
         Some(runner) => {
             let root =
                 operations::installed_tool_path(paths, &shortcut.tool, &shortcut.catalog, context)?;
-            launch_with_runner(&target, &root, runner)
+            launch_with_runner_in(&target, &root, runner, context)
         }
-        None => launch_file(&target),
+        None => launch_file_in(&target, context),
     }
 }
 
@@ -91,8 +93,13 @@ pub fn safe_target(root: &Path, relative: &Path) -> Result<PathBuf> {
 }
 
 pub fn launch_file(target: &Path) -> Result<()> {
+    launch_file_in(target, &mut OperationContext::new(&mut crate::interaction::Unattended))
+}
+
+pub fn launch_file_in(target: &Path, context: &mut OperationContext<'_>) -> Result<()> {
+    context.process.cancellation.check()?;
     if is_native_executable(target)? {
-        return run_command(Command::new(target), target);
+        return run_command(Command::new(target), target, context);
     }
 
     let extension = target
@@ -116,7 +123,7 @@ pub fn launch_file(target: &Path) -> Result<()> {
         let mut command = Command::new(interpreter);
         let working_directory = target.parent().unwrap_or_else(|| Path::new("."));
         script_argument(&mut command, target, working_directory, interpreter)?;
-        match run_command(command, target) {
+        match run_command(command, target, context) {
             Err(error)
                 if error
                     .downcast_ref::<std::io::Error>()
@@ -131,8 +138,13 @@ pub fn launch_file(target: &Path) -> Result<()> {
 }
 
 pub fn launch_with_runner(target: &Path, working_directory: &Path, runner: Runner) -> Result<()> {
+    launch_with_runner_in(target, working_directory, runner, &mut OperationContext::new(&mut crate::interaction::Unattended))
+}
+
+pub fn launch_with_runner_in(target: &Path, working_directory: &Path, runner: Runner, context: &mut OperationContext<'_>) -> Result<()> {
+    context.process.cancellation.check()?;
     if runner == Runner::Direct {
-        return run_command_in(Command::new(target), target, working_directory);
+        return run_command_in(Command::new(target), target, working_directory, context);
     }
     let executables: &[&str] = match runner {
         Runner::Direct => unreachable!(),
@@ -146,7 +158,7 @@ pub fn launch_with_runner(target: &Path, working_directory: &Path, runner: Runne
     for executable in executables {
         let mut command = Command::new(executable);
         script_argument(&mut command, target, working_directory, executable)?;
-        match run_command_in(command, target, working_directory) {
+        match run_command_in(command, target, working_directory, context) {
             Err(error)
                 if error
                     .downcast_ref::<std::io::Error>()
@@ -229,24 +241,16 @@ mod shell_path_tests {
     }
 }
 
-fn run_command(command: Command, target: &Path) -> Result<()> {
+fn run_command(command: Command, target: &Path, context: &mut OperationContext<'_>) -> Result<()> {
     let working_directory = target.parent().unwrap_or_else(|| Path::new("."));
-    run_command_in(command, target, working_directory)
+    run_command_in(command, target, working_directory, context)
 }
 
-fn run_command_in(mut command: Command, target: &Path, working_directory: &Path) -> Result<()> {
-    command
-        .current_dir(working_directory)
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit());
-    let status = command.status().with_context(|| {
-        format!(
-            "could not launch {}; the required executable may not be available",
-            target.display()
-        )
-    })?;
-    successful_status(status, target)
+fn run_command_in(mut command: Command, target: &Path, working_directory: &Path, context: &mut OperationContext<'_>) -> Result<()> {
+    command.current_dir(working_directory);
+    let output = crate::process::execute(&mut command, context.tool_mode, &context.process)
+        .with_context(|| format!("could not launch {}; the required executable may not be available", target.display()))?;
+    successful_status(output.status, target)
 }
 
 fn successful_status(status: ExitStatus, target: &Path) -> Result<()> {
@@ -300,15 +304,16 @@ pub fn launch_command(
     source: EntrySource,
     context: &mut OperationContext<'_>,
 ) -> Result<()> {
+    let _repository_lease = context.lease(&paths.tool(catalog, tool)?)?;
     let root = operations::installed_tool_path(paths, tool, catalog, context)?;
     let relative = shortcuts::relative_path(path)?;
     let target = safe_target(&root, &relative)?;
     match runner {
-        Some(runner) => launch_with_runner(&target, &root, runner),
+        Some(runner) => launch_with_runner_in(&target, &root, runner, context),
         None if source == EntrySource::Catalog => {
-            launch_with_runner(&target, &root, Runner::Direct)
+            launch_with_runner_in(&target, &root, Runner::Direct, context)
         }
-        None => launch_file(&target),
+        None => launch_file_in(&target, context),
     }
 }
 

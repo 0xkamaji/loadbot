@@ -71,14 +71,8 @@ impl Shortcut {
 
 pub fn load(path: &Path) -> Result<ShortcutFile> {
     reject_symlink(path)?;
-    let contents = match fs::read_to_string(path) {
-        Ok(contents) => contents,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(ShortcutFile::default());
-        }
-        Err(error) => {
-            return Err(error).with_context(|| format!("could not read {}", path.display()));
-        }
+    let Some(contents) = crate::persistence::read_optional(path)? else {
+        return Ok(ShortcutFile::default());
     };
     let shortcuts: ShortcutFile =
         toml::from_str(&contents).with_context(|| format!("could not parse {}", path.display()))?;
@@ -101,6 +95,7 @@ pub fn load(path: &Path) -> Result<ShortcutFile> {
 pub fn save(path: &Path, name: &str, shortcut: Shortcut) -> Result<()> {
     paths::validate_name(name).context("invalid shortcut name")?;
     shortcut.validate()?;
+    let _lease = crate::persistence::Lease::acquire(path)?;
     let mut shortcuts = load(path)?;
     if shortcuts.shortcuts.contains_key(name) {
         bail!("shortcut '{name}' already exists");
@@ -112,8 +107,21 @@ pub fn save(path: &Path, name: &str, shortcut: Shortcut) -> Result<()> {
 
 /// Remove only one definition, preserving metadata and the valid file when empty.
 pub fn remove(path: &Path, name: &str) -> Result<()> {
+    remove_matching(path, name, None)
+}
+
+/// Apply a confirmed removal only if that exact definition still exists.
+pub fn remove_if_matches(path: &Path, name: &str, expected: &Shortcut) -> Result<()> {
+    remove_matching(path, name, Some(expected))
+}
+
+fn remove_matching(path: &Path, name: &str, expected: Option<&Shortcut>) -> Result<()> {
     paths::validate_name(name).context("invalid shortcut name")?;
+    let _lease = crate::persistence::Lease::acquire(path)?;
     let mut file = load(path)?;
+    if expected.is_some_and(|expected| file.shortcuts.get(name) != Some(expected)) {
+        return Err(crate::persistence::Busy { resource: path.to_owned() }.into());
+    }
     if file.shortcuts.remove(name).is_none() {
         bail!("shortcut '{name}' does not exist");
     }

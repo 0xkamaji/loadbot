@@ -1,7 +1,8 @@
 use std::collections::BTreeMap;
-use std::fs::{self, OpenOptions};
-use std::io::Write;
-use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::fs;
+use std::path::Path;
+use crate::persistence::read_optional;
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -98,40 +99,18 @@ pub fn save(path: &Path, config: &LocalConfig) -> Result<()> {
     save_toml(path, config)
 }
 
+/// Low-level whole-document replacement. Use `update` for read-modify-write.
 pub fn save_toml<T: Serialize>(path: &Path, value: &T) -> Result<()> {
-    let parent = path
-        .parent()
-        .context("configuration path has no parent directory")?;
-    fs::create_dir_all(parent).with_context(|| format!("could not create {}", parent.display()))?;
-
-    let contents = toml::to_string_pretty(value).context("could not serialize configuration")?;
-    let temporary = temporary_path(path);
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temporary)
-        .with_context(|| format!("could not create {}", temporary.display()))?;
-
-    let write_result = (|| -> Result<()> {
-        file.write_all(contents.as_bytes())?;
-        file.sync_all()?;
-        drop(file);
-        replace_file(&temporary, path)?;
-        Ok(())
-    })();
-
-    if write_result.is_err() {
-        let _ = fs::remove_file(&temporary);
-    }
-    write_result.with_context(|| format!("could not write {}", path.display()))
+    crate::persistence::write_toml(path, value)
 }
 
-fn read_optional(path: &Path) -> Result<Option<String>> {
-    match fs::read_to_string(path) {
-        Ok(contents) => Ok(Some(contents)),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error).with_context(|| format!("could not read {}", path.display())),
-    }
+/// The callback must not prompt or perform long-running work.
+pub fn update<T>(path: &Path, change: impl FnOnce(&mut LocalConfig) -> Result<T>) -> Result<T> {
+    let _lease = crate::persistence::Lease::acquire(path)?;
+    let mut value = load(path)?;
+    let result = change(&mut value)?;
+    save(path, &value)?;
+    Ok(result)
 }
 
 fn validate_version(version: u32, path: &Path) -> Result<()> {
@@ -142,39 +121,6 @@ fn validate_version(version: u32, path: &Path) -> Result<()> {
         );
     }
     Ok(())
-}
-
-fn temporary_path(path: &Path) -> PathBuf {
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("config.toml");
-    path.with_file_name(format!(".{file_name}.{}.tmp", std::process::id()))
-}
-
-#[cfg(not(windows))]
-fn replace_file(source: &Path, destination: &Path) -> std::io::Result<()> {
-    fs::rename(source, destination)
-}
-
-#[cfg(windows)]
-fn replace_file(source: &Path, destination: &Path) -> std::io::Result<()> {
-    if !destination.exists() {
-        return fs::rename(source, destination);
-    }
-
-    let backup = destination.with_extension("toml.loadbot-backup");
-    fs::rename(destination, &backup)?;
-    match fs::rename(source, destination) {
-        Ok(()) => {
-            let _ = fs::remove_file(backup);
-            Ok(())
-        }
-        Err(error) => {
-            let _ = fs::rename(backup, destination);
-            Err(error)
-        }
-    }
 }
 
 #[cfg(test)]

@@ -1,8 +1,10 @@
 use anyhow::{Context, Result, bail};
 use loadbot::{
     paths,
-    shortcuts::{Shortcut, load, remove},
+    shortcuts::{Shortcut, load, remove_if_matches},
 };
+#[cfg(test)]
+use loadbot::shortcuts::remove;
 use std::path::Path;
 fn details(name: &str, shortcut: &Shortcut) -> String {
     let mut text = format!(
@@ -69,7 +71,7 @@ pub fn remove_with_prompt<P: super::menus::Prompt>(
             return Ok(None);
         }
     }
-    remove(path, &name)?;
+    remove_if_matches(path, &name, shortcut)?;
     Ok(Some(name))
 }
 

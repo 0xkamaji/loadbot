@@ -2,11 +2,15 @@
 use std::path::PathBuf;
 
 use anyhow::Result;
+use std::cell::RefCell;
+use std::rc::{Rc, Weak};
+use crate::{persistence::Lease, process::{Control, Mode}};
 
 use crate::git::RotIdentity;
 
 /// Decisions discovered during Git operations, with domain data rather than prompt strings.
 pub trait Interaction {
+    fn process_control(&self) -> Control { Control::default() }
     fn can_choose(&self) -> bool {
         false
     }
@@ -34,23 +38,37 @@ impl Interaction for Unattended {}
 pub struct OperationContext<'a> {
     pub notices: Vec<Notice>,
     pub interaction: &'a mut dyn Interaction,
+    pub process: Control,
+    pub tool_mode: Mode,
+    leases: Vec<Weak<RefCell<Lease>>>,
+    watches: Vec<Weak<Snapshot>>,
 }
 impl<'a> OperationContext<'a> {
     pub fn new(interaction: &'a mut dyn Interaction) -> Self {
         Self {
             notices: Vec::new(),
             interaction,
+            process: Control::default(),
+            tool_mode: Mode::Inherit,
+            leases: Vec::new(),
+            watches: Vec::new(),
         }
     }
     /// Run one operation and return its result together with all progress and diagnostics.
     /// The report is retained on failure; earlier successful steps are never hidden.
     pub fn run<T>(&mut self, operation: impl FnOnce(&mut Self) -> Result<T>) -> OperationReport<T> {
+        let _process_scope = crate::process::scope(&self.process);
         let start = self.notices.len();
-        let result = operation(self);
-        OperationReport {
+        self.process.emit(crate::process::Event::OperationStarted);
+        let result = self.process.cancellation.check().and_then(|()| operation(self));
+        let report = OperationReport {
             result,
             notices: self.notices[start..].to_vec(),
-        }
+        };
+        self.process.emit(crate::process::Event::OperationFinished {
+            outcome: report.status(), partial: report.is_partial(),
+        });
+        report
     }
     pub(crate) fn outcome_since(&self, start: usize) -> MutationOutcome {
         MutationOutcome {
@@ -61,6 +79,52 @@ impl<'a> OperationContext<'a> {
         self.interaction.notice(&notice);
         self.notices.push(notice);
     }
+    pub(crate) fn lease(&mut self, path: &std::path::Path) -> Result<Rc<RefCell<Lease>>> {
+        self.process.cancellation.check()?;
+        let lease = Rc::new(RefCell::new(Lease::acquire(path)?));
+        self.leases.retain(|lease| lease.strong_count() > 0);
+        self.leases.push(Rc::downgrade(&lease));
+        Ok(lease)
+    }
+    pub(crate) fn watch(&mut self, path: &std::path::Path) -> Result<Rc<Snapshot>> {
+        let snapshot = Rc::new(Snapshot { path: path.to_owned(), contents: crate::persistence::read_optional(path)? });
+        self.watches.retain(|watch| watch.strong_count() > 0);
+        self.watches.push(Rc::downgrade(&snapshot));
+        Ok(snapshot)
+    }
+    fn decision<T>(&mut self, choose: impl FnOnce(&mut dyn Interaction) -> Result<T>) -> Result<T> {
+        self.process.cancellation.check()?;
+        let leases: Vec<_> = self.leases.iter().filter_map(Weak::upgrade).collect();
+        for lease in leases.iter().rev() { lease.borrow().suspend()?; }
+        let result = choose(self.interaction);
+        // Always reacquire/revalidate, including cancelled or failed decisions.
+        for lease in &leases { lease.borrow_mut().resume()?; }
+        for snapshot in self.watches.iter().filter_map(Weak::upgrade) {
+            if crate::persistence::read_optional(&snapshot.path)? != snapshot.contents {
+                return Err(crate::persistence::Busy { resource: snapshot.path.clone() }.into());
+            }
+        }
+        self.process.cancellation.check()?;
+        result
+    }
+}
+
+pub(crate) struct Snapshot { path: PathBuf, contents: Option<String> }
+
+impl Interaction for OperationContext<'_> {
+    fn process_control(&self) -> Control { self.process.clone() }
+    fn can_choose(&self) -> bool { self.interaction.can_choose() }
+    fn choose_identity(&mut self, identities: &[RotIdentity]) -> Result<Option<usize>> {
+        self.decision(|interaction| interaction.choose_identity(identities))
+    }
+    fn configure_push(&mut self) -> Result<bool> { self.decision(|i| i.configure_push()) }
+    fn reconcile_checkout(&mut self, fetch: &str, canonical: &str) -> Result<bool> {
+        self.decision(|i| i.reconcile_checkout(fetch, canonical))
+    }
+    fn replace_push(&mut self, existing: &str, replacement: &str) -> Result<bool> {
+        self.decision(|i| i.replace_push(existing, replacement))
+    }
+    fn notice(&mut self, notice: &Notice) { self.record(notice.clone()); }
 }
 
 #[derive(Debug, Clone)]
@@ -173,8 +237,62 @@ pub struct OperationReport<T> {
     pub notices: Vec<Notice>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OperationStatus { Succeeded, Busy, Cancelled, Failed }
+impl<T> OperationReport<T> {
+    pub fn status(&self) -> OperationStatus {
+        match &self.result {
+            Ok(_) => OperationStatus::Succeeded,
+            Err(error) if error.downcast_ref::<crate::persistence::Busy>().is_some() => OperationStatus::Busy,
+            Err(error) if error.downcast_ref::<crate::process::Cancelled>().is_some() => OperationStatus::Cancelled,
+            Err(_) => OperationStatus::Failed,
+        }
+    }
+    pub fn is_partial(&self) -> bool {
+        self.result.as_ref().err().is_some_and(|error| {
+            self.notices.iter().any(Notice::completed_mutation)
+                || error.downcast_ref::<crate::persistence::DurabilityUncertain>().is_some()
+        })
+    }
+}
+impl Notice {
+    pub fn completed_mutation(&self) -> bool {
+        matches!(self, Self::CatalogRegistered { .. } | Self::CatalogInstalled { .. }
+            | Self::CatalogCreated { .. } | Self::InitialCatalogCommitted { .. }
+            | Self::InitialCatalogPushed { .. } | Self::CatalogSynced { .. }
+            | Self::CatalogMigrated { .. } | Self::ToolAdded { .. }
+            | Self::CatalogCommitted { .. } | Self::CatalogPushed { .. }
+            | Self::ToolInstalled { .. } | Self::PushUrlConfigured { .. }
+            | Self::ToolReconciled { .. } | Self::ToolUpdated { .. })
+    }
+}
+
 /// Completed mutation steps. On failure, the context/report retains partial progress.
 #[derive(Debug, Clone)]
 pub struct MutationOutcome {
     pub notices: Vec<Notice>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    struct ConcurrentDecision { path: PathBuf }
+    impl Interaction for ConcurrentDecision {
+        fn configure_push(&mut self) -> Result<bool> {
+            let _other_operation = Lease::acquire(&self.path)?;
+            Ok(true)
+        }
+    }
+    #[test]
+    fn decision_releases_lease_and_rejects_intervening_operation() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("repository");
+        let mut interaction = ConcurrentDecision { path: path.clone() };
+        let mut context = OperationContext::new(&mut interaction);
+        let lease = context.lease(&path).unwrap();
+        let error = context.configure_push().unwrap_err();
+        assert!(error.downcast_ref::<crate::persistence::Busy>().is_some());
+        drop(lease);
+        assert!(Lease::acquire(&path).is_ok());
+    }
 }

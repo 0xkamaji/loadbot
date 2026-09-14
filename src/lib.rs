@@ -32,3 +32,9 @@ pub mod operations;
 pub mod paths;
 /// Saved shortcut definitions, validation, and format-preserving persistence.
 pub mod shortcuts;
+
+/// Resource leases and shared durable replacement.
+pub mod persistence;
+
+/// Observable process execution and caller-owned cancellation.
+pub mod process;

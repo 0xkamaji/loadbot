@@ -214,7 +214,15 @@ pub fn update(
         interaction,
     )?;
     let target = format!("origin/{branch}");
-    query(path, &["merge", "--ff-only", "--", &target])?;
+    interaction.process_control().cancellation.check()?;
+    // User decisions during fetch release the operation lease. Recheck Git's
+    // local preconditions before changing the worktree.
+    let after_fetch = status(path)?;
+    if after_fetch.dirty || after_fetch.branch.as_deref() != Some(&branch) || after_fetch.commit != current.commit {
+        bail!("repository changed during fetch; retry the update");
+    }
+    controlled_query(path, &["merge", "--ff-only", "--", &target], interaction)?;
+    let _completed_step = crate::process::critical_scope();
     let new_commit = query(path, &["rev-parse", "--short", "HEAD"])?;
     Ok((
         current
@@ -225,9 +233,22 @@ pub fn update(
 }
 
 pub fn commit_file(path: &Path, file: &str, message: &str) -> Result<String> {
-    query(path, &["add", "--", file])?;
-    query(path, &["commit", "--only", "-m", message, "--", file])?;
+    commit_file_with_interaction(path, file, message, &mut crate::interaction::Unattended)
+}
+
+pub fn commit_file_with_interaction(path: &Path, file: &str, message: &str, interaction: &mut dyn Interaction) -> Result<String> {
+    controlled_query(path, &["add", "--", file], interaction)?;
+    controlled_query(path, &["commit", "--only", "-m", message, "--", file], interaction)?;
+    let _completed_step = crate::process::critical_scope();
     query(path, &["rev-parse", "--short", "HEAD"])
+}
+
+fn controlled_query(path: &Path, arguments: &[&str], interaction: &mut dyn Interaction) -> Result<String> {
+    let mut args = vec![OsString::from("-C"), path.as_os_str().to_owned()];
+    args.extend(arguments.iter().map(OsString::from));
+    let output = raw_output_control(args, &interaction.process_control())?;
+    if !output.status.success() { bail!("{}", git_error_message(&output)); }
+    Ok(stdout_text(&output))
 }
 
 pub fn path_has_changes(path: &Path, file: &str) -> Result<bool> {
@@ -468,10 +489,11 @@ fn checked_network_output(
     canonical_url: &str,
     interaction: &mut dyn Interaction,
 ) -> Result<Output> {
+    let control = interaction.process_control();
     checked_network_output_with(
         arguments,
         canonical_url,
-        |arguments| raw_output(arguments),
+        |arguments| raw_output_control(arguments, &control),
         query_rot_identities,
         interaction.can_choose(),
         interaction,
@@ -503,9 +525,9 @@ where
     }
 
     let identities =
-        identities().map_err(|error| anyhow::anyhow!("{original_error}\n\n{error}"))?;
+        identities().map_err(|error| authentication_context(error, &original_error))?;
     let identity = select_rot_identity(identities, interactive, prompt)
-        .map_err(|error| anyhow::anyhow!("{original_error}\n\n{error}"))?;
+        .map_err(|error| authentication_context(error, &original_error))?;
     let rewrite = runtime_url_rewrite(canonical_url, &identity.alias)
         .context("could not prepare the selected Rot SSH identity")?;
 
@@ -522,19 +544,29 @@ where
     Ok(retry)
 }
 
+fn authentication_context(error: anyhow::Error, original: &str) -> anyhow::Error {
+    if error.downcast_ref::<crate::process::Cancelled>().is_some()
+        || error.downcast_ref::<crate::process::CleanupIncomplete>().is_some()
+        || error.downcast_ref::<crate::persistence::Busy>().is_some()
+    {
+        error.context(original.to_owned())
+    } else {
+        anyhow::anyhow!("{original}\n\n{error}")
+    }
+}
+
 fn query_rot_identities() -> Result<Vec<RotIdentity>> {
-    let output = Command::new("rot")
-        .args(["ssh", "identities", "--json"])
-        .output()
-        .map_err(|error| {
-            if error.kind() == std::io::ErrorKind::NotFound {
-                anyhow::anyhow!(
-                    "Rot is not installed in PATH. Configure GitHub SSH normally or install Rot."
-                )
-            } else {
-                anyhow::anyhow!("could not query Rot-managed SSH identities: {error}")
-            }
-        })?;
+    let output = crate::process::execute(
+        Command::new("rot").args(["ssh", "identities", "--json"]),
+        crate::process::Mode::Capture { limit: 1024 * 1024 },
+        &crate::process::current_control(),
+    ).map_err(|error| {
+        if error.downcast_ref::<std::io::Error>().is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound) {
+            error.context("Rot is not installed in PATH. Configure GitHub SSH normally or install Rot.")
+        } else {
+            error.context("could not query Rot-managed SSH identities")
+        }
+    })?;
     if !output.status.success() {
         bail!("Rot could not inspect its managed GitHub SSH identities");
     }
@@ -592,6 +624,7 @@ fn select_rot_identity<P: Interaction + ?Sized>(
 
     let index = prompt
         .choose_identity(&identities)?
+        .ok_or(crate::process::Cancelled)
         .context("SSH identity selection was cancelled")?;
     if index >= identities.len() {
         anyhow::bail!("an invalid SSH identity was selected");
@@ -644,16 +677,19 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
-    Command::new("git")
-        .args(arguments)
-        .output()
-        .map_err(|error| {
-            if error.kind() == std::io::ErrorKind::NotFound {
-                anyhow::anyhow!("Git is required but was not found in PATH")
-            } else {
-                anyhow::anyhow!("could not execute Git: {error}")
-            }
-        })
+    raw_output_control(arguments, &crate::process::current_control())
+}
+
+fn raw_output_control<I, S>(arguments: I, control: &crate::process::Control) -> Result<Output>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    crate::process::execute(
+        Command::new("git").args(arguments),
+        crate::process::Mode::Capture { limit: 4 * 1024 * 1024 },
+        control,
+    ).context("could not execute Git (ensure Git is available in PATH)")
 }
 
 fn stdout_text(output: &Output) -> String {

@@ -915,3 +915,5 @@ CLI tests set `LOADBOT_CONFIG_HOME` to isolated temporary storage on every platf
 This optional override names the directory containing `shortcuts.toml`; when unset,
 normal platform configuration discovery is unchanged. Library callers can instead
 supply explicit directories with `Paths::with_directories`.
+
+Backend concurrency, persistence recovery, and observable process execution are described in [the Phase 2 backend notes](docs/phase2.md), including cancellation limits and pending verification.

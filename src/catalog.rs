@@ -113,25 +113,33 @@ pub struct ResolvedTool {
 
 pub fn load(path: &Path) -> Result<CatalogFile> {
     reject_symlink(path)?;
-    let contents = fs::read_to_string(path)
+    let contents = crate::persistence::read_optional(path)?
         .with_context(|| format!("could not read catalog file {}", path.display()))?;
     parse(&contents, path)
 }
 
 pub fn load_or_default(path: &Path) -> Result<CatalogFile> {
     reject_symlink(path)?;
-    match fs::read_to_string(path) {
-        Ok(contents) => parse(&contents, path),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(CatalogFile::default()),
-        Err(error) => {
-            Err(error).with_context(|| format!("could not read catalog file {}", path.display()))
-        }
+    match crate::persistence::read_optional(path)? {
+        Some(contents) => parse(&contents, path),
+        None => Ok(CatalogFile::default()),
     }
 }
 
 pub fn save(path: &Path, catalog: &CatalogFile) -> Result<()> {
     reject_symlink(path)?;
     config::save_toml(path, catalog)
+}
+
+/// Edit a catalog under its repository lease. Do not prompt or call repository
+/// operations inside the callback. Whole-document `save` is a low-level writer.
+pub fn update<T>(path: &Path, change: impl FnOnce(&mut CatalogFile) -> Result<T>) -> Result<T> {
+    let repository = path.parent().context("catalog path has no repository directory")?;
+    let _lease = crate::persistence::Lease::acquire(repository)?;
+    let mut catalog = load_or_default(path)?;
+    let result = change(&mut catalog)?;
+    save(path, &catalog)?;
+    Ok(result)
 }
 
 fn reject_symlink(path: &Path) -> Result<()> {

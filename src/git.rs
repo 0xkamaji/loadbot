@@ -1111,10 +1111,17 @@ mod tests {
 
     #[test]
     fn rot_document_accepts_empty_results_and_rejects_malformed_contracts() {
-        assert!(parse_rot_identities(br#"{"version":1,"identities":[]}"#).unwrap().is_empty());
+        assert!(
+            parse_rot_identities(br#"{"version":1,"identities":[]}"#)
+                .unwrap()
+                .is_empty()
+        );
         for document in [
-            b"not JSON".as_slice(), b"[]", br#"{"identities":[]}"#,
-            br#"{"version":1}"#, br#"{"version":1,"identities":[{"alias":"github-work"}]}"#,
+            b"not JSON".as_slice(),
+            b"[]",
+            br#"{"identities":[]}"#,
+            br#"{"version":1}"#,
+            br#"{"version":1,"identities":[{"alias":"github-work"}]}"#,
         ] {
             assert!(parse_rot_identities(document).is_err());
         }

@@ -1,0 +1,785 @@
+{
+  "version": "1.0.0",
+  "application": "Standalone Loadbot GUI",
+  "path_base": "All file and pieces paths are relative to the loadbot-gui package root, not this spec directory.",
+  "pixel_unit": 1,
+  "scaling": "nearest-neighbor; integer UI zoom preferred",
+  "states": [
+    "default",
+    "hover",
+    "pressed",
+    "selected",
+    "disabled"
+  ],
+  "theme": {
+    "text": "#dfc6a0",
+    "text_selected": "#171512",
+    "text_disabled": "#897962",
+    "surface": "#171512"
+  },
+  "terminal_text": "#211c16",
+  "font": {
+    "file": "fonts/DejaVuSansMono.ttf",
+    "family": "DejaVu Sans Mono",
+    "body_px": 14,
+    "button_px": 14,
+    "title_px": 18,
+    "line_height": 1.4,
+    "note": "Bundled reproducible implementation font. Generated references have approximate pixel lettering; do not copy letters out of PNGs."
+  },
+  "slice_order": [
+    "top",
+    "right",
+    "bottom",
+    "left"
+  ],
+  "assets": [
+    {
+      "id": "loadbot.buttons.default",
+      "file": "assets/ui/buttons/default.png",
+      "width": 96,
+      "height": 40,
+      "role": "Blank button skin; render its label in code.",
+      "alpha": "RGBA; opaque skin, transparent exterior",
+      "sha256": "1b3e63a3ec8420c9b485f1dc51e4ed5debc12173e9eb6a7447443df4e33f9ce9",
+      "nine_slice": [
+        6,
+        6,
+        6,
+        6
+      ],
+      "minimum_size": [
+        13,
+        13
+      ],
+      "content_padding": [
+        8,
+        12,
+        8,
+        12
+      ],
+      "resize_mode": "keep corners; stretch edges/center with nearest-neighbor",
+      "pieces": {
+        "top-left": "assets/ui/slices/buttons/default/top-left.png",
+        "top-center": "assets/ui/slices/buttons/default/top-center.png",
+        "top-right": "assets/ui/slices/buttons/default/top-right.png",
+        "middle-left": "assets/ui/slices/buttons/default/middle-left.png",
+        "middle-center": "assets/ui/slices/buttons/default/middle-center.png",
+        "middle-right": "assets/ui/slices/buttons/default/middle-right.png",
+        "bottom-left": "assets/ui/slices/buttons/default/bottom-left.png",
+        "bottom-center": "assets/ui/slices/buttons/default/bottom-center.png",
+        "bottom-right": "assets/ui/slices/buttons/default/bottom-right.png"
+      },
+      "text_color": "#dfc6a0"
+    },
+    {
+      "id": "loadbot.buttons.hover",
+      "file": "assets/ui/buttons/hover.png",
+      "width": 96,
+      "height": 40,
+      "role": "Blank button skin; render its label in code.",
+      "alpha": "RGBA; opaque skin, transparent exterior",
+      "sha256": "387166e19f0263d7680d6552435f7558f85da3f327aca07755725f3b5bde835c",
+      "nine_slice": [
+        6,
+        6,
+        6,
+        6
+      ],
+      "minimum_size": [
+        13,
+        13
+      ],
+      "content_padding": [
+        8,
+        12,
+        8,
+        12
+      ],
+      "resize_mode": "keep corners; stretch edges/center with nearest-neighbor",
+      "pieces": {
+        "top-left": "assets/ui/slices/buttons/hover/top-left.png",
+        "top-center": "assets/ui/slices/buttons/hover/top-center.png",
+        "top-right": "assets/ui/slices/buttons/hover/top-right.png",
+        "middle-left": "assets/ui/slices/buttons/hover/middle-left.png",
+        "middle-center": "assets/ui/slices/buttons/hover/middle-center.png",
+        "middle-right": "assets/ui/slices/buttons/hover/middle-right.png",
+        "bottom-left": "assets/ui/slices/buttons/hover/bottom-left.png",
+        "bottom-center": "assets/ui/slices/buttons/hover/bottom-center.png",
+        "bottom-right": "assets/ui/slices/buttons/hover/bottom-right.png"
+      },
+      "text_color": "#dfc6a0"
+    },
+    {
+      "id": "loadbot.buttons.pressed",
+      "file": "assets/ui/buttons/pressed.png",
+      "width": 96,
+      "height": 40,
+      "role": "Blank button skin; render its label in code.",
+      "alpha": "RGBA; opaque skin, transparent exterior",
+      "sha256": "80783f5b942ace2c4e86d07333566781b123982d1b2cde8165ded1f036083616",
+      "nine_slice": [
+        6,
+        6,
+        6,
+        6
+      ],
+      "minimum_size": [
+        13,
+        13
+      ],
+      "content_padding": [
+        8,
+        12,
+        8,
+        12
+      ],
+      "resize_mode": "keep corners; stretch edges/center with nearest-neighbor",
+      "pieces": {
+        "top-left": "assets/ui/slices/buttons/pressed/top-left.png",
+        "top-center": "assets/ui/slices/buttons/pressed/top-center.png",
+        "top-right": "assets/ui/slices/buttons/pressed/top-right.png",
+        "middle-left": "assets/ui/slices/buttons/pressed/middle-left.png",
+        "middle-center": "assets/ui/slices/buttons/pressed/middle-center.png",
+        "middle-right": "assets/ui/slices/buttons/pressed/middle-right.png",
+        "bottom-left": "assets/ui/slices/buttons/pressed/bottom-left.png",
+        "bottom-center": "assets/ui/slices/buttons/pressed/bottom-center.png",
+        "bottom-right": "assets/ui/slices/buttons/pressed/bottom-right.png"
+      },
+      "text_color": "#dfc6a0"
+    },
+    {
+      "id": "loadbot.buttons.selected",
+      "file": "assets/ui/buttons/selected.png",
+      "width": 96,
+      "height": 40,
+      "role": "Blank button skin; render its label in code.",
+      "alpha": "RGBA; opaque skin, transparent exterior",
+      "sha256": "8ab30f0a931eff95d7eb2fc655d30c1b796b9ac1e3cc2832b7df7fd3739ec8f4",
+      "nine_slice": [
+        6,
+        6,
+        6,
+        6
+      ],
+      "minimum_size": [
+        13,
+        13
+      ],
+      "content_padding": [
+        8,
+        12,
+        8,
+        12
+      ],
+      "resize_mode": "keep corners; stretch edges/center with nearest-neighbor",
+      "pieces": {
+        "top-left": "assets/ui/slices/buttons/selected/top-left.png",
+        "top-center": "assets/ui/slices/buttons/selected/top-center.png",
+        "top-right": "assets/ui/slices/buttons/selected/top-right.png",
+        "middle-left": "assets/ui/slices/buttons/selected/middle-left.png",
+        "middle-center": "assets/ui/slices/buttons/selected/middle-center.png",
+        "middle-right": "assets/ui/slices/buttons/selected/middle-right.png",
+        "bottom-left": "assets/ui/slices/buttons/selected/bottom-left.png",
+        "bottom-center": "assets/ui/slices/buttons/selected/bottom-center.png",
+        "bottom-right": "assets/ui/slices/buttons/selected/bottom-right.png"
+      },
+      "text_color": "#171512"
+    },
+    {
+      "id": "loadbot.buttons.disabled",
+      "file": "assets/ui/buttons/disabled.png",
+      "width": 96,
+      "height": 40,
+      "role": "Blank button skin; render its label in code.",
+      "alpha": "RGBA; opaque skin, transparent exterior",
+      "sha256": "c42951ac903e6878e8bf80286d5a24d43f978e7248af82695c3ea3f4ed9192f4",
+      "nine_slice": [
+        6,
+        6,
+        6,
+        6
+      ],
+      "minimum_size": [
+        13,
+        13
+      ],
+      "content_padding": [
+        8,
+        12,
+        8,
+        12
+      ],
+      "resize_mode": "keep corners; stretch edges/center with nearest-neighbor",
+      "pieces": {
+        "top-left": "assets/ui/slices/buttons/disabled/top-left.png",
+        "top-center": "assets/ui/slices/buttons/disabled/top-center.png",
+        "top-right": "assets/ui/slices/buttons/disabled/top-right.png",
+        "middle-left": "assets/ui/slices/buttons/disabled/middle-left.png",
+        "middle-center": "assets/ui/slices/buttons/disabled/middle-center.png",
+        "middle-right": "assets/ui/slices/buttons/disabled/middle-right.png",
+        "bottom-left": "assets/ui/slices/buttons/disabled/bottom-left.png",
+        "bottom-center": "assets/ui/slices/buttons/disabled/bottom-center.png",
+        "bottom-right": "assets/ui/slices/buttons/disabled/bottom-right.png"
+      },
+      "text_color": "#897962"
+    },
+    {
+      "id": "loadbot.frames.window",
+      "file": "assets/ui/frames/window.png",
+      "width": 128,
+      "height": 96,
+      "role": "Outer window skin; titlebar, controls and content remain separate.",
+      "alpha": "RGBA; opaque skin, transparent exterior",
+      "sha256": "4b342e57db487da2228ca6e25836d17c7feaa3fe14a8c34b60e9b205695e76a1",
+      "nine_slice": [
+        12,
+        12,
+        12,
+        12
+      ],
+      "minimum_size": [
+        25,
+        25
+      ],
+      "content_padding": [
+        16,
+        16,
+        16,
+        16
+      ],
+      "resize_mode": "keep corners; stretch edges/center with nearest-neighbor",
+      "pieces": {
+        "top-left": "assets/ui/slices/frames/window/top-left.png",
+        "top-center": "assets/ui/slices/frames/window/top-center.png",
+        "top-right": "assets/ui/slices/frames/window/top-right.png",
+        "middle-left": "assets/ui/slices/frames/window/middle-left.png",
+        "middle-center": "assets/ui/slices/frames/window/middle-center.png",
+        "middle-right": "assets/ui/slices/frames/window/middle-right.png",
+        "bottom-left": "assets/ui/slices/frames/window/bottom-left.png",
+        "bottom-center": "assets/ui/slices/frames/window/bottom-center.png",
+        "bottom-right": "assets/ui/slices/frames/window/bottom-right.png"
+      },
+      "text_color": "#dfc6a0"
+    },
+    {
+      "id": "loadbot.frames.panel",
+      "file": "assets/ui/frames/panel.png",
+      "width": 96,
+      "height": 64,
+      "role": "Reusable inset panel.",
+      "alpha": "RGBA; opaque skin, transparent exterior",
+      "sha256": "cfad9356ef68be9a47ce7afdd7c6956c33c99e5c98b3041bd969fe5a06056f0d",
+      "nine_slice": [
+        8,
+        8,
+        8,
+        8
+      ],
+      "minimum_size": [
+        17,
+        17
+      ],
+      "content_padding": [
+        12,
+        12,
+        12,
+        12
+      ],
+      "resize_mode": "keep corners; stretch edges/center with nearest-neighbor",
+      "pieces": {
+        "top-left": "assets/ui/slices/frames/panel/top-left.png",
+        "top-center": "assets/ui/slices/frames/panel/top-center.png",
+        "top-right": "assets/ui/slices/frames/panel/top-right.png",
+        "middle-left": "assets/ui/slices/frames/panel/middle-left.png",
+        "middle-center": "assets/ui/slices/frames/panel/middle-center.png",
+        "middle-right": "assets/ui/slices/frames/panel/middle-right.png",
+        "bottom-left": "assets/ui/slices/frames/panel/bottom-left.png",
+        "bottom-center": "assets/ui/slices/frames/panel/bottom-center.png",
+        "bottom-right": "assets/ui/slices/frames/panel/bottom-right.png"
+      },
+      "text_color": "#dfc6a0"
+    },
+    {
+      "id": "loadbot.inputs.default",
+      "file": "assets/ui/inputs/default.png",
+      "width": 128,
+      "height": 40,
+      "role": "Text/select field background.",
+      "alpha": "RGBA; opaque skin, transparent exterior",
+      "sha256": "641026784a2a52a5a903d7233d84b2ec97edaf3bc801b5e28e5dcdd1fccc6c7b",
+      "nine_slice": [
+        8,
+        8,
+        8,
+        8
+      ],
+      "minimum_size": [
+        17,
+        17
+      ],
+      "content_padding": [
+        10,
+        12,
+        10,
+        12
+      ],
+      "resize_mode": "keep corners; stretch edges/center with nearest-neighbor",
+      "pieces": {
+        "top-left": "assets/ui/slices/inputs/default/top-left.png",
+        "top-center": "assets/ui/slices/inputs/default/top-center.png",
+        "top-right": "assets/ui/slices/inputs/default/top-right.png",
+        "middle-left": "assets/ui/slices/inputs/default/middle-left.png",
+        "middle-center": "assets/ui/slices/inputs/default/middle-center.png",
+        "middle-right": "assets/ui/slices/inputs/default/middle-right.png",
+        "bottom-left": "assets/ui/slices/inputs/default/bottom-left.png",
+        "bottom-center": "assets/ui/slices/inputs/default/bottom-center.png",
+        "bottom-right": "assets/ui/slices/inputs/default/bottom-right.png"
+      },
+      "text_color": "#dfc6a0"
+    },
+    {
+      "id": "loadbot.inputs.focus-ring",
+      "file": "assets/ui/inputs/focus-ring.png",
+      "width": 128,
+      "height": 40,
+      "role": "Overlay on default input for keyboard focus; center stays transparent.",
+      "alpha": "RGBA; opaque skin, transparent exterior",
+      "sha256": "dc3417294ba74be72600e7fd48881ac90678b2e8ebe871c80c279cc2240a744d",
+      "nine_slice": [
+        4,
+        4,
+        4,
+        4
+      ],
+      "minimum_size": [
+        9,
+        9
+      ],
+      "content_padding": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "resize_mode": "keep corners; stretch edges/center with nearest-neighbor",
+      "pieces": {
+        "top-left": "assets/ui/slices/inputs/focus-ring/top-left.png",
+        "top-center": "assets/ui/slices/inputs/focus-ring/top-center.png",
+        "top-right": "assets/ui/slices/inputs/focus-ring/top-right.png",
+        "middle-left": "assets/ui/slices/inputs/focus-ring/middle-left.png",
+        "middle-center": "assets/ui/slices/inputs/focus-ring/middle-center.png",
+        "middle-right": "assets/ui/slices/inputs/focus-ring/middle-right.png",
+        "bottom-left": "assets/ui/slices/inputs/focus-ring/bottom-left.png",
+        "bottom-center": "assets/ui/slices/inputs/focus-ring/bottom-center.png",
+        "bottom-right": "assets/ui/slices/inputs/focus-ring/bottom-right.png"
+      },
+      "text_color": "#dfc6a0"
+    },
+    {
+      "id": "loadbot.inputs.disabled",
+      "file": "assets/ui/inputs/disabled.png",
+      "width": 128,
+      "height": 40,
+      "role": "Disabled input skin; also set native disabled.",
+      "alpha": "RGBA; opaque skin, transparent exterior",
+      "sha256": "603fcf3e017bfa3e691e6ca85e62db29c0d6bcbf517d9b43f1217b0e26ad76f9",
+      "nine_slice": [
+        8,
+        8,
+        8,
+        8
+      ],
+      "minimum_size": [
+        17,
+        17
+      ],
+      "content_padding": [
+        10,
+        12,
+        10,
+        12
+      ],
+      "resize_mode": "keep corners; stretch edges/center with nearest-neighbor",
+      "pieces": {
+        "top-left": "assets/ui/slices/inputs/disabled/top-left.png",
+        "top-center": "assets/ui/slices/inputs/disabled/top-center.png",
+        "top-right": "assets/ui/slices/inputs/disabled/top-right.png",
+        "middle-left": "assets/ui/slices/inputs/disabled/middle-left.png",
+        "middle-center": "assets/ui/slices/inputs/disabled/middle-center.png",
+        "middle-right": "assets/ui/slices/inputs/disabled/middle-right.png",
+        "bottom-left": "assets/ui/slices/inputs/disabled/bottom-left.png",
+        "bottom-center": "assets/ui/slices/inputs/disabled/bottom-center.png",
+        "bottom-right": "assets/ui/slices/inputs/disabled/bottom-right.png"
+      },
+      "text_color": "#897962"
+    },
+    {
+      "id": "loadbot.menus.selected",
+      "file": "assets/ui/menus/selected.png",
+      "width": 128,
+      "height": 36,
+      "role": "Selected row background; add selection arrow and label separately.",
+      "alpha": "RGBA; opaque skin, transparent exterior",
+      "sha256": "260fd81c900e828b55d9f53c1786794ebd522615e9280c3ffe38e164b2422ef5",
+      "nine_slice": [
+        6,
+        6,
+        6,
+        6
+      ],
+      "minimum_size": [
+        13,
+        13
+      ],
+      "content_padding": [
+        8,
+        12,
+        8,
+        12
+      ],
+      "resize_mode": "keep corners; stretch edges/center with nearest-neighbor",
+      "pieces": {
+        "top-left": "assets/ui/slices/menus/selected/top-left.png",
+        "top-center": "assets/ui/slices/menus/selected/top-center.png",
+        "top-right": "assets/ui/slices/menus/selected/top-right.png",
+        "middle-left": "assets/ui/slices/menus/selected/middle-left.png",
+        "middle-center": "assets/ui/slices/menus/selected/middle-center.png",
+        "middle-right": "assets/ui/slices/menus/selected/middle-right.png",
+        "bottom-left": "assets/ui/slices/menus/selected/bottom-left.png",
+        "bottom-center": "assets/ui/slices/menus/selected/bottom-center.png",
+        "bottom-right": "assets/ui/slices/menus/selected/bottom-right.png"
+      },
+      "text_color": "#171512"
+    },
+    {
+      "id": "loadbot.menus.hover",
+      "file": "assets/ui/menus/hover.png",
+      "width": 128,
+      "height": 36,
+      "role": "Hover row background.",
+      "alpha": "RGBA; opaque skin, transparent exterior",
+      "sha256": "e9b6e90d41bc08a83e0da330341bbe1995b086620958e1efec723ccc19ef6011",
+      "nine_slice": [
+        6,
+        6,
+        6,
+        6
+      ],
+      "minimum_size": [
+        13,
+        13
+      ],
+      "content_padding": [
+        8,
+        12,
+        8,
+        12
+      ],
+      "resize_mode": "keep corners; stretch edges/center with nearest-neighbor",
+      "pieces": {
+        "top-left": "assets/ui/slices/menus/hover/top-left.png",
+        "top-center": "assets/ui/slices/menus/hover/top-center.png",
+        "top-right": "assets/ui/slices/menus/hover/top-right.png",
+        "middle-left": "assets/ui/slices/menus/hover/middle-left.png",
+        "middle-center": "assets/ui/slices/menus/hover/middle-center.png",
+        "middle-right": "assets/ui/slices/menus/hover/middle-right.png",
+        "bottom-left": "assets/ui/slices/menus/hover/bottom-left.png",
+        "bottom-center": "assets/ui/slices/menus/hover/bottom-center.png",
+        "bottom-right": "assets/ui/slices/menus/hover/bottom-right.png"
+      },
+      "text_color": "#dfc6a0"
+    },
+    {
+      "id": "loadbot.icons.close",
+      "file": "assets/ui/icons/close.png",
+      "width": 16,
+      "height": 16,
+      "role": "Fixed 16px icon. Use inverse variant on selected fills.",
+      "alpha": "RGBA; opaque skin, transparent exterior",
+      "sha256": "ceceb464de68806a9a69f6c21e1b67c31d49567d15e579bbe789e1a3e14af80e",
+      "text_color": "#dfc6a0"
+    },
+    {
+      "id": "loadbot.icons-inverse.close",
+      "file": "assets/ui/icons-inverse/close.png",
+      "width": 16,
+      "height": 16,
+      "role": "Fixed 16px icon for selected/contrasting fills.",
+      "alpha": "RGBA; opaque skin, transparent exterior",
+      "sha256": "61df2bc446af343e07cd61d1f12efba92b4db27f0da02023bee01dcab90dd551",
+      "text_color": "#dfc6a0"
+    },
+    {
+      "id": "loadbot.icons.minimize",
+      "file": "assets/ui/icons/minimize.png",
+      "width": 16,
+      "height": 16,
+      "role": "Fixed 16px icon. Use inverse variant on selected fills.",
+      "alpha": "RGBA; opaque skin, transparent exterior",
+      "sha256": "c353f42bba09ad0b985c97ca4c181e1e87dc85160838dce23dfb12bcf4b341e2",
+      "text_color": "#dfc6a0"
+    },
+    {
+      "id": "loadbot.icons-inverse.minimize",
+      "file": "assets/ui/icons-inverse/minimize.png",
+      "width": 16,
+      "height": 16,
+      "role": "Fixed 16px icon for selected/contrasting fills.",
+      "alpha": "RGBA; opaque skin, transparent exterior",
+      "sha256": "e83345cf05a7592d030dd49ed418a2b868d57962a04889739a8830d79b8b549a",
+      "text_color": "#dfc6a0"
+    },
+    {
+      "id": "loadbot.icons.maximize",
+      "file": "assets/ui/icons/maximize.png",
+      "width": 16,
+      "height": 16,
+      "role": "Fixed 16px icon. Use inverse variant on selected fills.",
+      "alpha": "RGBA; opaque skin, transparent exterior",
+      "sha256": "1a92428f190b931b78cf6a3ea221641af7f744f84e9bef1dcd518c0648ab60f3",
+      "text_color": "#dfc6a0"
+    },
+    {
+      "id": "loadbot.icons-inverse.maximize",
+      "file": "assets/ui/icons-inverse/maximize.png",
+      "width": 16,
+      "height": 16,
+      "role": "Fixed 16px icon for selected/contrasting fills.",
+      "alpha": "RGBA; opaque skin, transparent exterior",
+      "sha256": "7719e430662a20e470cf516a4d165dece96d1635f298c568ad7993fd5e0b4a0e",
+      "text_color": "#dfc6a0"
+    },
+    {
+      "id": "loadbot.icons.arrow-right",
+      "file": "assets/ui/icons/arrow-right.png",
+      "width": 16,
+      "height": 16,
+      "role": "Fixed 16px icon. Use inverse variant on selected fills.",
+      "alpha": "RGBA; opaque skin, transparent exterior",
+      "sha256": "c6c3667f8923100752adaf28ca7e02f99d61420b950aac980d6df39f5ee4a148",
+      "text_color": "#dfc6a0"
+    },
+    {
+      "id": "loadbot.icons-inverse.arrow-right",
+      "file": "assets/ui/icons-inverse/arrow-right.png",
+      "width": 16,
+      "height": 16,
+      "role": "Fixed 16px icon for selected/contrasting fills.",
+      "alpha": "RGBA; opaque skin, transparent exterior",
+      "sha256": "cf68e8607462ca5bd46a7ce342c1550d15d3151b8ae771da4a45364fa5c6d2cd",
+      "text_color": "#dfc6a0"
+    },
+    {
+      "id": "loadbot.icons.chevron-down",
+      "file": "assets/ui/icons/chevron-down.png",
+      "width": 16,
+      "height": 16,
+      "role": "Fixed 16px icon. Use inverse variant on selected fills.",
+      "alpha": "RGBA; opaque skin, transparent exterior",
+      "sha256": "5940acd97402abcaacd5bc68f13618d55c0a533a7643d5f89ca87e16360f047d",
+      "text_color": "#dfc6a0"
+    },
+    {
+      "id": "loadbot.icons-inverse.chevron-down",
+      "file": "assets/ui/icons-inverse/chevron-down.png",
+      "width": 16,
+      "height": 16,
+      "role": "Fixed 16px icon for selected/contrasting fills.",
+      "alpha": "RGBA; opaque skin, transparent exterior",
+      "sha256": "f67d9d99f1f70d2f777754dc128bece8f42e4b17aa7ff2965d11dcf027cd7a4b",
+      "text_color": "#dfc6a0"
+    },
+    {
+      "id": "loadbot.icons.folder",
+      "file": "assets/ui/icons/folder.png",
+      "width": 16,
+      "height": 16,
+      "role": "Fixed 16px icon. Use inverse variant on selected fills.",
+      "alpha": "RGBA; opaque skin, transparent exterior",
+      "sha256": "1810bd2d9fc982ea60459b23bf5e0457ce6e6104f89b29f5b3846f4044813171",
+      "text_color": "#dfc6a0"
+    },
+    {
+      "id": "loadbot.icons-inverse.folder",
+      "file": "assets/ui/icons-inverse/folder.png",
+      "width": 16,
+      "height": 16,
+      "role": "Fixed 16px icon for selected/contrasting fills.",
+      "alpha": "RGBA; opaque skin, transparent exterior",
+      "sha256": "6012f69e55d4ab11d0fc1cf3be02e00ab630f6bfb58946003434656563cd019b",
+      "text_color": "#dfc6a0"
+    },
+    {
+      "id": "loadbot.icons.terminal",
+      "file": "assets/ui/icons/terminal.png",
+      "width": 16,
+      "height": 16,
+      "role": "Fixed 16px icon. Use inverse variant on selected fills.",
+      "alpha": "RGBA; opaque skin, transparent exterior",
+      "sha256": "5289baeaceb973ed61aa01e4c353214273057dacbc962deaaf9836a4298454e7",
+      "text_color": "#dfc6a0"
+    },
+    {
+      "id": "loadbot.icons-inverse.terminal",
+      "file": "assets/ui/icons-inverse/terminal.png",
+      "width": 16,
+      "height": 16,
+      "role": "Fixed 16px icon for selected/contrasting fills.",
+      "alpha": "RGBA; opaque skin, transparent exterior",
+      "sha256": "d24379758c6878d5f6c51cefc4a3b0dd0b04cf8ee3b5ba9c2c71c5d8b5a2f1f5",
+      "text_color": "#dfc6a0"
+    },
+    {
+      "id": "loadbot.icons.check",
+      "file": "assets/ui/icons/check.png",
+      "width": 16,
+      "height": 16,
+      "role": "Fixed 16px icon. Use inverse variant on selected fills.",
+      "alpha": "RGBA; opaque skin, transparent exterior",
+      "sha256": "283b405d41f64913cfc453bd17ae5a6523a8dae9f1790d4ca08d50e19c8e974e",
+      "text_color": "#dfc6a0"
+    },
+    {
+      "id": "loadbot.icons-inverse.check",
+      "file": "assets/ui/icons-inverse/check.png",
+      "width": 16,
+      "height": 16,
+      "role": "Fixed 16px icon for selected/contrasting fills.",
+      "alpha": "RGBA; opaque skin, transparent exterior",
+      "sha256": "fd48c7f26b35375124012175116add838b00fd0216953b7c83416333dfa99be1",
+      "text_color": "#dfc6a0"
+    },
+    {
+      "id": "loadbot.checkboxes.unchecked",
+      "file": "assets/ui/checkboxes/unchecked.png",
+      "width": 24,
+      "height": 24,
+      "role": "Fixed 24px checkbox skin; native checked/disabled semantics are supplied by code.",
+      "alpha": "RGBA; opaque skin, transparent exterior",
+      "sha256": "61e41e7578350e3d4e4d07dbc468c9c44374f1f268ca5eb197155cf67e443c8e",
+      "text_color": "#dfc6a0"
+    },
+    {
+      "id": "loadbot.checkboxes.checked",
+      "file": "assets/ui/checkboxes/checked.png",
+      "width": 24,
+      "height": 24,
+      "role": "Fixed 24px checkbox skin; native checked/disabled semantics are supplied by code.",
+      "alpha": "RGBA; opaque skin, transparent exterior",
+      "sha256": "7a0e0fb96e090d487738251a003485c07ca5e754e70408d25514d7074aa78839",
+      "text_color": "#dfc6a0"
+    },
+    {
+      "id": "loadbot.checkboxes.disabled",
+      "file": "assets/ui/checkboxes/disabled.png",
+      "width": 24,
+      "height": 24,
+      "role": "Fixed 24px checkbox skin; native checked/disabled semantics are supplied by code.",
+      "alpha": "RGBA; opaque skin, transparent exterior",
+      "sha256": "467289a238106666e35beaf2e1c133ca1ea69c5605dd57b8819193782881d8ba",
+      "text_color": "#897962"
+    },
+    {
+      "id": "loadbot.frames.titlebar",
+      "file": "assets/ui/frames/titlebar.png",
+      "width": 128,
+      "height": 36,
+      "role": "Blank titlebar strip; add title and window-control buttons in code.",
+      "alpha": "RGBA; opaque skin, transparent exterior",
+      "sha256": "1fc565fa8eb41690121de1f963e528d1f59f1290a222cbeb710cfb5a9e864fad",
+      "nine_slice": [
+        8,
+        8,
+        8,
+        8
+      ],
+      "minimum_size": [
+        17,
+        17
+      ],
+      "content_padding": [
+        8,
+        12,
+        8,
+        12
+      ],
+      "resize_mode": "keep corners; stretch edges/center with nearest-neighbor",
+      "pieces": {
+        "top-left": "assets/ui/slices/frames/titlebar/top-left.png",
+        "top-center": "assets/ui/slices/frames/titlebar/top-center.png",
+        "top-right": "assets/ui/slices/frames/titlebar/top-right.png",
+        "middle-left": "assets/ui/slices/frames/titlebar/middle-left.png",
+        "middle-center": "assets/ui/slices/frames/titlebar/middle-center.png",
+        "middle-right": "assets/ui/slices/frames/titlebar/middle-right.png",
+        "bottom-left": "assets/ui/slices/frames/titlebar/bottom-left.png",
+        "bottom-center": "assets/ui/slices/frames/titlebar/bottom-center.png",
+        "bottom-right": "assets/ui/slices/frames/titlebar/bottom-right.png"
+      },
+      "text_color": "#dfc6a0"
+    },
+    {
+      "id": "shared.terminal.panel",
+      "file": "assets/terminal/panel.png",
+      "width": 96,
+      "height": 64,
+      "role": "Beige terminal panel in both themes; use dark text.",
+      "alpha": "RGBA; opaque skin, transparent exterior",
+      "sha256": "c69ad70404fb51849c1cb781cf4d07016f7609c8c74ac4d6bd4825a1ae04a8b5",
+      "nine_slice": [
+        8,
+        8,
+        8,
+        8
+      ],
+      "minimum_size": [
+        17,
+        17
+      ],
+      "content_padding": [
+        12,
+        12,
+        12,
+        12
+      ],
+      "resize_mode": "keep corners; stretch edges/center with nearest-neighbor",
+      "pieces": {
+        "top-left": "assets/terminal/slices/panel/top-left.png",
+        "top-center": "assets/terminal/slices/panel/top-center.png",
+        "top-right": "assets/terminal/slices/panel/top-right.png",
+        "middle-left": "assets/terminal/slices/panel/middle-left.png",
+        "middle-center": "assets/terminal/slices/panel/middle-center.png",
+        "middle-right": "assets/terminal/slices/panel/middle-right.png",
+        "bottom-left": "assets/terminal/slices/panel/bottom-left.png",
+        "bottom-center": "assets/terminal/slices/panel/bottom-center.png",
+        "bottom-right": "assets/terminal/slices/panel/bottom-right.png"
+      },
+      "text_color": "#211c16"
+    },
+    {
+      "id": "loadbot.branding.loadbot-idle",
+      "file": "assets/branding/loadbot-idle.png",
+      "width": 1211,
+      "height": 1299,
+      "role": "Approved full-resolution transparent mascot; static branding only in this application.",
+      "alpha": "RGBA",
+      "sha256": "086fc0d2a575a1c1fc440961cdeba0506fa85e8b021a1ba883f187f5a1d67628",
+      "resize_mode": "preserve aspect ratio; nearest-neighbor; never stretch to fill"
+    },
+    {
+      "id": "loadbot.branding.loadbot-header",
+      "file": "assets/branding/loadbot-header.png",
+      "width": 100,
+      "height": 100,
+      "role": "Existing compact transparent header mascot derivative; static branding.",
+      "alpha": "RGBA",
+      "sha256": "b0f750b2771b39d552fb1cad8a8b15b28a7fc20330dcd93cf04bbb0091dcfc04",
+      "resize_mode": "preserve aspect ratio; nearest-neighbor; never stretch to fill"
+    }
+  ],
+  "provenance": {
+    "ui": "Copied unchanged from approved rot-loadbot-ui-assets-v1 Loadbot controls and shared terminal skin. Original source atlas is not needed at runtime.",
+    "branding": "Copied from existing transparent Loadbot assets.",
+    "references": "User-supplied main window and interface kit. See references/README.md for standalone overrides."
+  }
+}

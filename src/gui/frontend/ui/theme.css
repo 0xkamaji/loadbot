@@ -112,7 +112,7 @@
   flex: 0 0 auto; max-height: 26%; overflow: auto;
   border: solid transparent; border-width: var(--shared-terminal-panel-border);
   border-image: var(--shared-terminal-panel) var(--shared-terminal-panel-slice) fill stretch;
-  padding: var(--shared-terminal-panel-padding); color: var(--lb-terminal-text);
+  padding: var(--shared-terminal-panel-padding); background-color: var(--lb-terminal-surface); color: var(--lb-terminal-text);
 }
 .lb-drawer h2 { font-size: 14px; font-weight: bold; }
 .lb-drawer p { margin-top: var(--lb-space-2); font-size: 12px; }

@@ -179,7 +179,7 @@ export function LoadbotMenuView({ state, actions, host, mode, workspaceLayoutSto
     </div>
     <footer className="lb-toolbar">
       <Button aria-expanded={drawerOpen} aria-controls={drawerId} aria-pressed={drawerOpen} onClick={actions.toggleDrawer}>
-        <Icon name="terminal" inverse={drawerOpen} />Terminal
+        <Icon name="terminal" inverse={drawerOpen} />Console
       </Button>
       <span className="lb-note">{state.management.status === 'idle' ? 'Management writes are backend-authoritative. Execution is not connected.' : state.management.message}</span>
     </footer>

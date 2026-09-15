@@ -3,7 +3,7 @@
 use anyhow::Context;
 use loadbot::{
     catalog::Runner,
-    interaction::{OperationContext, Unattended},
+    interaction::{Interaction, Notice, OperationContext, Unattended},
     launcher::{self, Project},
     operations::{self, CatalogState, ShortcutIdentity},
     paths::Paths,
@@ -15,6 +15,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tauri::Manager;
+use tauri::ipc::Channel;
 
 const WORKSPACE_LAYOUT_FILE: &str = "workspace-layout-v1.json";
 const MAX_WORKSPACE_LAYOUT_BYTES: usize = 4096;
@@ -44,6 +45,61 @@ struct ProjectIdentity {
 #[derive(Debug, serde::Serialize)]
 struct CatalogIdentity {
     catalog: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BackendActivity {
+    stage: &'static str,
+    catalog: String,
+    detail: Option<String>,
+}
+
+struct DesktopInteraction {
+    activity: Option<Channel<BackendActivity>>,
+}
+
+impl Interaction for DesktopInteraction {
+    fn notice(&mut self, notice: &Notice) {
+        if let (Some(channel), Some(activity)) = (&self.activity, backend_activity(notice)) {
+            let _ = channel.send(activity);
+        }
+    }
+}
+
+fn backend_activity(notice: &Notice) -> Option<BackendActivity> {
+    Some(match notice {
+        Notice::CatalogSyncStarted { name } => BackendActivity {
+            stage: "validating",
+            catalog: name.clone(),
+            detail: None,
+        },
+        Notice::CatalogSyncRepositoryChecked { name } => BackendActivity {
+            stage: "repository-checked",
+            catalog: name.clone(),
+            detail: None,
+        },
+        Notice::CatalogSyncUpdateStarted { name } => BackendActivity {
+            stage: "updating-repository",
+            catalog: name.clone(),
+            detail: None,
+        },
+        Notice::CatalogCurrent { name, new_commit } => BackendActivity {
+            stage: "current",
+            catalog: name.clone(),
+            detail: Some(new_commit.clone()),
+        },
+        Notice::CatalogSynced {
+            name,
+            old_commit,
+            new_commit,
+        } => BackendActivity {
+            stage: "updated",
+            catalog: name.clone(),
+            detail: Some(format!("{old_commit} → {new_commit}")),
+        },
+        _ => return None,
+    })
 }
 
 #[tauri::command]
@@ -161,8 +217,11 @@ async fn add_loadbot_shortcut(
 }
 
 #[tauri::command]
-async fn sync_loadbot_catalog(catalog: String) -> Result<(), DesktopError> {
-    run_loadbot_worker("catalog sync", move |paths, context| {
+async fn sync_loadbot_catalog(
+    catalog: String,
+    on_activity: Channel<BackendActivity>,
+) -> Result<(), DesktopError> {
+    run_loadbot_worker_with_activity("catalog sync", Some(on_activity), move |paths, context| {
         operations::catalog_sync(paths, &catalog, context)?;
         Ok(())
     })
@@ -174,10 +233,22 @@ where
     T: Send + 'static,
     F: FnOnce(&Paths, &mut OperationContext<'_>) -> anyhow::Result<T> + Send + 'static,
 {
+    run_loadbot_worker_with_activity(label, None, operation).await
+}
+
+async fn run_loadbot_worker_with_activity<T, F>(
+    label: &'static str,
+    activity: Option<Channel<BackendActivity>>,
+    operation: F,
+) -> Result<T, DesktopError>
+where
+    T: Send + 'static,
+    F: FnOnce(&Paths, &mut OperationContext<'_>) -> anyhow::Result<T> + Send + 'static,
+{
     tauri::async_runtime::spawn_blocking(move || {
         let result = (|| -> anyhow::Result<T> {
             let paths = Paths::discover()?;
-            let mut policy = Unattended;
+            let mut policy = DesktopInteraction { activity };
             let mut context = OperationContext::new(&mut policy);
             context.process.terminal = false;
             context.run(|context| operation(&paths, context)).result
@@ -312,6 +383,26 @@ mod tests {
         #[cfg(target_os = "linux")]
         assert_eq!(command.get_program(), "xdg-open");
         assert_eq!(command.get_args().collect::<Vec<_>>(), [path.as_os_str()]);
+    }
+
+    #[test]
+    fn native_activity_maps_typed_core_sync_notices_without_cli_text() {
+        let checked = backend_activity(&Notice::CatalogSyncRepositoryChecked {
+            name: "personal".into(),
+        })
+        .unwrap();
+        assert_eq!(checked.stage, "repository-checked");
+        assert_eq!(checked.catalog, "personal");
+        assert!(checked.detail.is_none());
+
+        let updated = backend_activity(&Notice::CatalogSynced {
+            name: "personal".into(),
+            old_commit: "abc".into(),
+            new_commit: "def".into(),
+        })
+        .unwrap();
+        assert_eq!(updated.stage, "updated");
+        assert_eq!(updated.detail.as_deref(), Some("abc → def"));
     }
 
     #[test]

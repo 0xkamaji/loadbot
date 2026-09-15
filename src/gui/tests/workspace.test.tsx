@@ -82,6 +82,21 @@ describe('workspace pane dimensions', () => {
     expect(projects).toHaveAttribute('aria-valuenow', '272');
   });
 
+  it('switches Terminal and Activity without changing pane dimensions or persisted layout', async () => {
+    const write = vi.fn<WorkspaceLayoutStore['write']>(async () => {});
+    const store: WorkspaceLayoutStore = { read: async () => undefined, write };
+    render(<LoadbotMenu adapter={fixtureAdapter} mode="fixture" workspaceLayoutStore={store} />);
+    const terminalSize = await screen.findByRole('separator', { name: 'Resize terminal pane' });
+    const before = terminalSize.getAttribute('aria-valuenow');
+    fireEvent.click(screen.getByRole('tab', { name: 'ACTIVITY' }));
+    expect(screen.getByRole('tabpanel', { name: 'Activity' })).toHaveTextContent('No activity yet.');
+    expect(terminalSize).toHaveAttribute('aria-valuenow', before);
+    fireEvent.click(screen.getByRole('tab', { name: 'TERMINAL' }));
+    expect(screen.getByRole('tabpanel', { name: 'Terminal' })).toHaveTextContent('NOT CONNECTED');
+    expect(terminalSize).toHaveAttribute('aria-valuenow', before);
+    expect(write).not.toHaveBeenCalled();
+  });
+
   it('drags, clamps, supports the keyboard, and resets a focused splitter', () => {
     const change = vi.fn();
     const commit = vi.fn();

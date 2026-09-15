@@ -23,12 +23,12 @@ describe('injected menu outside Tauri', () => {
     await user.click(screen.getByRole('checkbox'));
     expect(screen.getByRole('status')).toHaveTextContent('Sample form ready');
     expect(screen.getByRole('button', { name: 'RUN SHORTCUT' })).toBeDisabled();
-    expect(screen.getByRole('region', { name: 'Terminal placeholder' })).toBeVisible();
+    expect(screen.getByRole('region', { name: 'Bottom workspace' })).toBeVisible();
     await user.click(screen.getByRole('button', { name: 'Terminal' }));
-    expect(screen.queryByRole('region', { name: 'Terminal placeholder' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Bottom workspace' })).not.toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Terminal' }));
-    expect(screen.getByRole('region', { name: 'Terminal placeholder' })).toBeVisible();
-    expect(screen.getByRole('region', { name: 'Terminal placeholder' })).not.toContainElement(screen.getByLabelText('Input folder *'));
+    expect(screen.getByRole('region', { name: 'Bottom workspace' })).toBeVisible();
+    expect(screen.getByRole('region', { name: 'Bottom workspace' })).not.toContainElement(screen.getByLabelText('Input folder *'));
     expect(screen.getByLabelText('Input folder *')).toHaveValue('samples/');
     expect(screen.getByRole('checkbox')).toBeChecked();
     await user.click(shortcutRows().getByRole('button', { name: 'Export strings' }));
@@ -154,7 +154,9 @@ describe('injected menu outside Tauri', () => {
 
     await user.click(screen.getByRole('button', { name: 'Catalog context: personal' }));
     await user.click(screen.getByRole('button', { name: 'SYNC CATALOG' }));
-    expect(managed.syncCatalog).toHaveBeenCalledWith('personal');
+    expect(managed.syncCatalog).toHaveBeenCalledWith('personal', expect.any(Function));
+    await vi.waitFor(() => expect(screen.getByRole('button', { name: '+ ADD PROJECT' })).toBeEnabled());
+    expect(screen.getByRole('tabpanel', { name: 'Activity' })).toHaveTextContent('Catalog state: personal · installed · writable');
     await user.click(screen.getByRole('button', { name: 'Catalog context: personal' }));
     await user.click(screen.getByRole('button', { name: '+ ADD CATALOG' }));
     await user.type(screen.getByLabelText('Catalog name *'), 'community');

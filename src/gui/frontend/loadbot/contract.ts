@@ -37,6 +37,14 @@ export interface CatalogIdentity { readonly catalog: string }
 export interface ProjectIdentity { readonly catalog: string; readonly tool: string }
 export interface ShortcutIdentity extends ProjectIdentity { readonly name: string; readonly path: string }
 
+export type CatalogSyncStage = 'validating' | 'repository-checked' | 'updating-repository' | 'current' | 'updated';
+export interface CatalogSyncActivity {
+  readonly stage: CatalogSyncStage;
+  readonly catalog: string;
+  readonly detail?: string;
+}
+export type CatalogSyncActivitySink = (activity: CatalogSyncActivity) => void;
+
 /** Backend capabilities are semantic and qualified; native paths never cross this seam.
  * Each read returns a complete, caller-owned inventory snapshot, or rejects.
  */
@@ -47,5 +55,5 @@ export interface LoadbotAdapter {
   addCatalog(input: AddCatalogInput): Promise<CatalogIdentity>;
   addProject(input: AddProjectInput): Promise<ProjectIdentity>;
   addShortcut(input: AddShortcutInput): Promise<ShortcutIdentity>;
-  syncCatalog(catalog: string): Promise<void>;
+  syncCatalog(catalog: string, onActivity?: CatalogSyncActivitySink): Promise<void>;
 }

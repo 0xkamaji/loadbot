@@ -26,7 +26,7 @@ test('approved skins, focus, scrolling, resizing, and drawer preserve a usable m
   await page.screenshot({ path: testInfo.outputPath('input-focus.png') });
   await page.getByRole('button', { name: 'Use sample input folder' }).click();
   await page.getByRole('checkbox').check();
-  await expect(page.getByRole('region', { name: 'Terminal placeholder' })).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Bottom workspace' })).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath('drawer-1000x680.png') });
   await page.getByRole('button', { name: 'Terminal', exact: true }).click();
   await expect(page.getByLabel('Input folder *')).toHaveValue('samples/');
@@ -46,7 +46,7 @@ test('approved skins, focus, scrolling, resizing, and drawer preserve a usable m
   for (const size of [{ width: 722, height: 480 }, { width: 420, height: 480 }]) {
     await page.setViewportSize(size);
     await page.getByRole('button', { name: 'Terminal', exact: true }).click();
-    await expect(page.getByRole('region', { name: 'Terminal placeholder' })).toBeVisible();
+    await expect(page.getByRole('region', { name: 'Bottom workspace' })).toBeVisible();
     await page.getByRole('button', { name: 'RUN SHORTCUT' }).scrollIntoViewIfNeeded();
     await expect(page.getByRole('button', { name: 'RUN SHORTCUT' })).toBeInViewport();
     await expect(page.getByRole('button', { name: 'Terminal', exact: true })).toBeInViewport();

@@ -1,7 +1,8 @@
-import { invoke, isTauri } from '@tauri-apps/api/core';
+import { Channel, invoke, isTauri } from '@tauri-apps/api/core';
 import type {
   AddCatalogInput, AddProjectInput, AddShortcutInput, CatalogIdentity, LoadbotAdapter,
-  LoadbotCatalog, LoadbotProject, LoadbotShortcut, ProjectIdentity, ShortcutIdentity,
+  CatalogSyncActivity, CatalogSyncActivitySink, LoadbotCatalog, LoadbotProject, LoadbotShortcut,
+  ProjectIdentity, ShortcutIdentity,
 } from '../loadbot/contract';
 
 /** One query seam for tests/host composition, not a generic RPC interface. */
@@ -12,7 +13,7 @@ export interface ManagementBridge {
   addCatalog(input: AddCatalogInput): Promise<unknown>;
   addProject(input: AddProjectInput): Promise<unknown>;
   addShortcut(input: AddShortcutInput): Promise<unknown>;
-  syncCatalog(catalog: string): Promise<unknown>;
+  syncCatalog(catalog: string, onActivity?: CatalogSyncActivitySink): Promise<unknown>;
 }
 
 async function nativeInventoryQuery(): Promise<unknown> {
@@ -49,7 +50,12 @@ const nativeManagementBridge: ManagementBridge = {
       description: input.description, runner: input.runner,
     });
   },
-  async syncCatalog(catalog) { requireTauri('Catalog synchronization'); return invoke('sync_loadbot_catalog', { catalog }); },
+  async syncCatalog(catalog, onActivity) {
+    requireTauri('Catalog synchronization');
+    const channel = new Channel<unknown>();
+    channel.onmessage = (value) => onActivity?.(catalogSyncActivity(value));
+    return invoke('sync_loadbot_catalog', { catalog, onActivity: channel });
+  },
 };
 
 function record(value: unknown): Record<string, unknown> {
@@ -100,6 +106,15 @@ function catalogs(value: unknown): readonly LoadbotCatalog[] {
       state: item.state as LoadbotCatalog['state'], default: boolean(item.default),
     };
   });
+}
+
+function catalogSyncActivity(value: unknown): CatalogSyncActivity {
+  const item = record(value);
+  const stage = text(item.stage);
+  if (!['validating', 'repository-checked', 'updating-repository', 'current', 'updated'].includes(stage)) {
+    throw new Error('Invalid catalog synchronization activity stage.');
+  }
+  return { stage: stage as CatalogSyncActivity['stage'], catalog: text(item.catalog), detail: optionalText(item.detail) };
 }
 
 function catalogIdentity(value: unknown): CatalogIdentity {
@@ -160,8 +175,8 @@ export function createTauriLoadbotAdapter(
       try { return shortcutIdentity(await management.addShortcut(input)); }
       catch (error: unknown) { throw nativeError(error, 'Could not add the shortcut.'); }
     },
-    async syncCatalog(catalog) {
-      try { await management.syncCatalog(catalog); }
+    async syncCatalog(catalog, onActivity) {
+      try { await management.syncCatalog(catalog, onActivity); }
       catch (error: unknown) { throw nativeError(error, 'Could not synchronize the catalog.'); }
     },
   };

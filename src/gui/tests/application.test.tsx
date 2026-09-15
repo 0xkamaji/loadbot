@@ -221,8 +221,84 @@ describe('headless capability and application boundary', () => {
     expect(application.getSnapshot().currentCatalog).toBe('other');
     expect(application.getSnapshot().project).toBeUndefined();
     expect(await application.actions.syncCatalog()).toBe(true);
-    expect(managed.syncCatalog).toHaveBeenCalledWith('other');
+    expect(managed.syncCatalog).toHaveBeenCalledWith('other', expect.any(Function));
     expect(managed.readInventory).toHaveBeenCalledTimes(5);
+    expect(new Set(application.getSnapshot().activity.map((entry) => entry.operation))).toEqual(new Set([
+      'project-add', 'shortcut-add', 'catalog-add', 'catalog-sync',
+    ]));
+  });
+
+  it('keeps an existing writable catalog manageable and preserves qualified selection after sync', async () => {
+    const projects: readonly LoadbotProject[] = [{ catalog: 'existing', tool: 'project', entries: [
+      { name: 'first', path: 'first.sh', source: 'catalog' },
+      { name: 'selected', path: 'selected.sh', source: 'personal' },
+    ] }];
+    const catalogs = [{ name: 'existing', url: 'catalog', writable: true, state: 'installed' as const, default: true }];
+    const syncCatalog: LoadbotAdapter['syncCatalog'] = vi.fn(async (_catalog, onActivity) => {
+      onActivity?.({ stage: 'validating', catalog: 'existing' });
+      onActivity?.({ stage: 'repository-checked', catalog: 'existing' });
+      onActivity?.({ stage: 'updating-repository', catalog: 'existing' });
+      onActivity?.({ stage: 'current', catalog: 'existing', detail: 'abc1234' });
+    });
+    const managed: LoadbotAdapter = {
+      ...adapter(async () => structuredClone(projects)),
+      readCatalogs: vi.fn(async () => structuredClone(catalogs)), syncCatalog,
+    };
+    const application = createLoadbotApplication(managed);
+    application.start();
+    await vi.waitFor(() => expect(application.getSnapshot().inventory.status).toBe('ready'));
+    application.actions.selectShortcut(shortcutKey(projects[0].entries[1]));
+
+    expect(await application.actions.syncCatalog()).toBe(true);
+
+    const state = application.getSnapshot();
+    expect(state.currentCatalog).toBe('existing');
+    expect(state.project?.tool).toBe('project');
+    expect(state.shortcut?.name).toBe('selected');
+    expect(state.catalogState.status === 'ready' && state.catalogState.catalogs[0]).toMatchObject({
+      name: 'existing', writable: true, state: 'installed',
+    });
+    expect(state.activity.map((entry) => entry.stage)).toEqual([
+      'started', 'validating', 'repository-checked', 'updating-repository', 'current',
+      'authoritative-reload', 'catalog-state', 'completed',
+    ]);
+    expect(state.bottomView).toBe('activity');
+  });
+
+  it('records sync failure and its authoritative recovery read without false success', async () => {
+    const managed = adapter(async () => [{ catalog: 'one', tool: 'project', entries: [] }]);
+    managed.syncCatalog = vi.fn(async (_catalog, onActivity) => {
+      onActivity?.({ stage: 'validating', catalog: 'one' });
+      throw new Error('remote unavailable');
+    });
+    const application = createLoadbotApplication(managed);
+    application.start();
+    await vi.waitFor(() => expect(application.getSnapshot().inventory.status).toBe('ready'));
+
+    expect(await application.actions.syncCatalog()).toBe(false);
+    expect(application.getSnapshot().activity.map((entry) => [entry.stage, entry.status])).toEqual([
+      ['started', 'in-progress'], ['validating', 'in-progress'],
+      ['authoritative-reload', 'in-progress'], ['failed', 'error'],
+    ]);
+    expect(application.getSnapshot().management).toEqual({
+      status: 'error', kind: 'sync-catalog', message: 'remote unavailable',
+    });
+  });
+
+  it('records reload and folder activity and bounds session history', async () => {
+    const managed = adapter(async () => [{ catalog: 'one', tool: 'project', entries: [] }]);
+    const application = createLoadbotApplication(managed);
+    application.start();
+    await vi.waitFor(() => expect(application.getSnapshot().inventory.status).toBe('ready'));
+    application.actions.reloadInventory();
+    await vi.waitFor(() => expect(application.getSnapshot().activity.at(-1)).toMatchObject({
+      operation: 'local-reload', status: 'success',
+    }));
+
+    for (let index = 0; index < 260; index++) application.actions.openProjectFolder(projectKey({ catalog: 'one', tool: 'project' }));
+    await vi.waitFor(() => expect(application.getSnapshot().activity.at(-1)?.status).toBe('success'));
+    expect(application.getSnapshot().activity).toHaveLength(250);
+    expect(application.getSnapshot().activity[0].id).toBeGreaterThan(1);
   });
 
   it('prevents duplicate submissions and never fabricates failed mutations', async () => {

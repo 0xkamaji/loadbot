@@ -87,6 +87,9 @@ it('pins native/default and fixture entry points to distinct compositions', () =
   expect(tauriMain).toContain('operations::tool_add');
   expect(tauriMain).toContain('operations::shortcut_add');
   expect(tauriMain).toContain('operations::catalog_sync');
+  expect(tauriAdapter).toContain('new Channel<unknown>()');
+  expect(tauriMain).toContain('Channel<BackendActivity>');
+  expect(tauriMain).toContain('Notice::CatalogSyncRepositoryChecked');
   expect(tauriAdapter).not.toMatch(/explorer|xdg-open|filesystem|fixture/i);
   expect(tauriMain).toContain('launcher::resolve_project_directory');
   expect(tauriMain).toContain('open_loadbot_project');

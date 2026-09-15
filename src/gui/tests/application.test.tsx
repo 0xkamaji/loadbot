@@ -45,6 +45,31 @@ describe('headless capability and application boundary', () => {
     stop();
   });
 
+  it('starts from a pre-management configured catalog without registration or migration', async () => {
+    const existing: readonly LoadbotProject[] = [{
+      catalog: 'existing', tool: 'known-project', entries: [{
+        name: 'known-shortcut', path: 'scripts/known.sh', description: 'Existing shortcut', runner: 'sh', source: 'catalog',
+      }],
+    }];
+    const readInventory = vi.fn(async () => existing);
+    const readCatalogs = vi.fn(async () => [{
+      name: 'existing', url: 'https://example.invalid/existing.git', writable: true,
+      state: 'installed' as const, default: true,
+    }]);
+    const existingAdapter = adapter(readInventory);
+    existingAdapter.readCatalogs = readCatalogs;
+    const application = createLoadbotApplication(existingAdapter);
+
+    application.start();
+    await vi.waitFor(() => expect(application.getSnapshot().inventory.status).toBe('ready'));
+
+    expect(readCatalogs).toHaveBeenCalledOnce();
+    expect(readInventory).toHaveBeenCalledOnce();
+    expect(application.getSnapshot().currentCatalog).toBe('existing');
+    expect(application.getSnapshot().project?.tool).toBe('known-project');
+    expect(application.getSnapshot().shortcut?.name).toBe('known-shortcut');
+  });
+
   it('owns deterministic sample validation and isolation independently of rendering', async () => {
     const application = createLoadbotApplication(fixtureAdapter, fixtureSampleForms);
     const other = createLoadbotApplication(fixtureAdapter, fixtureSampleForms);

@@ -1,6 +1,43 @@
-import { useEffect, useRef, useState } from 'react';
-import type { CommandResult } from '../application/command';
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
+import { applyCommandCompletion, type CommandCompletion, type CommandCompletionCandidate, type CommandResult } from '../application/command';
 import type { LoadbotActions, LoadbotState } from '../application/controller';
+
+interface CompletionSession {
+  readonly completion: CommandCompletion;
+  readonly selectedId: string;
+}
+
+export interface CompletionCandidateRect {
+  readonly left: number;
+  readonly right: number;
+  readonly top: number;
+  readonly bottom: number;
+}
+
+/** Find the nearest horizontal candidate on the adjacent rendered row. */
+export function visualCompletionNeighbor(
+  rects: readonly CompletionCandidateRect[],
+  currentIndex: number,
+  direction: -1 | 1,
+): number {
+  if (rects.length < 2 || !rects[currentIndex]) return currentIndex;
+  const rows: number[][] = [];
+  rects.forEach((rect, index) => {
+    const row = rows.at(-1);
+    const rowTop = row?.length ? rects[row[0]].top : undefined;
+    if (row && rowTop !== undefined && Math.abs(rowTop - rect.top) <= 2) row.push(index);
+    else rows.push([index]);
+  });
+  const rowIndex = rows.findIndex((row) => row.includes(currentIndex));
+  if (rowIndex < 0) return currentIndex;
+  const targetRow = rows[(rowIndex + direction + rows.length) % rows.length];
+  const center = (rects[currentIndex].left + rects[currentIndex].right) / 2;
+  return targetRow.reduce((nearest, candidate) => {
+    const candidateCenter = (rects[candidate].left + rects[candidate].right) / 2;
+    const nearestCenter = (rects[nearest].left + rects[nearest].right) / 2;
+    return Math.abs(candidateCenter - center) < Math.abs(nearestCenter - center) ? candidate : nearest;
+  }, targetRow[0]);
+}
 
 function errorText(result: Extract<CommandResult, { kind: 'error' }>): string {
   switch (result.code) {
@@ -69,12 +106,83 @@ function CommandOutput({ result }: { result: CommandResult }) {
 export function CommandPane({ state, actions }: { state: LoadbotState; actions: LoadbotActions }) {
   const [input, setInput] = useState('');
   const [historyIndex, setHistoryIndex] = useState<number>();
+  const [completionSession, setCompletionSession] = useState<CompletionSession>();
   const draft = useRef('');
   const transcript = useRef<HTMLDivElement>(null);
+  const inputElement = useRef<HTMLInputElement>(null);
+  const candidateElements = useRef(new Map<string, HTMLElement>());
+  const pendingCaret = useRef<number | undefined>(undefined);
+  const completionId = useId();
 
   useEffect(() => {
     if (transcript.current) transcript.current.scrollTop = transcript.current.scrollHeight;
   }, [state.command.entries.length]);
+
+  useLayoutEffect(() => {
+    if (pendingCaret.current === undefined) return;
+    inputElement.current?.focus();
+    inputElement.current?.setSelectionRange(pendingCaret.current, pendingCaret.current);
+    pendingCaret.current = undefined;
+  }, [input]);
+
+  useEffect(() => {
+    if (!completionSession) return;
+    const selected = candidateElements.current.get(completionSession.selectedId);
+    selected?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+  }, [completionSession]);
+
+  const setInputAtCaret = (nextInput: string, caret: number) => {
+    pendingCaret.current = caret;
+    setInput(nextInput);
+    draft.current = nextInput;
+    setHistoryIndex(undefined);
+  };
+
+  const acceptCompletion = (candidate?: CommandCompletionCandidate) => {
+    if (!completionSession) return;
+    const selected = candidate ?? completionSession.completion.candidates.find((item) => item.id === completionSession.selectedId);
+    if (!selected) return;
+    const applied = applyCommandCompletion(input, completionSession.completion, selected);
+    setCompletionSession(undefined);
+    setInputAtCaret(applied.input, applied.caret);
+  };
+
+  const beginOrRefreshCompletion = (nextInput: string, caret: number, completeUnique: boolean) => {
+    const completion = actions.completeCommand(nextInput, caret);
+    if (!completion) {
+      setCompletionSession(undefined);
+      return;
+    }
+    if (completion.candidates.length === 1 && completeUnique) {
+      const applied = applyCommandCompletion(nextInput, completion, completion.candidates[0]);
+      setCompletionSession(undefined);
+      setInputAtCaret(applied.input, applied.caret);
+      return;
+    }
+    const selectedId = completionSession && completion.candidates.some((candidate) => candidate.id === completionSession.selectedId)
+      ? completionSession.selectedId
+      : completion.candidates[0].id;
+    setCompletionSession({ completion, selectedId });
+  };
+
+  const selectCandidate = (direction: -1 | 1) => {
+    if (!completionSession) return;
+    const candidates = completionSession.completion.candidates;
+    const current = Math.max(0, candidates.findIndex((candidate) => candidate.id === completionSession.selectedId));
+    const next = (current + direction + candidates.length) % candidates.length;
+    setCompletionSession({ ...completionSession, selectedId: candidates[next].id });
+  };
+
+  const selectVisualRow = (direction: -1 | 1) => {
+    if (!completionSession) return;
+    const candidates = completionSession.completion.candidates;
+    const current = Math.max(0, candidates.findIndex((candidate) => candidate.id === completionSession.selectedId));
+    const rects = candidates.map((candidate) => candidateElements.current.get(candidate.id)?.getBoundingClientRect())
+      .filter((rect): rect is DOMRect => rect !== undefined);
+    if (rects.length !== candidates.length) return;
+    const next = visualCompletionNeighbor(rects, current, direction);
+    setCompletionSession({ ...completionSession, selectedId: candidates[next].id });
+  };
 
   const moveHistory = (direction: -1 | 1) => {
     const history = state.command.history;
@@ -84,6 +192,7 @@ export function CommandPane({ state, actions }: { state: LoadbotState; actions: 
       const next = historyIndex === undefined ? history.length - 1 : Math.max(0, historyIndex - 1);
       setHistoryIndex(next);
       setInput(history[next]);
+      setCompletionSession(undefined);
       return;
     }
     if (historyIndex === undefined) return;
@@ -95,6 +204,7 @@ export function CommandPane({ state, actions }: { state: LoadbotState; actions: 
       setHistoryIndex(next);
       setInput(history[next]);
     }
+    setCompletionSession(undefined);
   };
 
   return <section className="lb-bottom-content lb-command" role="tabpanel" aria-label="Command">
@@ -108,23 +218,72 @@ export function CommandPane({ state, actions }: { state: LoadbotState; actions: 
     </div>
     <form className="lb-command-form" onSubmit={(event) => {
       event.preventDefault();
+      if (completionSession) {
+        acceptCompletion();
+        return;
+      }
       if (!actions.submitCommand(input)) return;
       setInput('');
       draft.current = '';
       setHistoryIndex(undefined);
+      setCompletionSession(undefined);
     }}>
       <span aria-hidden="true">&gt;</span>
-      <input aria-label="Loadbot command" value={input} autoComplete="off" autoCapitalize="none" spellCheck={false}
+      <input ref={inputElement} aria-label="Loadbot command" value={input} autoComplete="off" autoCapitalize="none" spellCheck={false}
+        role="combobox" aria-autocomplete="list" aria-expanded={completionSession !== undefined}
+        aria-controls={completionSession ? completionId : undefined}
+        aria-activedescendant={completionSession
+          ? `${completionId}-option-${completionSession.completion.candidates.findIndex((candidate) => candidate.id === completionSession.selectedId)}`
+          : undefined}
         onChange={(event) => {
-          setInput(event.target.value);
-          draft.current = event.target.value;
+          const value = event.currentTarget.value;
+          const caret = event.currentTarget.selectionStart ?? value.length;
+          setInput(value);
+          draft.current = value;
           setHistoryIndex(undefined);
+          if (completionSession) beginOrRefreshCompletion(value, caret, true);
         }}
         onKeyDown={(event) => {
+          if (completionSession) {
+            if (event.key === 'Tab') {
+              event.preventDefault();
+              selectCandidate(event.shiftKey ? -1 : 1);
+            } else if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') {
+              event.preventDefault();
+              selectCandidate(event.key === 'ArrowRight' ? 1 : -1);
+            } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+              event.preventDefault();
+              selectVisualRow(event.key === 'ArrowDown' ? 1 : -1);
+            } else if (event.key === 'Enter') {
+              event.preventDefault();
+              acceptCompletion();
+            } else if (event.key === 'Escape') {
+              event.preventDefault();
+              setCompletionSession(undefined);
+            }
+            return;
+          }
+          if (event.key === 'Tab') {
+            event.preventDefault();
+            beginOrRefreshCompletion(input, event.currentTarget.selectionStart ?? input.length, true);
+            return;
+          }
           if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
           event.preventDefault();
           moveHistory(event.key === 'ArrowUp' ? -1 : 1);
         }} />
     </form>
+    {completionSession && <div id={completionId} className="lb-command-completions" role="listbox" aria-label="Command completions">
+      {completionSession.completion.candidates.map((candidate, index) => <button
+        id={`${completionId}-option-${index}`} key={candidate.id} type="button" role="option" tabIndex={-1}
+        aria-selected={candidate.id === completionSession.selectedId}
+        ref={(element) => {
+          if (element) candidateElements.current.set(candidate.id, element);
+          else candidateElements.current.delete(candidate.id);
+        }}
+        onMouseDown={(event) => event.preventDefault()}
+        onClick={() => acceptCompletion(candidate)}
+      >{candidate.label}</button>)}
+    </div>}
   </section>;
 }

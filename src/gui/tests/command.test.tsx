@@ -1,6 +1,9 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
-import { commandDefinitions, executeLoadbotCommand, parseCommandLine, type CommandContext } from '../frontend/loadbot/application/command';
+import {
+  applyCommandCompletion, commandDefinitions, completeLoadbotCommand, executeLoadbotCommand, parseCommandLine,
+  type CommandContext,
+} from '../frontend/loadbot/application/command';
 import type { LoadbotProject } from '../frontend/loadbot/contract';
 
 const projects: readonly LoadbotProject[] = [
@@ -86,5 +89,61 @@ describe('Loadbot command parser and registry', () => {
     const loading = { ...context, inventoryStatus: 'loading' as const, projects: [] };
     expect(executeLoadbotCommand('help', loading).kind).toBe('help');
     expect(executeLoadbotCommand('projects', loading)).toEqual({ kind: 'error', code: 'inventory-unavailable' });
+  });
+});
+
+describe('Loadbot semantic command completion', () => {
+  it('derives deterministic first-token candidates from the command registry', () => {
+    const all = completeLoadbotCommand('', 0, context);
+    expect(all?.candidates.map((candidate) => candidate.value)).toEqual(commandDefinitions.map((command) => command.name));
+    const unique = completeLoadbotCommand('sho', 3, context);
+    expect(unique?.candidates.map((candidate) => candidate.value)).toEqual(['shortcuts']);
+    expect(applyCommandCompletion('sho', unique!, unique!.candidates[0])).toEqual({ input: 'shortcuts', caret: 9 });
+  });
+
+  it('offers safe project identities, including qualified ambiguous projects', () => {
+    const completion = completeLoadbotCommand('inspect Pro', 11, context);
+    expect(completion?.candidates.map((candidate) => candidate.value)).toEqual(['Project One', 'community/Project One']);
+    expect(applyCommandCompletion('inspect Pro', completion!, completion!.candidates[0])).toEqual({
+      input: 'inspect "Project One"', caret: 21,
+    });
+    expect(completeLoadbotCommand('inspect comm', 12, context)?.candidates.map((candidate) => candidate.value))
+      .toEqual(['community/Project One']);
+    expect(completeLoadbotCommand('shortcuts so', 12, context)?.candidates.map((candidate) => candidate.value)).toEqual(['solo']);
+  });
+
+  it('offers only shortcuts from the resolved project and qualifies duplicate names', () => {
+    const completion = completeLoadbotCommand('inspect "Project One" Ex', 24, context);
+    expect(completion?.candidates.map((candidate) => candidate.value)).toEqual([
+      'catalog::Export strings::catalog/export.py',
+      'personal::Export strings::personal/export.py',
+    ]);
+    expect(completeLoadbotCommand('inspect "Project One" Un', 24, context)?.candidates.map((candidate) => candidate.value))
+      .toEqual(['Unique shortcut']);
+    expect(completeLoadbotCommand('inspect "community/Project One" Ex', 34, context)).toBeUndefined();
+  });
+
+  it('replaces only the active token while preserving quotes and surrounding text', () => {
+    const middleInput = 'inspect so trailing';
+    const middle = completeLoadbotCommand(middleInput, 10, context)!;
+    expect(applyCommandCompletion(middleInput, middle, middle.candidates[0])).toEqual({
+      input: 'inspect solo trailing', caret: 12,
+    });
+
+    const quotedInput = "inspect 'Pro";
+    const quoted = completeLoadbotCommand(quotedInput, quotedInput.length, context)!;
+    expect(applyCommandCompletion(quotedInput, quoted, quoted.candidates[0])).toEqual({
+      input: "inspect 'Project One'", caret: 21,
+    });
+    expect(parseCommandLine(applyCommandCompletion(quotedInput, quoted, quoted.candidates[0]).input))
+      .toEqual({ tokens: ['inspect', 'Project One'] });
+  });
+
+  it('returns no candidates for no-match, excess, unsafe, or malformed context', () => {
+    expect(completeLoadbotCommand('inspect missing', 15, context)).toBeUndefined();
+    expect(completeLoadbotCommand('projects anything', 17, context)).toBeUndefined();
+    expect(completeLoadbotCommand('echo foo | ba', 13, context)).toBeUndefined();
+    expect(completeLoadbotCommand('inspect "Project One" "missing', 30, context)).toBeUndefined();
+    expect(completeLoadbotCommand('sho', 99, context)).toBeUndefined();
   });
 });

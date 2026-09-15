@@ -52,6 +52,13 @@ describe('headless capability and application boundary', () => {
     application.start();
     await vi.waitFor(() => expect(application.getSnapshot().inventory.status).toBe('ready'));
     const activity = application.getSnapshot().activity;
+    const commandState = application.getSnapshot().command;
+
+    expect(application.actions.completeCommand('sho', 3)?.candidates.map((candidate) => candidate.value)).toEqual(['shortcuts']);
+    expect(application.actions.completeCommand('inspect r', 9)?.candidates.length).toBeGreaterThan(1);
+    expect(application.getSnapshot().command).toBe(commandState);
+    expect(application.getSnapshot().activity).toBe(activity);
+    expect(readInventory).toHaveBeenCalledOnce();
 
     expect(application.actions.submitCommand('   ')).toBe(false);
     expect(application.actions.submitCommand('projects')).toBe(true);

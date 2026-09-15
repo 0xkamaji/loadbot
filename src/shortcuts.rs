@@ -28,27 +28,82 @@ impl Default for ShortcutFile {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Shortcut {
     pub catalog: String,
     pub tool: String,
-    pub path: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invocation: crate::recipe::StoredInvocation,
     pub description: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub runner: Option<Runner>,
-    #[serde(flatten)]
     pub extra: BTreeMap<String, toml::Value>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ShortcutWire {
+    catalog: String,
+    tool: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    runner: Option<Runner>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    recipe: Option<crate::recipe::RecipeDefinition>,
+    #[serde(flatten)]
+    extra: BTreeMap<String, toml::Value>,
+}
+
+impl Serialize for Shortcut {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let (path, runner, recipe) = self.invocation.parts();
+        ShortcutWire {
+            catalog: self.catalog.clone(),
+            tool: self.tool.clone(),
+            path,
+            description: self.description.clone(),
+            runner,
+            recipe,
+            extra: self.extra.clone(),
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for Shortcut {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let wire = ShortcutWire::deserialize(deserializer)?;
+        let invocation =
+            crate::recipe::StoredInvocation::from_parts(wire.path, wire.runner, wire.recipe)
+                .map_err(serde::de::Error::custom)?;
+        Ok(Self {
+            catalog: wire.catalog,
+            tool: wire.tool,
+            invocation,
+            description: wire.description,
+            extra: wire.extra,
+        })
+    }
 }
 
 impl Shortcut {
     pub fn new(catalog: String, tool: String, path: String) -> Result<Self> {
+        Self::with_invocation(
+            catalog,
+            tool,
+            crate::recipe::StoredInvocation::legacy(path, None),
+        )
+    }
+
+    pub fn with_invocation(
+        catalog: String,
+        tool: String,
+        invocation: crate::recipe::StoredInvocation,
+    ) -> Result<Self> {
         let shortcut = Self {
             catalog,
             tool,
-            path,
+            invocation,
             description: None,
-            runner: None,
             extra: BTreeMap::new(),
         };
         shortcut.validate()?;
@@ -58,7 +113,25 @@ impl Shortcut {
     /// Validate the complete record, including fields changed after construction.
     pub fn validate(&self) -> Result<()> {
         self.validate_names()?;
-        relative_path(&self.path)?;
+        match &self.invocation {
+            crate::recipe::StoredInvocation::Legacy(legacy) => {
+                relative_path(&legacy.path)?;
+            }
+            crate::recipe::StoredInvocation::Recipe(recipe) => recipe.validate()?,
+        }
+        Ok(())
+    }
+
+    pub fn legacy(&self) -> Option<&crate::recipe::LegacyInvocation> {
+        self.invocation.as_legacy()
+    }
+
+    pub fn set_legacy_runner(&mut self, runner: Option<Runner>) -> Result<()> {
+        let legacy = self
+            .invocation
+            .as_legacy()
+            .context("cannot set a legacy runner on a structured recipe")?;
+        self.invocation = crate::recipe::StoredInvocation::legacy(legacy.path.clone(), runner);
         Ok(())
     }
 
@@ -86,8 +159,14 @@ pub fn load(path: &Path) -> Result<ShortcutFile> {
     for (name, shortcut) in &shortcuts.shortcuts {
         paths::validate_name(name).context("invalid shortcut name")?;
         shortcut.validate_names()?;
-        relative_path(&shortcut.path)
-            .with_context(|| format!("shortcut '{name}' contains an unsafe path"))?;
+        match &shortcut.invocation {
+            crate::recipe::StoredInvocation::Legacy(legacy) => relative_path(&legacy.path)
+                .with_context(|| format!("shortcut '{name}' contains an unsafe path"))
+                .map(|_| ())?,
+            crate::recipe::StoredInvocation::Recipe(recipe) => recipe
+                .validate()
+                .with_context(|| format!("shortcut '{name}' contains an invalid recipe"))?,
+        }
     }
     Ok(shortcuts)
 }
@@ -195,6 +274,8 @@ mod tests {
         assert_eq!(load(&path).unwrap().shortcuts["print-strings"], shortcut);
         let contents = fs::read_to_string(path).unwrap();
         assert!(!contents.contains(temporary.path().to_str().unwrap()));
+        assert!(contents.contains("path = \"recipes/print_strings.py\""));
+        assert!(!contents.contains("[shortcuts.print-strings.recipe]"));
     }
 
     #[test]
@@ -276,12 +357,15 @@ recipe_hint = { version = 1, arguments = ["--check"] }
 
         let loaded = load(&path).unwrap();
         assert_eq!(loaded.shortcuts["legacy"].description, None);
-        assert_eq!(loaded.shortcuts["legacy"].runner, None);
+        assert_eq!(loaded.shortcuts["legacy"].legacy().unwrap().runner, None);
         assert_eq!(
             loaded.shortcuts["audit"].description.as_deref(),
             Some("Run the audit")
         );
-        assert_eq!(loaded.shortcuts["audit"].runner, Some(Runner::Bash));
+        assert_eq!(
+            loaded.shortcuts["audit"].legacy().unwrap().runner,
+            Some(Runner::Bash)
+        );
         assert_eq!(
             loaded.shortcuts["audit"].extra["future"].as_str(),
             Some("kept")
@@ -301,6 +385,90 @@ recipe_hint = { version = 1, arguments = ["--check"] }
         assert_eq!(
             after_save.shortcuts["audit"].extra["recipe_hint"],
             loaded.shortcuts["audit"].extra["recipe_hint"]
+        );
+        assert_eq!(
+            after_save.shortcuts["audit"].legacy(),
+            loaded.shortcuts["audit"].legacy()
+        );
+        assert!(
+            after_save.shortcuts["audit"]
+                .invocation
+                .as_recipe()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn personal_recipe_saves_atomically_without_legacy_fields_and_preserves_metadata() {
+        use crate::recipe::{
+            InvocationBehavior, RecipeArgument, RecipeDefinition, RecipeProgram, StoredInvocation,
+            WorkingDirectory,
+        };
+
+        let temporary = tempfile::TempDir::new().unwrap();
+        let path = temporary.path().join("shortcuts.toml");
+        let recipe = RecipeDefinition {
+            version: 1,
+            behavior: InvocationBehavior::Launch,
+            program: RecipeProgram::ProjectFile {
+                path: "bin/tool.exe".into(),
+            },
+            working_directory: WorkingDirectory::TargetParent,
+            arguments: vec![RecipeArgument::Literal {
+                value: "one value".into(),
+            }],
+        };
+        let mut shortcut = Shortcut::with_invocation(
+            "personal".into(),
+            "demo".into(),
+            StoredInvocation::Recipe(recipe.clone()),
+        )
+        .unwrap();
+        shortcut
+            .extra
+            .insert("future".into(), toml::Value::String("kept".into()));
+        save(&path, "launch", shortcut).unwrap();
+
+        let serialized = fs::read_to_string(&path).unwrap();
+        let value: toml::Value = toml::from_str(&serialized).unwrap();
+        let entry = &value["shortcuts"]["launch"];
+        assert!(entry.get("path").is_none());
+        assert!(entry.get("runner").is_none());
+        let loaded = load(&path).unwrap();
+        assert_eq!(
+            loaded.shortcuts["launch"].invocation.as_recipe(),
+            Some(&recipe)
+        );
+        assert_eq!(
+            loaded.shortcuts["launch"].extra["future"].as_str(),
+            Some("kept")
+        );
+        #[derive(Deserialize)]
+        #[allow(dead_code)]
+        struct OldShortcut {
+            catalog: String,
+            tool: String,
+            path: String,
+        }
+        assert!(
+            toml::from_str::<OldShortcut>(&toml::to_string(&loaded.shortcuts["launch"]).unwrap())
+                .is_err()
+        );
+
+        let before = fs::read(&path).unwrap();
+        let mixed = serialized.replace(
+            "tool = \"demo\"",
+            "tool = \"demo\"\npath = \"bin/tool.exe\"",
+        );
+        fs::write(&path, mixed).unwrap();
+        let error = load(&path).unwrap_err();
+        assert!(format!("{error:#}").contains("both a legacy path and a recipe"));
+        fs::write(&path, before).unwrap();
+        assert_eq!(
+            load(&path).unwrap().shortcuts["launch"]
+                .invocation
+                .as_recipe(),
+            Some(&recipe)
         );
     }
 }

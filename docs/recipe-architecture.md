@@ -1,8 +1,7 @@
 # Recipe architecture audit and v1 direction
 
-This document records the Phase 1 audit and design boundary. It is not an
-implementation specification for an editor or an authorization to connect GUI
-execution.
+This document records the Phase 1 audit and the Phase 2 core implementation. It
+is not an authorization to connect GUI execution or build an editor.
 
 > **Loadbot provides primitives. Catalogs provide knowledge. Recipes provide
 > opinion.**
@@ -136,14 +135,14 @@ the current behavior of inheriting the host environment is sufficient for the fi
 model, while persistence of values—especially secrets—and cross-platform variable
 rules require a separate explicit decision.
 
-## Minimal proposed model
+## Implemented Recipe core
 
 A **Shortcut** remains the named, project-associated user concept and identity. A
 **Recipe** is the optional structured invocation definition carried by either a
 shared catalog command or a personal shortcut. Existing path-based entries are
 legacy shortcuts, not migrated recipe documents.
 
-The smallest useful conceptual Rust model is:
+Phase 2 implements the following shared Rust model:
 
 ```text
 StoredInvocation
@@ -237,7 +236,21 @@ prefix = "--format"
 required = true
 ```
 
-This is a proposed persistence shape, not production schema in this phase.
+This is now the persisted Recipe shape. The same `RecipeDefinition` is used by
+personal shortcuts and shared catalog commands.
+
+Pure resolution accepts typed runtime values keyed by parameter ID. Text, file,
+directory and switch values remain distinct. Runtime file/directory paths must be
+absolute, may be outside the installed project, and are canonicalized and checked
+for the declared filesystem type. Fixed `ProjectPath` values remain contained by
+the installed project.
+
+`ResolvedInvocation` contains behavior, ordered native `OsString` arguments, a
+canonical `PathBuf` cwd, and a `ResolvedProgram`. A project-file program is a
+canonical path. Interpreter programs retain both the semantic runner and the
+existing ordered, platform-aware PATH candidates (for example, `python3` then
+`python` on Linux) so pure resolution does not pretend to know which host executable
+exists or spawn/search for it.
 
 ### Run Recipe versus Launch Application
 
@@ -301,14 +314,20 @@ details. Tauri remains a thin structured bridge. The application/controller owns
 form/run state and bounded output. GUI buttons, Command actions and CLI rendering
 delegate to these same operations.
 
-## Recommended Phase 2 scope
+## Implemented in Phase 2
 
-Phase 2 should implement and test only the shared model, backward-compatible loader,
-validation, inspection, and pure resolution to structured program/argv/cwd. It may
-extend inventory/adapter DTOs only enough to inspect the recipe and gather typed
-inputs. It should keep existing shortcut creation and execution behavior unchanged,
-and should not yet add the GUI builder, process execution, detached launching, PTY,
-output UI, help discovery, or environment overrides.
+Phase 2 implements the shared versioned model, backward-compatible loader,
+validation, semantic inventory inspection, typed runtime inputs, and pure resolution
+to structured program/argv/cwd. Existing execution remains restricted to legacy
+entries and retains its prior behavior; attempting to execute a Recipe reports that
+Recipe execution is not implemented.
+
+## Future phases
+
+The Recipe Builder GUI, Recipe create/update workflow, process execution, detached
+application launch, output UI, Command mutations, help discovery, environment
+overrides and PTY support are not implemented. A later execution phase must consume
+`ResolvedInvocation`; it must not reinterpret a preview string as a command.
 
 Before implementing detached launch in a later phase, decide its precise Windows and
 Linux ownership/error contract. Before catalog recipes are published, decide how the

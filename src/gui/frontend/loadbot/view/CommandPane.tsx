@@ -1,6 +1,7 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { applyCommandCompletion, type CommandCompletion, type CommandCompletionCandidate, type CommandResult } from '../application/command';
 import type { LoadbotActions, LoadbotState } from '../application/controller';
+import { shortcutTarget } from '../identity';
 
 interface CompletionSession {
   readonly completion: CommandCompletion;
@@ -75,8 +76,8 @@ function CommandOutput({ result }: { result: CommandResult }) {
     case 'shortcuts': return <div className="lb-command-output">
       <p>Shortcuts / {result.project.catalog}/{result.project.tool}</p>
       {result.shortcuts.length
-        ? <ul>{result.shortcuts.map((shortcut) => <li key={`${shortcut.source}:${shortcut.name}:${shortcut.path}`}>
-          <code>{shortcut.name}</code><span>{shortcut.source} · {shortcut.path}</span>
+        ? <ul>{result.shortcuts.map((shortcut) => <li key={`${shortcut.source}:${shortcut.name}:${shortcutTarget(shortcut)}`}>
+          <code>{shortcut.name}</code><span>{shortcut.source} · {shortcut.path ?? `recipe · ${shortcut.recipe?.behavior}`}</span>
         </li>)}</ul>
         : <p className="lb-command-secondary">No shortcuts in this project.</p>}
     </div>;
@@ -90,7 +91,9 @@ function CommandOutput({ result }: { result: CommandResult }) {
       <p>Shortcut</p>
       <Facts values={[
         ['Name', result.shortcut.name], ['Project', result.project.tool], ['Catalog', result.project.catalog],
-        ['Source', result.shortcut.source], ['Path', result.shortcut.path],
+        ['Source', result.shortcut.source],
+        ...(result.shortcut.path ? [['Path', result.shortcut.path] as const] : []),
+        ...(result.shortcut.recipe ? [['Invocation', `Recipe · ${result.shortcut.recipe.behavior}`] as const] : []),
         ...(result.shortcut.runner ? [['Runner', result.shortcut.runner] as const] : []),
         ...(result.shortcut.description ? [['Description', result.shortcut.description] as const] : []),
       ]} />

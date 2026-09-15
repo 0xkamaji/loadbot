@@ -10,11 +10,13 @@ use anyhow::{Context, Result, bail};
 
 use super::menus::Prompt;
 use super::operations;
+#[cfg(test)]
+use loadbot::catalog::Runner;
 use loadbot::paths::{self, Paths};
 use loadbot::shortcuts;
 #[cfg(test)]
 use loadbot::shortcuts::Shortcut;
-use loadbot::{catalog::ResolvedTool, catalog::Runner};
+use loadbot::{catalog::ResolvedTool, recipe::StoredInvocation};
 
 const BROWSE_TOOLS: &str = "Browse installed tools...";
 const BACK: &str = "../ Back";
@@ -217,27 +219,35 @@ fn run_project_menu<P: Prompt>(paths: &Paths, prompt: &mut P, project: &Project)
         .iter()
         .find(|entry| entry.label == selection)
         .context("invalid project command selection")?;
+    let invocation = match &entry.invocation {
+        StoredInvocation::Legacy(legacy) => format!("path: {}", legacy.path),
+        StoredInvocation::Recipe(_) => "invocation: recipe".to_owned(),
+    };
     launch_entry(paths, project, entry).with_context(|| match entry.source {
         EntrySource::Catalog => format!(
-            "shared command '{}' is broken:\n\ncatalog: {}\ntool: {}\npath: {}",
-            entry.name, project.catalog, project.tool, entry.path
+            "shared command '{}' is broken:\n\ncatalog: {}\ntool: {}\n{}",
+            entry.name, project.catalog, project.tool, invocation
         ),
         EntrySource::Personal => format!(
-            "shortcut '{}' is broken:\n\ncatalog: {}\ntool: {}\npath: {}",
-            entry.name, project.catalog, project.tool, entry.path
+            "shortcut '{}' is broken:\n\ncatalog: {}\ntool: {}\n{}",
+            entry.name, project.catalog, project.tool, invocation
         ),
     })?;
     Ok(true)
 }
 
 fn launch_entry(paths: &Paths, project: &Project, entry: &ProjectEntry) -> Result<()> {
+    let legacy = entry
+        .invocation
+        .as_legacy()
+        .context("structured Recipe execution is not implemented")?;
     super::output::with_context(|context| {
         loadbot::launcher::launch_command(
             paths,
             &project.catalog,
             &project.tool,
-            &entry.path,
-            entry.runner,
+            &legacy.path,
+            legacy.runner,
             entry.source,
             context,
         )
@@ -261,9 +271,8 @@ fn project_inventory(
                 .map(|entry| ProjectEntry {
                     name: entry.name,
                     label: String::new(),
-                    path: entry.path,
                     description: entry.description,
-                    runner: entry.runner,
+                    invocation: entry.invocation,
                     source: entry.source,
                 })
                 .collect::<Vec<_>>();
@@ -523,9 +532,8 @@ struct Project {
 struct ProjectEntry {
     name: String,
     label: String,
-    path: String,
     description: Option<String>,
-    runner: Option<Runner>,
+    invocation: StoredInvocation,
     source: EntrySource,
 }
 
@@ -626,7 +634,7 @@ mod tests {
         assert_eq!(saved.shortcuts["dotfiles"].catalog, "personal");
         assert_eq!(saved.shortcuts["dotfiles"].tool, "dotfiles");
         assert_eq!(
-            saved.shortcuts["dotfiles"].path,
+            saved.shortcuts["dotfiles"].legacy().unwrap().path,
             "recipes/install_dotfiles.sh"
         );
         assert!(
@@ -664,8 +672,14 @@ mod tests {
             .unwrap();
 
         let saved = shortcuts::load(&shortcut_path).unwrap();
-        assert_eq!(saved.shortcuts["dotfiles"].path, "install_dotfiles.sh");
-        assert_eq!(saved.shortcuts["update"].path, "update.sh");
+        assert_eq!(
+            saved.shortcuts["dotfiles"].legacy().unwrap().path,
+            "install_dotfiles.sh"
+        );
+        assert_eq!(
+            saved.shortcuts["update"].legacy().unwrap().path,
+            "update.sh"
+        );
         assert!(
             saved
                 .shortcuts
@@ -742,11 +756,11 @@ mod tests {
     fn inventory_groups_projects_qualifies_duplicates_and_marks_name_conflicts() {
         use loadbot::catalog::{CommandConfig, SourceType, ToolConfig};
 
-        let command = |description: Option<&str>| CommandConfig {
-            path: "scripts/audit.sh".to_owned(),
-            description: description.map(str::to_owned),
-            runner: Some(Runner::Bash),
-            extra: BTreeMap::new(),
+        let command = |description: Option<&str>| {
+            let mut command =
+                CommandConfig::legacy("scripts/audit.sh".to_owned(), Some(Runner::Bash));
+            command.description = description.map(str::to_owned);
+            command
         };
         let tool = |catalog: &str, commands: BTreeMap<String, CommandConfig>| ResolvedTool {
             name: "demo".to_owned(),

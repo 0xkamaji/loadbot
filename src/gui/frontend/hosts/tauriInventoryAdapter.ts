@@ -1,7 +1,8 @@
 import { Channel, invoke, isTauri } from '@tauri-apps/api/core';
 import type {
   AddCatalogInput, AddProjectInput, AddShortcutInput, CatalogIdentity, LoadbotAdapter,
-  CatalogSyncActivity, CatalogSyncActivitySink, LoadbotCatalog, LoadbotProject, LoadbotShortcut,
+  CatalogSyncActivity, CatalogSyncActivitySink, LoadbotCatalog, LoadbotProject, LoadbotRecipe,
+  LoadbotInterpreterRunner, LoadbotRecipeArgument, LoadbotRunner, LoadbotShortcut,
   ProjectIdentity, ShortcutIdentity,
 } from '../loadbot/contract';
 
@@ -73,15 +74,68 @@ function boolean(value: unknown): boolean {
   if (typeof value !== 'boolean') throw new Error('Invalid native response: expected a boolean.');
   return value;
 }
+function number(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isInteger(value)) throw new Error('Invalid inventory response: expected an integer.');
+  return value;
+}
+function recipeArgument(value: unknown): LoadbotRecipeArgument {
+  const item = record(value);
+  const type = text(item.type);
+  if (type === 'project-path') return { type, path: text(item.path) };
+  if (type === 'literal') return { type, value: text(item.value) };
+  if (type === 'input') {
+    const kind = text(item.kind);
+    if (!['text', 'file', 'directory'].includes(kind)) throw new Error('Invalid Recipe input kind.');
+    return {
+      type, id: text(item.id), label: text(item.label), kind: kind as 'text' | 'file' | 'directory',
+      required: boolean(item.required), default: optionalText(item.default), prefix: optionalText(item.prefix),
+    };
+  }
+  if (type === 'switch') {
+    return { type, id: text(item.id), label: text(item.label), value: text(item.value), default: boolean(item.default) };
+  }
+  throw new Error('Invalid Recipe argument type.');
+}
+function recipe(value: unknown): LoadbotRecipe {
+  const item = record(value);
+  const behavior = text(item.behavior);
+  if (behavior !== 'run' && behavior !== 'launch') throw new Error('Invalid Recipe behavior.');
+  const rawProgram = record(item.program);
+  const programType = text(rawProgram.type);
+  let program: LoadbotRecipe['program'];
+  if (programType === 'project-file') program = { type: programType, path: text(rawProgram.path) };
+  else if (programType === 'interpreter') {
+    const runner = text(rawProgram.runner);
+    if (!['bash', 'sh', 'python', 'powershell'].includes(runner)) throw new Error('Invalid Recipe runner.');
+    program = { type: programType, runner: runner as LoadbotInterpreterRunner };
+  } else if (programType === 'executable') program = { type: programType, name: text(rawProgram.name) };
+  else throw new Error('Invalid Recipe program type.');
+  const rawWorkingDirectory = record(item.working_directory);
+  const workingType = text(rawWorkingDirectory.type);
+  let working_directory: LoadbotRecipe['working_directory'];
+  if (workingType === 'project-root' || workingType === 'target-parent') working_directory = { type: workingType };
+  else if (workingType === 'project-relative') working_directory = { type: workingType, path: text(rawWorkingDirectory.path) };
+  else throw new Error('Invalid Recipe working directory.');
+  if (!Array.isArray(item.arguments)) throw new Error('Invalid Recipe arguments.');
+  return {
+    version: number(item.version), behavior, program, working_directory,
+    arguments: item.arguments.map(recipeArgument),
+  };
+}
 function entry(value: unknown): LoadbotShortcut {
   const item = record(value);
   if (item.source !== 'catalog' && item.source !== 'personal') throw new Error('Invalid inventory entry source.');
+  const source: 'catalog' | 'personal' = item.source;
   const runner = optionalText(item.runner);
   if (runner !== undefined && !['direct', 'bash', 'sh', 'python', 'powershell'].includes(runner)) throw new Error('Invalid inventory runner.');
-  return {
-    name: text(item.name), path: text(item.path), source: item.source,
-    description: optionalText(item.description), runner: runner as LoadbotShortcut['runner'],
-  };
+  const path = optionalText(item.path);
+  const definition = item.recipe == null ? undefined : recipe(item.recipe);
+  if ((path === undefined) === (definition === undefined)) throw new Error('Invalid inventory invocation: expected legacy path or Recipe.');
+  if (definition && runner !== undefined) throw new Error('Invalid inventory invocation: Recipe must not have a legacy runner.');
+  const facts = { name: text(item.name), source, description: optionalText(item.description) };
+  return path !== undefined
+    ? { ...facts, path, runner: runner as LoadbotRunner | undefined }
+    : { ...facts, recipe: definition! };
 }
 
 /** Validate the read projection, not native paths or Loadbot's catalog rules.

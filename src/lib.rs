@@ -30,6 +30,8 @@ pub mod launcher;
 pub mod operations;
 /// Explicit or platform-default locations and portable-name validation.
 pub mod paths;
+/// Versioned recipes, typed runtime inputs, and shell-free pure resolution.
+pub mod recipe;
 /// Saved shortcut definitions, validation, and format-preserving persistence.
 pub mod shortcuts;
 

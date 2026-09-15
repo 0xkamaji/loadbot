@@ -19,13 +19,15 @@ function contrastRatio(foreground: string, background: string): number {
 test('console terminology and light-surface activity contrast remain clear', async ({ page }) => {
   await page.goto('/fixture.html');
   const consoleButton = page.getByRole('button', { name: 'Console', exact: true });
-  const terminalTab = page.getByRole('tab', { name: 'TERMINAL' });
+  const commandTab = page.getByRole('tab', { name: 'COMMAND' });
   const activityTab = page.getByRole('tab', { name: 'ACTIVITY' });
   await expect(consoleButton).toBeVisible();
-  await expect(terminalTab).toHaveAttribute('aria-selected', 'true');
+  await expect(commandTab).toHaveAttribute('aria-selected', 'true');
   await expect(activityTab).toHaveAttribute('aria-selected', 'false');
+  await expect(page.getByRole('textbox', { name: 'Loadbot command' })).toBeVisible();
+  await expect(page.getByRole('tab', { name: 'TERMINAL' })).toHaveCount(0);
 
-  const colors = await terminalTab.evaluate((element) => {
+  const colors = await commandTab.evaluate((element) => {
     const theme = getComputedStyle(element.closest('.lb-theme')!);
     return {
       surface: theme.getPropertyValue('--lb-terminal-surface'),
@@ -114,7 +116,7 @@ test('three splitters drag, clamp, persist, and reset independently', async ({ p
   await page.goto('/fixture.html');
   const projects = page.getByRole('separator', { name: 'Resize projects pane' });
   const shortcuts = page.getByRole('separator', { name: 'Resize shortcuts and selected shortcut' });
-  const terminal = page.getByRole('separator', { name: 'Resize terminal pane' });
+  const terminal = page.getByRole('separator', { name: 'Resize console pane' });
   await expect(projects).toHaveAttribute('aria-valuenow', '260');
   await expect(shortcuts).toHaveAttribute('aria-valuenow', '210');
   await expect(terminal).toHaveAttribute('aria-valuenow', '140');

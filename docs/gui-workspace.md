@@ -3,7 +3,7 @@
 Phase 4A started from clean `main` at
 `697ef45c1847371224d9ef30118ff81272462295`. It evolves the real local-inventory
 window into a workspace shell without adding catalog, project, or shortcut mutation
-and without adding shortcut or terminal execution.
+and without adding shortcut or system-terminal execution.
 
 ## Workspace model
 
@@ -13,13 +13,14 @@ disabled in this phase: the existing inventory contract does not provide a clean
 catalog-switch operation, so the GUI neither invents one nor writes a GUI catalog
 preference. Projects remain primary navigation in the left pane. The right workspace
 contains the selected project's shortcut list above the selected shortcut's real
-metadata. The terminal remains a clearly non-connected future workspace area.
+metadata. The lower workspace was reserved here and is now the Console described in
+[Loadbot Console](gui-console.md).
 
 Three small, keyboard-focusable separators resize:
 
 1. Projects versus the right workspace.
 2. Shortcut list versus selected-shortcut details.
-3. Main workspace versus terminal.
+3. Main workspace versus Console.
 
 The separators support pointer drag, arrow keys, bounds derived from their current
 container, and double-click reset. Content scrolls inside its owning pane. Their
@@ -94,8 +95,8 @@ description, project, catalog, source, optional runner, and configured relative
 target. There is no Run button in the real view. Fixture-only sample forms remain
 available from explicit fixture hosts for frontend testing.
 
-The terminal is resizable and initially visible, but it has no PTY, shell, input,
-streaming, history, or fake output. Add/edit/delete actions, catalog management,
-catalog synchronization, shortcut execution, and terminal implementation remain
-future work. Phase 4B should preserve these seams and separately design mutation
-reports/confirmation; it should not reuse folder opening as a generic action bus.
+The lower workspace remains resizable and has no PTY, shell, arbitrary process
+execution, streaming process output, or fake output. It now hosts a narrow Loadbot
+Command interface plus structured Activity; neither is a system terminal. Shortcut
+execution remains future work and must not reuse folder opening as a generic action
+bus.

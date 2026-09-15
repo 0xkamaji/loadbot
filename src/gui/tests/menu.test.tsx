@@ -24,8 +24,10 @@ describe('injected menu outside Tauri', () => {
     expect(screen.getByRole('status')).toHaveTextContent('Sample form ready');
     expect(screen.getByRole('button', { name: 'RUN SHORTCUT' })).toBeDisabled();
     expect(screen.getByRole('region', { name: 'Bottom workspace' })).toBeVisible();
-    expect(screen.getByRole('tab', { name: 'TERMINAL' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'COMMAND' })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: 'ACTIVITY' })).toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: 'TERMINAL' })).not.toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: 'Loadbot command' })).toBeInTheDocument();
     const consoleButton = screen.getByRole('button', { name: 'Console' });
     await user.click(consoleButton);
     expect(screen.queryByRole('region', { name: 'Bottom workspace' })).not.toBeInTheDocument();
@@ -50,6 +52,32 @@ describe('injected menu outside Tauri', () => {
     await user.click(projectRows().getByRole('button', { name: 're-toolkit personal' }));
     expect(screen.getByLabelText('Input folder *')).toHaveValue('');
     expect(screen.getByRole('checkbox')).not.toBeChecked();
+  });
+
+  it('submits structured Loadbot commands and navigates session history separately from Activity', async () => {
+    const user = userEvent.setup();
+    render(<LoadbotMenu {...fixtureMenuDependencies} />);
+    await screen.findByRole('button', { name: 're-toolkit personal' });
+    const input = screen.getByRole('textbox', { name: 'Loadbot command' });
+    await user.type(input, 'projects{Enter}');
+    expect(screen.getByRole('tabpanel', { name: 'Command' })).toHaveTextContent('rotbot');
+    expect(screen.getByRole('tabpanel', { name: 'Command' })).toHaveTextContent('re-toolkit');
+    expect(input).toHaveValue('');
+    expect(input).toHaveFocus();
+    await user.type(input, 'help{Enter}');
+    expect(screen.getByRole('tabpanel', { name: 'Command' })).toHaveTextContent('shortcuts [project]');
+    expect(screen.getByRole('tabpanel', { name: 'Command' })).toHaveTextContent('inspect <project> [shortcut]');
+    await user.keyboard('{ArrowUp}');
+    expect(input).toHaveValue('help');
+    await user.keyboard('{ArrowUp}');
+    expect(input).toHaveValue('projects');
+    await user.keyboard('{ArrowDown}');
+    expect(input).toHaveValue('help');
+    await user.keyboard('{ArrowDown}');
+    expect(input).toHaveValue('');
+    await user.keyboard('{Enter}');
+    await user.click(screen.getByRole('tab', { name: 'ACTIVITY' }));
+    expect(screen.getByRole('tabpanel', { name: 'Activity' })).toHaveTextContent('No activity yet.');
   });
 
   it('keeps selection distinct from arrow-key focus and supports native activation', async () => {

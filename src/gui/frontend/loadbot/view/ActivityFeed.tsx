@@ -1,4 +1,5 @@
 import type { ActivityEntry, LoadbotActions, LoadbotState } from '../application/controller';
+import { CommandPane } from './CommandPane';
 
 const operationLabels: Record<ActivityEntry['operation'], string> = {
   'catalog-sync': 'Sync catalog',
@@ -33,14 +34,10 @@ function description(entry: ActivityEntry): string {
 export function BottomWorkspace({ state, actions }: { state: LoadbotState; actions: LoadbotActions }) {
   return <>
     <div className="lb-bottom-tabs" role="tablist" aria-label="Bottom workspace">
-      <button type="button" role="tab" aria-selected={state.bottomView === 'terminal'} onClick={() => actions.selectBottomView('terminal')}>TERMINAL</button>
+      <button type="button" role="tab" aria-selected={state.bottomView === 'command'} onClick={() => actions.selectBottomView('command')}>COMMAND</button>
       <button type="button" role="tab" aria-selected={state.bottomView === 'activity'} onClick={() => actions.selectBottomView('activity')}>ACTIVITY</button>
     </div>
-    {state.bottomView === 'terminal' ? <section className="lb-bottom-content" role="tabpanel" aria-label="Terminal">
-      <h2>TERMINAL / NOT CONNECTED</h2>
-      <p>Workspace reserved for a future terminal capability.</p>
-      <p>No shell session, command input, execution, or output is connected.</p>
-    </section> : <section className="lb-bottom-content lb-activity" role="tabpanel" aria-label="Activity">
+    {state.bottomView === 'command' ? <CommandPane state={state} actions={actions} /> : <section className="lb-bottom-content lb-activity" role="tabpanel" aria-label="Activity">
       <h2>ACTIVITY / THIS SESSION</h2>
       {!state.activity.length && <p className="lb-metadata">No activity yet.</p>}
       <ol aria-live="polite">

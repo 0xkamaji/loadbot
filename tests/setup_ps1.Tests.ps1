@@ -261,4 +261,146 @@ Describe "Loadbot PowerShell setup" {
         Assert-MockCalled Invoke-LoadbotCargoInstall -Times 1
         Assert-MockCalled Invoke-LoadbotExecutable -Times 0 -ParameterFilter { $Arguments -contains "desktop:build" }
     }
+
+    It "adopts and records a legacy CLI installation" {
+        Invoke-LoadbotSetup -Mode repair
+        Get-Content -Raw (Join-Path $installRoot "loadbot-install-mode") | Should -Match '^cli'
+        Assert-MockCalled Invoke-LoadbotCargoInstall -Times 1
+
+        Invoke-LoadbotSetup -Mode repair
+        Assert-MockCalled Invoke-LoadbotCargoInstall -Times 2
+        ([regex]::Matches((Get-Content -Raw $profile), [regex]::Escape("# >>> loadbot >>>"))).Count | Should -Be 1
+    }
+
+    It "adopts and records a legacy CLI and GUI installation when completion proves complete mode" {
+        $gui = Join-Path $installBin "loadbot-desktop.exe"
+        $completion = Join-Path $installRoot "completions\loadbot.ps1"
+        New-Item -ItemType Directory -Force (Split-Path $completion) | Out-Null
+        Set-Content -LiteralPath $gui -Value "fake"
+        Set-Content -LiteralPath $completion -Value "completion"
+        New-Item -ItemType Directory -Force (Split-Path $profile) | Out-Null
+        Set-Content -LiteralPath $profile -Value (Get-LoadbotManagedBlock -InstallRoot $installRoot)
+        Mock Get-LoadbotUserPath { $script:installBin }
+        Mock Test-LoadbotNodeSupported { $true }
+        Mock Test-LoadbotWindowsBuildTools { $true }
+        Mock Test-LoadbotWebView2 { $true }
+        Mock Test-LoadbotFrontendDependencies { $true }
+        Mock Get-LoadbotCommand {
+            param($Name)
+            if ($Name -in @("git", "cargo", "rustc", "winget", "node", "npm")) {
+                [pscustomobject]@{ Source = "C:\fake\$Name.exe" }
+            }
+        }
+        $guiRoot = Join-Path $script:project "src\gui"
+        $builtGui = Join-Path $guiRoot "src-tauri\target\release\loadbot-desktop.exe"
+        Mock Test-Path { $true } -ParameterFilter { $LiteralPath -eq $builtGui }
+        Mock Copy-Item { }
+
+        Invoke-LoadbotSetup -Mode repair
+
+        Get-Content -Raw (Join-Path $installRoot "loadbot-install-mode") | Should -Match '^all'
+        Assert-MockCalled Invoke-LoadbotExecutable -Times 1 -ParameterFilter { $Arguments -contains "desktop:build" }
+    }
+
+    It "adopts and records a legacy GUI-only installation when PATH has no completion state" {
+        $gui = Join-Path $installBin "loadbot-desktop.exe"
+        Set-Content -LiteralPath $gui -Value "fake"
+        Mock Get-LoadbotUserPath { $script:installBin }
+        Mock Test-LoadbotNodeSupported { $true }
+        Mock Test-LoadbotWindowsBuildTools { $true }
+        Mock Test-LoadbotWebView2 { $true }
+        Mock Test-LoadbotFrontendDependencies { $true }
+        Mock Get-LoadbotCommand {
+            param($Name)
+            if ($Name -in @("git", "cargo", "rustc", "winget", "node", "npm")) {
+                [pscustomobject]@{ Source = "C:\fake\$Name.exe" }
+            }
+        }
+        $guiRoot = Join-Path $script:project "src\gui"
+        $builtGui = Join-Path $guiRoot "src-tauri\target\release\loadbot-desktop.exe"
+        Mock Test-Path { $true } -ParameterFilter { $LiteralPath -eq $builtGui }
+        Mock Copy-Item { }
+
+        Invoke-LoadbotSetup -Mode repair
+
+        Get-Content -Raw (Join-Path $installRoot "loadbot-install-mode") | Should -Match '^gui'
+        Test-Path (Join-Path $installRoot "completions\loadbot.ps1") | Should -BeFalse
+    }
+
+    It "reports a fresh machine and creates no record when repair is cancelled" {
+        Remove-Item -LiteralPath $loadbot
+        Mock Read-Host { "4" }
+        { Invoke-LoadbotSetup -Mode repair } | Should -Throw "*cancelled*"
+        Test-Path (Join-Path $installRoot "loadbot-install-mode") | Should -BeFalse
+        Assert-MockCalled Invoke-LoadbotCargoInstall -Times 0
+    }
+
+    It "asks for an explicit mode for ambiguous legacy files and records the choice" {
+        Set-Content -LiteralPath (Join-Path $installBin "loadbot-desktop.exe") -Value "fake"
+        $script:repairPrompt = 0
+        Mock Read-Host {
+            $script:repairPrompt++
+            if ($script:repairPrompt -eq 1) { "1" } else { "y" }
+        }
+
+        Invoke-LoadbotSetup -Mode repair
+
+        Get-Content -Raw (Join-Path $installRoot "loadbot-install-mode") | Should -Match '^cli'
+        Assert-MockCalled Invoke-LoadbotCargoInstall -Times 1
+    }
+
+    It "cancels ambiguous adoption without changing existing files or creating a record" {
+        $gui = Join-Path $installBin "loadbot-desktop.exe"
+        Set-Content -LiteralPath $gui -Value "legacy gui"
+        $cliBefore = Get-FileHash -LiteralPath $loadbot
+        $guiBefore = Get-FileHash -LiteralPath $gui
+        Mock Read-Host { "4" }
+
+        { Invoke-LoadbotSetup -Mode repair } | Should -Throw "*cancelled*"
+
+        (Get-FileHash -LiteralPath $loadbot).Hash | Should -Be $cliBefore.Hash
+        (Get-FileHash -LiteralPath $gui).Hash | Should -Be $guiBefore.Hash
+        Test-Path (Join-Path $installRoot "loadbot-install-mode") | Should -BeFalse
+        Assert-MockCalled Invoke-LoadbotCargoInstall -Times 0
+    }
+
+    It "adopts an unambiguous legacy CLI noninteractively when no other approval is needed" {
+        New-Item -ItemType Directory -Force (Split-Path $profile) | Out-Null
+        Set-Content -LiteralPath $profile -Value (Get-LoadbotManagedBlock -InstallRoot $installRoot)
+        New-Item -ItemType Directory -Force (Join-Path $installRoot "completions") | Out-Null
+        Set-Content -LiteralPath (Join-Path $installRoot "completions\loadbot.ps1") -Value "completion"
+        Mock Get-LoadbotUserPath { $script:installBin }
+        Mock Test-LoadbotInteractive { $false }
+
+        Invoke-LoadbotSetup -Mode repair
+
+        Get-Content -Raw (Join-Path $installRoot "loadbot-install-mode") | Should -Match '^cli'
+        Assert-MockCalled Read-Host -Times 0
+    }
+
+    It "fails noninteractive ambiguous and fresh repair without creating a record" {
+        Mock Test-LoadbotInteractive { $false }
+        Set-Content -LiteralPath (Join-Path $installBin "loadbot-desktop.exe") -Value "fake"
+        { Invoke-LoadbotSetup -Mode repair } | Should -Throw "*ambiguous*use -Cli, -Gui, or -All*"
+        Test-Path (Join-Path $installRoot "loadbot-install-mode") | Should -BeFalse
+
+        Remove-Item -LiteralPath $loadbot
+        Remove-Item -LiteralPath (Join-Path $installBin "loadbot-desktop.exe")
+        { Invoke-LoadbotSetup -Mode repair } | Should -Throw "*No existing Loadbot installation*use -Cli, -Gui, or -All*"
+        Test-Path (Join-Path $installRoot "loadbot-install-mode") | Should -BeFalse
+        Assert-MockCalled Read-Host -Times 0
+    }
+
+    It "does not infer an installation from configuration data alone" {
+        Remove-Item -LiteralPath $loadbot
+        $env:LOADBOT_HOME = Join-Path $testRoot "existing loadbot data"
+        New-Item -ItemType Directory -Force $env:LOADBOT_HOME | Out-Null
+        Mock Read-Host { "4" }
+        try {
+            { Invoke-LoadbotSetup -Mode repair } | Should -Throw "*cancelled*"
+            Test-Path (Join-Path $installRoot "loadbot-install-mode") | Should -BeFalse
+        } finally {
+            Remove-Item Env:LOADBOT_HOME
+        }
+    }
 }

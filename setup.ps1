@@ -172,6 +172,139 @@ function Set-LoadbotInstallMode {
     }
 }
 
+function Get-LoadbotInstalledFileState {
+    param([Parameter(Mandatory)][string]$Path)
+    if (-not (Test-Path -LiteralPath $Path)) { return "missing" }
+    $item = Get-Item -LiteralPath $Path -Force
+    if (-not $item.PSIsContainer -and -not ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        return "installed"
+    }
+    "unsafe"
+}
+
+function Get-LoadbotManagedIntegration {
+    param(
+        [Parameter(Mandatory)][string]$ProfilePath,
+        [Parameter(Mandatory)][string]$CompletionName
+    )
+    if (-not (Test-Path -LiteralPath $ProfilePath)) {
+        return [pscustomobject]@{ State = "missing"; CompletionReferenced = $false }
+    }
+    $item = Get-Item -LiteralPath $ProfilePath -Force
+    if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        return [pscustomobject]@{ State = "unsafe"; CompletionReferenced = $false }
+    }
+    $text = [IO.File]::ReadAllText($ProfilePath)
+    $starts = [regex]::Matches($text, "(?m)^$([regex]::Escape($script:StartMarker))\r?$")
+    $ends = [regex]::Matches($text, "(?m)^$([regex]::Escape($script:EndMarker))\r?$")
+    if ($starts.Count -eq 0 -and $ends.Count -eq 0) {
+        return [pscustomobject]@{ State = "missing"; CompletionReferenced = $false }
+    }
+    if ($starts.Count -ne 1 -or $ends.Count -ne 1 -or $starts[0].Index -ge $ends[0].Index) {
+        return [pscustomobject]@{ State = "unsafe"; CompletionReferenced = $false }
+    }
+    [pscustomobject]@{
+        State = "configured"
+        CompletionReferenced = $text.Contains($CompletionName)
+    }
+}
+
+function Select-LoadbotRepairMode {
+    param([Parameter(Mandatory)][string]$NoninteractiveReason)
+    if (-not (Test-LoadbotInteractive)) {
+        throw "$NoninteractiveReason; rerun interactively or use -Cli, -Gui, or -All to select the installation explicitly"
+    }
+    Write-Host ""
+    Write-Host "Which installation should Loadbot repair?"
+    Write-Host "  1. CLI only"
+    Write-Host "  2. GUI only"
+    Write-Host "  3. CLI + GUI"
+    Write-Host "  4. Cancel"
+    $selection = Read-Host ">"
+    switch ($selection) {
+        "1" { "cli" }
+        "2" { "gui" }
+        "3" { "all" }
+        "4" { throw "Setup cancelled; no changes were made" }
+        default { throw "Invalid repair selection '$selection'" }
+    }
+}
+
+function Resolve-LoadbotLegacyRepairMode {
+    param(
+        [Parameter(Mandatory)][string]$InstallBin,
+        [Parameter(Mandatory)][string]$LoadbotExe,
+        [Parameter(Mandatory)][string]$GuiExe,
+        [Parameter(Mandatory)][string]$CompletionPath,
+        [Parameter(Mandatory)][string]$ProfilePath
+    )
+    $cliState = Get-LoadbotInstalledFileState $LoadbotExe
+    $guiState = Get-LoadbotInstalledFileState $GuiExe
+    $integration = Get-LoadbotManagedIntegration -ProfilePath $ProfilePath -CompletionName "loadbot.ps1"
+    $completionState = Get-LoadbotInstalledFileState $CompletionPath
+    if ($completionState -eq "installed") { $completionState = "generated" }
+    $pathState = if (Test-LoadbotPathContains (Get-LoadbotUserPath) $InstallBin) { "configured" } else { "missing" }
+    $reachableState = if (Get-LoadbotCommand "loadbot") { "reachable" } else { "not-reachable" }
+    $dataRoot = if ($env:LOADBOT_HOME) { $env:LOADBOT_HOME } else { Join-Path $env:LOCALAPPDATA "loadbot" }
+    $configRoot = if ($env:LOADBOT_CONFIG_HOME) { $env:LOADBOT_CONFIG_HOME } else { Join-Path $env:APPDATA "loadbot" }
+    $dataState = if (Test-Path -LiteralPath $dataRoot) { "present" } else { "missing" }
+    $configState = if (Test-Path -LiteralPath $configRoot) { "present" } else { "missing" }
+
+    Write-Host "No Loadbot installation record was found."
+    Write-Host ""
+    Write-Host "Existing Loadbot state detected:"
+    Write-Host ("  {0,-22} {1}" -f "CLI executable:", $cliState)
+    Write-Host ("  {0,-22} {1}" -f "GUI executable:", $guiState)
+    Write-Host ("  {0,-22} {1}" -f "PATH integration:", $pathState)
+    Write-Host ("  {0,-22} {1}" -f "Managed profile block:", $integration.State)
+    Write-Host ("  {0,-22} {1}" -f "PowerShell completion:", $completionState)
+    Write-Host ("  {0,-22} {1}" -f "loadbot on PATH:", $reachableState)
+    Write-Host ("  {0,-22} {1}" -f "Data directory:", $dataState)
+    Write-Host ("  {0,-22} {1}" -f "Config directory:", $configState)
+
+    $inferred = $null
+    if ($cliState -eq "installed" -and $guiState -eq "missing") {
+        $inferred = "cli"
+    } elseif ($cliState -eq "installed" -and $guiState -eq "installed") {
+        if ($integration.State -eq "configured" -and $completionState -eq "generated" -and $integration.CompletionReferenced) {
+            $inferred = "all"
+        } elseif ($integration.State -eq "configured" -and $completionState -eq "missing" -and -not $integration.CompletionReferenced) {
+            $inferred = "gui"
+        } elseif ($pathState -eq "configured" -and $integration.State -eq "missing" -and $completionState -eq "missing") {
+            $inferred = "gui"
+        }
+    }
+
+    $meaningful = $cliState -ne "missing" -or $guiState -ne "missing" -or
+        $pathState -eq "configured" -or $integration.State -ne "missing" -or
+        $completionState -ne "missing" -or $reachableState -eq "reachable"
+
+    if ($inferred) {
+        $inferredLabel = switch ($inferred) {
+            "cli" { "CLI-only" }
+            "gui" { "GUI-only" }
+            "all" { "CLI + GUI" }
+        }
+        Write-Host ""
+        Write-Host "This appears to be an installation created by an earlier Loadbot setup version."
+        if (Test-LoadbotInteractive) {
+            $answer = Read-Host "Adopt this as a $inferredLabel installation and continue repair? [y/N]"
+            if ($answer -notmatch '^(?i:y|yes)$') { throw "Setup cancelled; no changes were made" }
+        } else {
+            Write-Host "Adopting unambiguous legacy mode: $inferred."
+        }
+        return $inferred
+    }
+    if (-not $meaningful) {
+        Write-Host ""
+        Write-Host "No existing Loadbot installation was detected."
+        return (Select-LoadbotRepairMode -NoninteractiveReason "No existing Loadbot installation was detected")
+    }
+    Write-Host ""
+    Write-Host "Existing Loadbot files or integration were found, but the previous installation mode cannot be determined safely."
+    Select-LoadbotRepairMode -NoninteractiveReason "The legacy Loadbot installation mode is ambiguous"
+}
+
 function Get-MissingLoadbotPrerequisites {
     param([switch]$IncludeGui)
     $missing = @()
@@ -426,19 +559,26 @@ function Invoke-LoadbotSetup {
     $completionDir = Join-Path $installRoot "completions"
     $completionPath = Join-Path $completionDir "loadbot.ps1"
     $modePath = Join-Path $installRoot "loadbot-install-mode"
+    $guiExe = Join-Path $installBin "loadbot-desktop.exe"
+    $profilePath = Get-LoadbotProfilePath
     if ($Mode -eq "repair") {
-        if (-not (Test-Path -LiteralPath $modePath -PathType Leaf)) {
-            throw "No recorded Loadbot installation was found; choose CLI only, GUI only, or CLI + GUI"
+        if (Test-Path -LiteralPath $modePath) {
+            $modeItem = Get-Item -LiteralPath $modePath -Force
+            if ($modeItem.PSIsContainer -or ($modeItem.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+                throw "Loadbot installation record is not a normal file: $modePath"
+            }
+            $Mode = ([IO.File]::ReadAllText($modePath)).Trim()
+            if ($Mode -notin @("cli", "gui", "all")) { throw "Invalid installation record in $modePath" }
+            Write-Host "Repairing recorded $Mode installation."
+        } else {
+            $Mode = Resolve-LoadbotLegacyRepairMode -InstallBin $installBin -LoadbotExe $loadbotExe `
+                -GuiExe $guiExe -CompletionPath $completionPath -ProfilePath $profilePath
+            Write-Host "Repairing $Mode installation."
         }
-        $Mode = ([IO.File]::ReadAllText($modePath)).Trim()
-        if ($Mode -notin @("cli", "gui", "all")) { throw "Invalid installation record in $modePath" }
-        Write-Host "Repairing recorded $Mode installation."
         Assert-LoadbotConfigurationDirectories
     }
     $wantGui = $Mode -in @("gui", "all")
     $wantCompletion = $Mode -in @("cli", "all")
-    $guiExe = Join-Path $installBin "loadbot-desktop.exe"
-    $profilePath = Get-LoadbotProfilePath
     $block = if ($wantCompletion) { Get-LoadbotManagedBlock -InstallRoot $installRoot } else { "" }
     $profilePlan = if ($wantCompletion) { Get-LoadbotProfilePlan -Path $profilePath -Block $block } else { "not configured" }
     $profileState = if ($wantCompletion) { Get-LoadbotProfileState $profilePath } else { "not inspected" }

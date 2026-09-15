@@ -279,6 +279,13 @@ EOF
     chmod +x "$FAKE_BIN/npm"
 }
 
+install_legacy_binary() {
+    path=$1
+    mkdir -p "$(dirname -- "$path")"
+    printf '#!/bin/sh\nexit 0\n' >"$path"
+    chmod +x "$path"
+}
+
 run_without_mode() {
     set +e
     /bin/sh "$PROJECT/setup.sh" >"$OUTPUT" 2>&1
@@ -406,6 +413,104 @@ run_mode_interactive repair ''
 [ "$STATUS" -eq 0 ] && pass "repair reuses the recorded GUI-only mode" || fail_test "repair reuses the recorded GUI-only mode"
 assert_contains "repair announces recorded component set" "Repairing recorded gui installation." "$OUTPUT"
 assert_count "repair does not duplicate managed profile block" 1 '# >>> loadbot >>>' "$HOME/.bashrc"
+
+rm "$CARGO_HOME/loadbot-install-mode"
+run_mode_interactive repair y
+[ "$STATUS" -eq 0 ] && pass "legacy GUI-only installation is adopted" || fail_test "legacy GUI-only installation is adopted"
+assert_contains "legacy GUI-only mode is inferred from integration" "Adopt this as a GUI-only installation" "$OUTPUT"
+assert_contains "legacy GUI-only adoption creates record" "gui" "$CARGO_HOME/loadbot-install-mode"
+
+new_case legacy_cli_repair
+run_interactive y
+rm "$CARGO_HOME/loadbot-install-mode"
+: >"$COMMAND_LOG"
+run_menu '4
+y'
+[ "$STATUS" -eq 0 ] && pass "legacy CLI installation is adopted interactively" || fail_test "legacy CLI installation is adopted interactively"
+assert_contains "legacy CLI state is reported" "CLI executable:       installed" "$OUTPUT"
+assert_contains "legacy CLI mode is inferred" "Adopt this as a CLI-only installation" "$OUTPUT"
+assert_contains "legacy CLI repair uses adopted mode" "Repairing cli installation." "$OUTPUT"
+assert_contains "legacy CLI adoption creates record" "cli" "$CARGO_HOME/loadbot-install-mode"
+
+run_mode_interactive repair ''
+[ "$STATUS" -eq 0 ] && pass "repair after legacy adoption is idempotent" || fail_test "repair after legacy adoption is idempotent"
+assert_contains "repair after adoption uses record" "Repairing recorded cli installation." "$OUTPUT"
+
+new_case legacy_all_repair
+prepare_gui
+run_mode_interactive all y
+rm "$CARGO_HOME/loadbot-install-mode"
+run_mode_interactive repair y
+[ "$STATUS" -eq 0 ] && pass "legacy CLI and GUI installation is adopted" || fail_test "legacy CLI and GUI installation is adopted"
+assert_contains "legacy GUI executable is reported" "GUI executable:       installed" "$OUTPUT"
+assert_contains "legacy complete mode is inferred" "Adopt this as a CLI + GUI installation" "$OUTPUT"
+assert_contains "legacy complete adoption creates record" "all" "$CARGO_HOME/loadbot-install-mode"
+
+new_case fresh_repair
+run_mode_interactive repair 4
+[ "$STATUS" -ne 0 ] && pass "fresh repair requires an explicit component choice" || fail_test "fresh repair requires an explicit component choice"
+assert_contains "fresh repair reports no installation" "No existing Loadbot installation was detected." "$OUTPUT"
+assert_not_exists "fresh repair cancellation creates no record" "$CARGO_HOME/loadbot-install-mode"
+
+new_case config_only_repair
+mkdir -p "$HOME/.local/share/loadbot"
+run_mode_interactive repair 4
+[ "$STATUS" -ne 0 ] && pass "configuration alone is treated as a fresh installation" || fail_test "configuration alone is treated as a fresh installation"
+assert_contains "configuration is reported without becoming install evidence" "Data directory:       present" "$OUTPUT"
+assert_contains "configuration-only repair still reports no installation" "No existing Loadbot installation was detected." "$OUTPUT"
+assert_not_exists "configuration-only cancellation creates no record" "$CARGO_HOME/loadbot-install-mode"
+
+new_case ambiguous_repair
+prepare_gui
+install_legacy_binary "$CARGO_HOME/bin/loadbot"
+install_legacy_binary "$CARGO_HOME/bin/loadbot-desktop"
+run_mode_interactive repair '3
+y'
+[ "$STATUS" -eq 0 ] && pass "ambiguous legacy state asks for and uses a mode" || fail_test "ambiguous legacy state asks for and uses a mode"
+assert_contains "ambiguous legacy state is explained" "cannot be determined safely" "$OUTPUT"
+assert_contains "ambiguous repair offers explicit choices" "Which installation should Loadbot repair?" "$OUTPUT"
+assert_contains "ambiguous selection creates chosen record" "all" "$CARGO_HOME/loadbot-install-mode"
+
+new_case ambiguous_cancel
+install_legacy_binary "$CARGO_HOME/bin/loadbot"
+install_legacy_binary "$CARGO_HOME/bin/loadbot-desktop"
+before_cli=$(cksum "$CARGO_HOME/bin/loadbot")
+before_gui=$(cksum "$CARGO_HOME/bin/loadbot-desktop")
+run_mode_interactive repair 4
+[ "$STATUS" -ne 0 ] && pass "ambiguous legacy adoption can be cancelled" || fail_test "ambiguous legacy adoption can be cancelled"
+assert_not_exists "ambiguous cancellation creates no record" "$CARGO_HOME/loadbot-install-mode"
+[ "$(cksum "$CARGO_HOME/bin/loadbot")" = "$before_cli" ] && [ "$(cksum "$CARGO_HOME/bin/loadbot-desktop")" = "$before_gui" ] && pass "ambiguous cancellation leaves binaries untouched" || fail_test "ambiguous cancellation leaves binaries untouched"
+
+new_case legacy_noninteractive
+run_interactive y
+rm "$CARGO_HOME/loadbot-install-mode"
+set +e
+/bin/sh "$PROJECT/setup.sh" --repair >"$OUTPUT" 2>&1
+STATUS=$?
+set -e
+[ "$STATUS" -eq 0 ] && pass "noninteractive unambiguous legacy repair succeeds" || fail_test "noninteractive unambiguous legacy repair succeeds"
+assert_contains "noninteractive legacy mode is adopted" "Adopting unambiguous legacy mode: cli." "$OUTPUT"
+assert_contains "noninteractive adoption creates record" "cli" "$CARGO_HOME/loadbot-install-mode"
+
+new_case ambiguous_noninteractive
+install_legacy_binary "$CARGO_HOME/bin/loadbot"
+install_legacy_binary "$CARGO_HOME/bin/loadbot-desktop"
+set +e
+/bin/sh "$PROJECT/setup.sh" --repair >"$OUTPUT" 2>&1
+STATUS=$?
+set -e
+[ "$STATUS" -ne 0 ] && pass "noninteractive ambiguous repair fails without prompting" || fail_test "noninteractive ambiguous repair fails without prompting"
+assert_contains "noninteractive ambiguity has explicit guidance" "use --cli, --gui, or --all" "$OUTPUT"
+assert_not_exists "noninteractive ambiguity creates no record" "$CARGO_HOME/loadbot-install-mode"
+
+new_case fresh_noninteractive_repair
+set +e
+/bin/sh "$PROJECT/setup.sh" --repair >"$OUTPUT" 2>&1
+STATUS=$?
+set -e
+[ "$STATUS" -ne 0 ] && pass "noninteractive fresh repair fails without prompting" || fail_test "noninteractive fresh repair fails without prompting"
+assert_contains "noninteractive fresh repair has setup guidance" "no existing Loadbot installation was detected" "$OUTPUT"
+assert_not_exists "noninteractive fresh repair creates no record" "$CARGO_HOME/loadbot-install-mode"
 
 new_case cli_only_scope
 run_interactive y

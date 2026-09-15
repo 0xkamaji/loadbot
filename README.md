@@ -55,6 +55,19 @@ The Loadbot executable and Loadbot source repository do not have to live beneath
 
 ## Build and Install
 
+Normal use is intentionally small:
+
+```text
+loadbot
+loadbot gui
+loadbot setup
+```
+
+`loadbot gui` launches the installed native read-only desktop application; it
+does not start npm, Vite, a browser preview, or fixture data. `loadbot setup`
+reopens the source bootstrap for configuration or repair. Developers can use
+`loadbot gui --dev` for the source checkout and hot reload.
+
 The optional **desktop GUI** uses Tauri 2 and React to display real local,
 read-only Loadbot inventory on Windows and Linux. Explicit fixture previews remain
 available for development. See [desktop development and browser preview](docs/gui-phase1.md)
@@ -80,7 +93,19 @@ Native Windows PowerShell users can run:
 .\setup.ps1
 ```
 
-The setup scripts display a consolidated plan before changing PATH, a profile, or system prerequisites. On Linux, `apt-get` on Ubuntu/Debian and `pacman` on Arch/CachyOS install only missing system utilities such as Git or curl. Missing or outdated Rust is installed with rustup so an old distro Cargo package cannot silently break the build. Native Windows uses Winget and rustup. The commands, package list, and elevation behavior are displayed first, and prerequisite changes always require an explicit `Install/update these prerequisites? [y/N]` confirmation. A noninteractive setup that needs prerequisite changes prints the plan and exits. Unsupported package managers receive manual guidance and are never guessed.
+With no mode flag, both scripts display the same interactive choices: CLI only,
+GUI only, CLI + GUI, repair/verify, or exit. Automation can use `--cli`, `--gui`,
+`--all`, and `--repair` on Linux, or `-Cli`, `-Gui`, `-All`, and `-Repair` on
+Windows. GUI-only includes the minimal `loadbot` launcher and PATH entry but
+omits shell completion.
+
+GUI setup uses lockfile-pinned `npm ci`, builds Tauri without a package/bundle,
+and places `loadbot-desktop` beside the installed `loadbot` executable. After
+setup, normal `loadbot gui` is independent of the source tree and development
+tooling. See [setup, repair, and GUI launch](docs/setup-and-gui.md) for component
+ownership, repair behavior, platform prerequisites, and source development.
+
+The setup scripts display a consolidated plan before changing PATH, a profile, or system prerequisites. On Linux, `apt-get` on Ubuntu/Debian and `pacman` on Arch/CachyOS install only prerequisites for the selected component set; CLI-only remains limited to utilities such as Git or curl, while GUI modes add the documented Tauri dependencies. Missing or outdated Rust is installed with rustup so an old distro Cargo package cannot silently break the build. Native Windows uses Winget and rustup. The commands, package list, and elevation behavior are displayed first, and prerequisite changes always require an explicit `Install/update these prerequisites? [y/N]` confirmation. A noninteractive setup that needs prerequisite changes prints the plan and exits. Unsupported package managers receive manual guidance and are never guessed.
 
 Linux setup installs beneath `${CARGO_HOME:-$HOME/.cargo}`, adds its `bin` directory and the appropriate generated completion to one of these login-shell files, and leaves other shells untouched:
 

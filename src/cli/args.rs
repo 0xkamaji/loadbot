@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use clap_complete::engine::ArgValueCompleter;
 
 #[derive(Debug, Parser)]
@@ -10,6 +10,14 @@ pub struct Cli {
 
 #[derive(Debug, PartialEq, Eq, Subcommand)]
 pub enum Commands {
+    /// Launch the installed desktop GUI.
+    Gui {
+        /// Launch the source development environment with hot reload.
+        #[arg(long)]
+        dev: bool,
+    },
+    /// Install, configure, or repair Loadbot from a source checkout.
+    Setup(SetupArgs),
     /// Add a tool definition to a writable catalog.
     Add {
         name: Option<String>,
@@ -69,6 +77,23 @@ pub enum Commands {
         #[command(subcommand)]
         command: RotCommands,
     },
+}
+
+#[derive(Debug, PartialEq, Eq, Args)]
+#[group(multiple = false)]
+pub struct SetupArgs {
+    /// Install only the CLI and shell integration.
+    #[arg(long)]
+    pub cli: bool,
+    /// Install the GUI launcher and desktop application without shell completion.
+    #[arg(long)]
+    pub gui: bool,
+    /// Install the CLI, shell integration, and GUI.
+    #[arg(long)]
+    pub all: bool,
+    /// Verify and conservatively restore the previously selected components.
+    #[arg(long)]
+    pub repair: bool,
 }
 
 #[derive(Debug, PartialEq, Eq, Subcommand)]
@@ -211,6 +236,37 @@ mod tests {
                 command: Some(ShortcutCommands::Add)
             })
         );
+    }
+
+    #[test]
+    fn parses_gui_and_setup_modes_without_ambiguity() {
+        assert_eq!(
+            Cli::try_parse_from(["loadbot", "gui"]).unwrap().command,
+            Some(Commands::Gui { dev: false })
+        );
+        assert_eq!(
+            Cli::try_parse_from(["loadbot", "gui", "--dev"])
+                .unwrap()
+                .command,
+            Some(Commands::Gui { dev: true })
+        );
+        assert!(matches!(
+            Cli::try_parse_from(["loadbot", "setup"]).unwrap().command,
+            Some(Commands::Setup(SetupArgs {
+                cli: false,
+                gui: false,
+                all: false,
+                repair: false
+            }))
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["loadbot", "setup", "--gui"])
+                .unwrap()
+                .command,
+            Some(Commands::Setup(SetupArgs { gui: true, .. }))
+        ));
+        assert!(Cli::try_parse_from(["loadbot", "setup", "--cli", "--gui"]).is_err());
+        assert!(Cli::try_parse_from(["loadbot", "gui", "--fixture"]).is_err());
     }
 }
 

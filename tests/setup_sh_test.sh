@@ -60,7 +60,7 @@ new_case() {
     cp "$REPOSITORY/Cargo.toml" "$PROJECT/Cargo.toml"
     : >"$COMMAND_LOG"
 
-    for utility in sh awk sed grep cksum mkdir mktemp cat date cp chmod mv rm dirname ln wc; do
+    for utility in sh awk sed grep cksum cmp mkdir mktemp cat date cp chmod mv rm dirname ln wc; do
         utility_path=$(PATH=$SYSTEM_PATH command -v "$utility")
         ln -s "$utility_path" "$FAKE_BIN/$utility"
     done
@@ -190,6 +190,11 @@ if [ "${FAKE_INSTALL_PREREQUISITES:-0}" = 1 ]; then
     case " $* " in *" cargo "*) cp "$CASE_DIR/cargo-template" "$FAKE_BIN/cargo"; chmod +x "$FAKE_BIN/cargo";; esac
     case " $* " in *" rustc "*|*" rust "*) printf '#!/bin/sh\nexit 0\n' >"$FAKE_BIN/rustc"; chmod +x "$FAKE_BIN/rustc";; esac
     case " $* " in *" git "*) printf '#!/bin/sh\nexit 0\n' >"$FAKE_BIN/git"; chmod +x "$FAKE_BIN/git";; esac
+    case " $* " in
+        *"libwebkit2gtk-4.1-dev"*|*"webkit2gtk-4.1"*)
+            for tool in pkg-config cc make; do printf '#!/bin/sh\nexit 0\n' >"$FAKE_BIN/$tool"; chmod +x "$FAKE_BIN/$tool"; done
+            ;;
+    esac
 fi
 exit 0
 EOF
@@ -211,12 +216,70 @@ run_interactive() {
     login_shell=$SHELL
     set +e
     printf '%s\n' "$answer" | SHELL=/bin/sh /usr/bin/script -qefc \
-        "SHELL='$login_shell' /bin/sh '$PROJECT/setup.sh'" /dev/null >"$OUTPUT" 2>&1
+        "SHELL='$login_shell' /bin/sh '$PROJECT/setup.sh' --cli" /dev/null >"$OUTPUT" 2>&1
     STATUS=$?
     set -e
 }
 
 run_noninteractive() {
+    set +e
+    /bin/sh "$PROJECT/setup.sh" --cli >"$OUTPUT" 2>&1
+    STATUS=$?
+    set -e
+}
+
+run_mode_interactive() {
+    mode=$1
+    answer=$2
+    login_shell=$SHELL
+    set +e
+    printf '%s\n' "$answer" | SHELL=/bin/sh /usr/bin/script -qefc \
+        "SHELL='$login_shell' /bin/sh '$PROJECT/setup.sh' '--$mode'" /dev/null >"$OUTPUT" 2>&1
+    STATUS=$?
+    set -e
+}
+
+run_menu() {
+    answers=$1
+    login_shell=$SHELL
+    set +e
+    printf '%s\n' "$answers" | SHELL=/bin/sh /usr/bin/script -qefc \
+        "SHELL='$login_shell' /bin/sh '$PROJECT/setup.sh'" /dev/null >"$OUTPUT" 2>&1
+    STATUS=$?
+    set -e
+}
+
+prepare_gui() {
+    mkdir -p "$PROJECT/src/gui/src-tauri/target/release"
+    printf '{}\n' >"$PROJECT/src/gui/package.json"
+    printf '{"lockfileVersion":3}\n' >"$PROJECT/src/gui/package-lock.json"
+    for name in cc make; do make_prerequisite "$name"; done
+    cat >"$FAKE_BIN/node" <<'EOF'
+#!/bin/sh
+printf 'v22.12.0\n'
+EOF
+    chmod +x "$FAKE_BIN/node"
+    cat >"$FAKE_BIN/pkg-config" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+    chmod +x "$FAKE_BIN/pkg-config"
+    cat >"$FAKE_BIN/npm" <<'EOF'
+#!/bin/sh
+printf '%s\n' "npm $*" >>"$COMMAND_LOG"
+mkdir -p "$PROJECT/src/gui/node_modules"
+case " $* " in
+    *" ci "*|*" ci") mkdir -p "$PROJECT/src/gui/node_modules/@tauri-apps/api"; printf '{}\n' >"$PROJECT/src/gui/node_modules/@tauri-apps/api/package.json" ;;
+    *" desktop:build "*)
+        printf '#!/bin/sh\nexit 0\n' >"$PROJECT/src/gui/src-tauri/target/release/loadbot-desktop"
+        chmod +x "$PROJECT/src/gui/src-tauri/target/release/loadbot-desktop"
+        ;;
+esac
+EOF
+    chmod +x "$FAKE_BIN/npm"
+}
+
+run_without_mode() {
     set +e
     /bin/sh "$PROJECT/setup.sh" >"$OUTPUT" 2>&1
     STATUS=$?
@@ -310,6 +373,82 @@ run_noninteractive
 [ "$STATUS" -ne 0 ] && pass "noninteractive missing prerequisites fails" || fail_test "noninteractive missing prerequisites fails"
 assert_contains "noninteractive requests an interactive terminal" "cannot install or update prerequisites" "$OUTPUT"
 [ ! -s "$COMMAND_LOG" ] && pass "noninteractive run invokes no package manager" || fail_test "noninteractive run invokes no package manager"
+
+new_case no_mode
+run_without_mode
+[ "$STATUS" -ne 0 ] && pass "noninteractive setup requires an explicit mode" || fail_test "noninteractive setup requires an explicit mode"
+assert_contains "noninteractive mode guidance lists automation flags" "use --cli, --gui, --all, or --repair" "$OUTPUT"
+[ ! -s "$COMMAND_LOG" ] && pass "missing mode mutates nothing" || fail_test "missing mode mutates nothing"
+
+new_case menu_exit
+run_menu 5
+[ "$STATUS" -eq 0 ] && pass "interactive setup menu can exit successfully" || fail_test "interactive setup menu can exit successfully"
+assert_contains "interactive menu offers GUI and repair choices" "4. Repair / verify installation" "$OUTPUT"
+assert_not_exists "menu exit does not install Loadbot" "$CARGO_HOME/bin/loadbot"
+
+new_case menu_cli
+run_menu '1
+y'
+[ "$STATUS" -eq 0 ] && pass "interactive CLI-only selection installs CLI" || fail_test "interactive CLI-only selection installs CLI"
+assert_contains "interactive menu records CLI mode" "Mode: cli" "$OUTPUT"
+
+new_case gui_only
+prepare_gui
+run_mode_interactive gui y
+[ "$STATUS" -eq 0 ] && pass "GUI-only setup builds and installs the native GUI" || fail_test "GUI-only setup builds and installs the native GUI"
+assert_contains "GUI install uses npm ci" "npm --prefix $PROJECT/src/gui ci" "$COMMAND_LOG"
+assert_contains "GUI install uses no-bundle build script" "npm --prefix $PROJECT/src/gui run desktop:build" "$COMMAND_LOG"
+[ -x "$CARGO_HOME/bin/loadbot-desktop" ] && pass "GUI binary installed beside launcher" || fail_test "GUI binary installed beside launcher"
+assert_not_exists "GUI-only setup omits shell completion" "$CARGO_HOME/completions/loadbot.bash"
+assert_count "GUI-only PATH block remains idempotent" 1 '# >>> loadbot >>>' "$HOME/.bashrc"
+
+run_mode_interactive repair ''
+[ "$STATUS" -eq 0 ] && pass "repair reuses the recorded GUI-only mode" || fail_test "repair reuses the recorded GUI-only mode"
+assert_contains "repair announces recorded component set" "Repairing recorded gui installation." "$OUTPUT"
+assert_count "repair does not duplicate managed profile block" 1 '# >>> loadbot >>>' "$HOME/.bashrc"
+
+new_case cli_only_scope
+run_interactive y
+if ! grep -F 'npm ' "$COMMAND_LOG" >/dev/null; then pass "CLI-only setup never invokes npm"; else fail_test "CLI-only setup never invokes npm"; fi
+assert_not_exists "CLI-only setup does not install GUI binary" "$CARGO_HOME/bin/loadbot-desktop"
+
+new_case repair_bad_config
+mkdir -p "$CARGO_HOME"
+printf 'cli\n' >"$CARGO_HOME/loadbot-install-mode"
+LOADBOT_HOME="$CASE_DIR/not a directory"
+printf 'unsafe\n' >"$LOADBOT_HOME"
+export LOADBOT_HOME
+set +e
+/bin/sh "$PROJECT/setup.sh" --repair >"$OUTPUT" 2>&1
+STATUS=$?
+set -e
+[ "$STATUS" -ne 0 ] && pass "repair rejects an invalid configuration path" || fail_test "repair rejects an invalid configuration path"
+assert_contains "repair reports the invalid configuration path" "configuration path is not a directory" "$OUTPUT"
+unset LOADBOT_HOME
+
+new_case gui_apt
+prepare_gui
+rm "$FAKE_BIN/pkg-config"
+FAKE_INSTALL_PREREQUISITES=1; export FAKE_INSTALL_PREREQUISITES
+run_mode_interactive gui y
+assert_contains "Debian GUI plan names WebKitGTK 4.1 development package" "libwebkit2gtk-4.1-dev" "$OUTPUT"
+assert_contains "Debian GUI dependency installation is explicit" "sudo apt-get install -y" "$COMMAND_LOG"
+
+new_case all_mode
+prepare_gui
+run_mode_interactive all y
+[ "$STATUS" -eq 0 ] && pass "CLI + GUI setup installs both component sets" || fail_test "CLI + GUI setup installs both component sets"
+[ -x "$CARGO_HOME/bin/loadbot-desktop" ] && [ -f "$CARGO_HOME/completions/loadbot.bash" ] && pass "CLI + GUI includes desktop and completion" || fail_test "CLI + GUI includes desktop and completion"
+
+new_case gui_pacman
+rm "$FAKE_BIN/apt-get"
+make_manager pacman
+prepare_gui
+rm "$FAKE_BIN/pkg-config"
+FAKE_INSTALL_PREREQUISITES=1; export FAKE_INSTALL_PREREQUISITES
+run_mode_interactive gui y
+assert_contains "Arch GUI plan names WebKitGTK 4.1 package" "webkit2gtk-4.1" "$OUTPUT"
+assert_contains "Arch GUI dependency installation uses --needed" "sudo pacman -S --needed" "$COMMAND_LOG"
 
 new_case package_failure
 rm "$FAKE_BIN/git"

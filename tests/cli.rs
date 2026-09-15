@@ -7,6 +7,175 @@ use std::process::{Command, Output, Stdio};
 
 use tempfile::TempDir;
 
+#[cfg(unix)]
+fn executable(path: &Path, script: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    fs::write(path, script).unwrap();
+    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[test]
+fn missing_normal_gui_is_actionable_and_never_falls_back() {
+    let temporary = TempDir::new().unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_loadbot"))
+        .env("LOADBOT_GUI_PATH", temporary.path().join("missing desktop"))
+        .arg("gui")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let error = stderr(&output);
+    assert!(error.contains("Loadbot GUI is not installed"), "{error}");
+    assert!(error.contains("loadbot setup"), "{error}");
+    assert!(!error.contains("fixture"));
+    assert!(!error.contains("Vite"));
+}
+
+#[cfg(unix)]
+#[test]
+fn normal_gui_launches_the_exact_native_path_with_spaces() {
+    let temporary = TempDir::new().unwrap();
+    let desktop = temporary
+        .path()
+        .join("installed path with spaces/loadbot-desktop");
+    fs::create_dir_all(desktop.parent().unwrap()).unwrap();
+    executable(
+        &desktop,
+        "#!/bin/sh\nprintf launched >\"$LOADBOT_TEST_MARKER\"\n",
+    );
+    let marker = temporary.path().join("launched");
+    let output = Command::new(env!("CARGO_BIN_EXE_loadbot"))
+        .env("LOADBOT_GUI_PATH", &desktop)
+        .env("LOADBOT_TEST_MARKER", &marker)
+        .arg("gui")
+        .output()
+        .unwrap();
+    assert_success_ref(&output);
+    for _ in 0..100 {
+        if marker.is_file() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_eq!(fs::read_to_string(marker).unwrap(), "launched");
+}
+
+#[cfg(unix)]
+#[test]
+fn development_gui_repairs_lockfile_state_then_uses_tauri_dev() {
+    let temporary = TempDir::new().unwrap();
+    let source = temporary.path().join("source with spaces");
+    let gui = source.join("src/gui");
+    let fake_bin = temporary.path().join("fake bin");
+    fs::create_dir_all(&gui).unwrap();
+    fs::create_dir_all(&fake_bin).unwrap();
+    fs::write(
+        source.join("Cargo.toml"),
+        "[package]\nname='fake'\nversion='0.0.0'\n",
+    )
+    .unwrap();
+    fs::write(gui.join("package.json"), "{}\n").unwrap();
+    fs::write(gui.join("package-lock.json"), "lock-v2\n").unwrap();
+    fs::create_dir_all(gui.join("src-tauri")).unwrap();
+    fs::write(gui.join("src-tauri/Cargo.toml"), "[workspace]\n").unwrap();
+    executable(&fake_bin.join("cargo"), "#!/bin/sh\nexit 0\n");
+    executable(&fake_bin.join("node"), "#!/bin/sh\nprintf 'v22.12.0\n'\n");
+    executable(&fake_bin.join("pkg-config"), "#!/bin/sh\nexit 0\n");
+    executable(
+        &fake_bin.join("npm"),
+        r#"#!/bin/sh
+if [ "$1" = --version ]; then exit 0; fi
+printf '%s\n' "$*" >>"$LOADBOT_TEST_LOG"
+case " $*" in
+  *" ci") /bin/mkdir -p "$LOADBOT_TEST_GUI/node_modules/@tauri-apps/api"; printf '{}\n' >"$LOADBOT_TEST_GUI/node_modules/@tauri-apps/api/package.json" ;;
+esac
+exit 0
+"#,
+    );
+    let log = temporary.path().join("commands");
+    let output = Command::new(env!("CARGO_BIN_EXE_loadbot"))
+        .env("LOADBOT_SOURCE", &source)
+        .env("LOADBOT_TEST_GUI", &gui)
+        .env("LOADBOT_TEST_LOG", &log)
+        .env("PATH", &fake_bin)
+        .args(["gui", "--dev"])
+        .output()
+        .unwrap();
+    assert_success_ref(&output);
+    let commands = fs::read_to_string(&log).unwrap();
+    assert!(commands.lines().any(|line| line == "ci"), "{commands}");
+    assert!(commands.contains("run desktop"), "{commands}");
+    assert!(!commands.contains("fixture"));
+    assert_eq!(
+        fs::read(gui.join("node_modules/.loadbot-package-lock.json")).unwrap(),
+        fs::read(gui.join("package-lock.json")).unwrap()
+    );
+
+    fs::write(&log, "").unwrap();
+    let repeated = Command::new(env!("CARGO_BIN_EXE_loadbot"))
+        .env("LOADBOT_SOURCE", &source)
+        .env("LOADBOT_TEST_GUI", &gui)
+        .env("LOADBOT_TEST_LOG", &log)
+        .env("PATH", &fake_bin)
+        .args(["gui", "--dev"])
+        .output()
+        .unwrap();
+    assert_success_ref(&repeated);
+    let repeated_commands = fs::read_to_string(log).unwrap();
+    assert!(
+        !repeated_commands.lines().any(|line| line == "ci"),
+        "{repeated_commands}"
+    );
+    assert!(
+        repeated_commands.contains("run desktop"),
+        "{repeated_commands}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn setup_command_delegates_one_explicit_mode_to_the_source_bootstrap() {
+    let temporary = TempDir::new().unwrap();
+    let source = temporary.path().join("setup source with spaces");
+    fs::create_dir_all(source.join("src/gui")).unwrap();
+    fs::write(source.join("Cargo.toml"), "[workspace]\n").unwrap();
+    fs::write(source.join("src/gui/package.json"), "{}\n").unwrap();
+    executable(
+        &source.join("setup.sh"),
+        "#!/bin/sh\nprintf '%s' \"$1\" >\"$LOADBOT_TEST_MARKER\"\n",
+    );
+    let marker = temporary.path().join("setup mode");
+    let output = Command::new(env!("CARGO_BIN_EXE_loadbot"))
+        .env("LOADBOT_SOURCE", &source)
+        .env("LOADBOT_TEST_MARKER", &marker)
+        .args(["setup", "--gui"])
+        .output()
+        .unwrap();
+    assert_success_ref(&output);
+    assert_eq!(fs::read_to_string(marker).unwrap(), "--gui");
+}
+
+#[test]
+fn development_gui_reports_missing_tooling_without_starting_a_preview() {
+    let temporary = TempDir::new().unwrap();
+    let source = temporary.path().join("source");
+    fs::create_dir_all(source.join("src/gui")).unwrap();
+    fs::write(source.join("Cargo.toml"), "[workspace]\n").unwrap();
+    fs::write(source.join("src/gui/package.json"), "{}\n").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_loadbot"))
+        .env("LOADBOT_SOURCE", &source)
+        .env("PATH", temporary.path().join("empty path"))
+        .args(["gui", "--dev"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let error = stderr(&output);
+    assert!(
+        error.contains("GUI development requires Cargo/Rust"),
+        "{error}"
+    );
+    assert!(!error.contains("fixture"));
+}
+
 struct Repository {
     source: PathBuf,
     remote: PathBuf,
@@ -970,7 +1139,8 @@ path = "triage.py"
     assert_eq!(
         root,
         [
-            "add", "catalog", "list", "path", "pull", "run", "shortcut", "status", "update"
+            "add", "catalog", "gui", "list", "path", "pull", "run", "setup", "shortcut", "status",
+            "update"
         ]
     );
     assert_eq!(complete(&["p"]), ["path", "pull"]);
@@ -1246,7 +1416,8 @@ fn dynamic_completion_preserves_root_and_nested_commands() {
         (
             vec![""],
             vec![
-                "add", "catalog", "list", "path", "pull", "run", "shortcut", "status", "update",
+                "add", "catalog", "gui", "list", "path", "pull", "run", "setup", "shortcut",
+                "status", "update",
             ],
         ),
         (vec!["shortcut", ""], vec!["add", "list", "remove"]),

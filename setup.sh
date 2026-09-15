@@ -22,6 +22,17 @@ fail() {
     exit 1
 }
 
+MODE=
+case ${1:-} in
+    --cli) MODE=cli ;;
+    --gui) MODE=gui ;;
+    --all) MODE=all ;;
+    --repair) MODE=repair ;;
+    '') ;;
+    *) fail "unknown setup option '$1'; use --cli, --gui, --all, or --repair" ;;
+esac
+[ "$#" -le 1 ] || fail "setup accepts only one mode option"
+
 has_command() {
     command -v "$1" >/dev/null 2>&1
 }
@@ -101,7 +112,54 @@ missing_system_prerequisites() {
     if [ "$(rust_toolchain_status)" != ready ] && ! has_command rustup && ! has_command curl; then
         missing="$missing curl"
     fi
+    if [ "${WANT_GUI:-false}" = true ]; then
+        node_is_supported || missing="$missing nodejs"
+        has_command npm || missing="$missing npm"
+        gui_native_ready || missing="$missing gui-libraries"
+    fi
     printf '%s' "${missing# }"
+}
+
+node_is_supported() {
+    has_command node || return 1
+    version=$(node --version 2>/dev/null | sed 's/^v//')
+    major=$(printf '%s\n' "$version" | awk -F. 'NR == 1 { print $1 }')
+    minor=$(printf '%s\n' "$version" | awk -F. 'NR == 1 { print $2 }')
+    case "$major" in ''|*[!0-9]*) return 1 ;; esac
+    case "$minor" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$major" -gt 22 ] || { [ "$major" -eq 22 ] && [ "$minor" -ge 12 ]; }
+}
+
+gui_native_ready() {
+    has_command pkg-config && has_command cc && has_command make || return 1
+    pkg-config --exists webkit2gtk-4.1 gtk+-3.0 librsvg-2.0 openssl 2>/dev/null &&
+        { pkg-config --exists ayatana-appindicator3-0.1 2>/dev/null || pkg-config --exists appindicator3-0.1 2>/dev/null; }
+}
+
+verify_configuration_directories() {
+    for directory in "${LOADBOT_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/loadbot}" \
+        "${LOADBOT_CONFIG_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/loadbot}"; do
+        if [ -e "$directory" ]; then
+            [ -d "$directory" ] || fail "Loadbot configuration path is not a directory: $directory"
+            [ -r "$directory" ] && [ -w "$directory" ] || fail "Loadbot configuration directory is not readable and writable: $directory"
+        fi
+    done
+}
+
+frontend_dependencies_current() {
+    gui=$PROJECT_DIR/src/gui
+    [ -f "$gui/node_modules/@tauri-apps/api/package.json" ] &&
+        [ -f "$gui/node_modules/.loadbot-package-lock.json" ] &&
+        cmp -s "$gui/package-lock.json" "$gui/node_modules/.loadbot-package-lock.json"
+}
+
+record_install_mode() {
+    [ ! -L "$INSTALL_MODE_FILE" ] || fail "refusing to replace symlink installation record $INSTALL_MODE_FILE"
+    [ ! -e "$INSTALL_MODE_FILE" ] || [ -f "$INSTALL_MODE_FILE" ] || fail "installation record is not a regular file: $INSTALL_MODE_FILE"
+    temporary=$INSTALL_ROOT/.loadbot-install-mode.tmp.$$
+    printf '%s\n' "$MODE" >"$temporary"
+    chmod 600 "$temporary"
+    mv -f "$temporary" "$INSTALL_MODE_FILE"
 }
 
 os_family() {
@@ -155,6 +213,12 @@ package_list() {
             apt-get:curl) package=curl ;;
             pacman:git) package=git ;;
             pacman:curl) package=curl ;;
+            apt-get:nodejs) package=nodejs ;;
+            apt-get:npm) package=npm ;;
+            apt-get:gui-libraries) package='libwebkit2gtk-4.1-dev build-essential wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev pkg-config' ;;
+            pacman:nodejs) package=nodejs ;;
+            pacman:npm) package=npm ;;
+            pacman:gui-libraries) package='webkit2gtk-4.1 base-devel wget file openssl appmenu-gtk-module libappindicator-gtk3 librsvg xdotool pkgconf' ;;
             *) continue ;;
         esac
         case " $packages " in
@@ -244,8 +308,8 @@ validate_markers() {
 make_managed_block() {
     shell_name=$1
     if [ "$INSTALL_ROOT" = "$HOME/.cargo" ]; then
-        case "$shell_name" in
-            bash)
+        case "$shell_name:${WANT_COMPLETION:-true}" in
+            bash:true)
                 cat <<'EOF'
 # >>> loadbot >>>
 export PATH="$HOME/.cargo/bin:$PATH"
@@ -253,7 +317,7 @@ export PATH="$HOME/.cargo/bin:$PATH"
 # <<< loadbot <<<
 EOF
                 ;;
-            zsh)
+            zsh:true)
                 cat <<'EOF'
 # >>> loadbot >>>
 export PATH="$HOME/.cargo/bin:$PATH"
@@ -261,7 +325,7 @@ export PATH="$HOME/.cargo/bin:$PATH"
 # <<< loadbot <<<
 EOF
                 ;;
-            fish)
+            fish:true)
                 cat <<'EOF'
 # >>> loadbot >>>
 fish_add_path "$HOME/.cargo/bin"
@@ -269,18 +333,38 @@ test -f "$HOME/.cargo/completions/loadbot.fish"; and source "$HOME/.cargo/comple
 # <<< loadbot <<<
 EOF
                 ;;
+            bash:false|zsh:false)
+                cat <<'EOF'
+# >>> loadbot >>>
+export PATH="$HOME/.cargo/bin:$PATH"
+# <<< loadbot <<<
+EOF
+                ;;
+            fish:false)
+                cat <<'EOF'
+# >>> loadbot >>>
+fish_add_path "$HOME/.cargo/bin"
+# <<< loadbot <<<
+EOF
+                ;;
         esac
     else
         quoted_bin=$(shell_quote "$INSTALL_BIN")
         quoted_completion=$(shell_quote "$COMPLETION_DIR/loadbot.$shell_name")
-        case "$shell_name" in
-            bash|zsh)
+        case "$shell_name:${WANT_COMPLETION:-true}" in
+            bash:true|zsh:true)
                 printf '%s\n' "$START_MARKER" "export PATH=$quoted_bin:\$PATH" \
                     "[ -f $quoted_completion ] && . $quoted_completion" "$END_MARKER"
                 ;;
-            fish)
+            fish:true)
                 printf '%s\n' "$START_MARKER" "fish_add_path $quoted_bin" \
                     "test -f $quoted_completion; and source $quoted_completion" "$END_MARKER"
+                ;;
+            bash:false|zsh:false)
+                printf '%s\n' "$START_MARKER" "export PATH=$quoted_bin:\$PATH" "$END_MARKER"
+                ;;
+            fish:false)
+                printf '%s\n' "$START_MARKER" "fish_add_path $quoted_bin" "$END_MARKER"
                 ;;
         esac
     fi
@@ -350,6 +434,45 @@ write_profile() {
 [ "$(id -u)" -ne 0 ] || fail "run setup as a normal user, not as root"
 [ -f "$PROJECT_DIR/Cargo.toml" ] || fail "Cargo.toml was not found in $PROJECT_DIR"
 
+if [ -z "$MODE" ]; then
+    [ -t 0 ] && [ -t 1 ] || fail "setup mode is required without an interactive terminal; use --cli, --gui, --all, or --repair"
+    say "LOADBOT SETUP"
+    say ""
+    say "What would you like to configure?"
+    say ""
+    say "  1. CLI only"
+    say "  2. GUI only"
+    say "  3. CLI + GUI"
+    say "  4. Repair / verify installation"
+    say "  5. Exit"
+    say ""
+    printf '> '
+    IFS= read -r selection || selection=5
+    case "$selection" in
+        1) MODE=cli ;;
+        2) MODE=gui ;;
+        3) MODE=all ;;
+        4) MODE=repair ;;
+        5) say "Setup cancelled; no changes were made."; exit 0 ;;
+        *) fail "invalid setup selection '$selection'" ;;
+    esac
+fi
+
+INSTALL_MODE_FILE=$INSTALL_ROOT/loadbot-install-mode
+IS_REPAIR=false
+if [ "$MODE" = repair ]; then
+    IS_REPAIR=true
+    [ -f "$INSTALL_MODE_FILE" ] || fail "no recorded Loadbot installation was found; choose CLI only, GUI only, or CLI + GUI"
+    MODE=$(sed -n '1p' "$INSTALL_MODE_FILE")
+    case "$MODE" in cli|gui|all) ;; *) fail "invalid installation record in $INSTALL_MODE_FILE" ;; esac
+    say "Repairing recorded $MODE installation."
+fi
+[ "$IS_REPAIR" = false ] || verify_configuration_directories
+WANT_GUI=false
+WANT_COMPLETION=false
+[ "$MODE" != gui ] && WANT_COMPLETION=true
+[ "$MODE" = gui ] || [ "$MODE" = all ] && WANT_GUI=true
+
 shell_name=
 profile_path=
 case ${SHELL:-} in
@@ -382,12 +505,18 @@ if [ -n "$missing" ]; then
 fi
 
 say "LOADBOT SETUP PLAN"
+say "Mode: $MODE"
 say ""
 say "Prerequisites:"
 printf '  git:   %s\n' "$(command_status git)"
 printf '  cargo: %s\n' "$(cargo_status)"
 printf '  rustc: %s\n' "$(command_status rustc)"
 printf '  rustup: %s\n' "$(command_status rustup)"
+if [ "$WANT_GUI" = true ]; then
+    printf '  node:  %s\n' "$(if node_is_supported; then node --version; else printf 'missing or older than 22'; fi)"
+    printf '  npm:   %s\n' "$(command_status npm)"
+    printf '  native GUI libraries: %s\n' "$(if gui_native_ready; then printf ready; else printf missing; fi)"
+fi
 if [ "$toolchain_action" != none ]; then
     say ""
     say "Rust toolchain:"
@@ -419,11 +548,14 @@ fi
 say ""
 say "Would install:"
 say "  $LOADBOT_BIN"
+if [ "$WANT_GUI" = true ]; then
+    say "  $INSTALL_BIN/loadbot-desktop"
+fi
 say ""
 say "Would configure:"
 if [ -n "$profile_path" ]; then
     say "  $profile_path ($profile_change)"
-    say "  $COMPLETION_DIR/loadbot.$shell_name"
+    if [ "$WANT_COMPLETION" = true ]; then say "  $COMPLETION_DIR/loadbot.$shell_name"; fi
 else
     say "  No profile (unsupported or unknown login shell: ${SHELL:-unset})"
     say "  Completion files in $COMPLETION_DIR"
@@ -480,6 +612,9 @@ if [ -n "$missing" ]; then
             ;;
     esac
     remaining=$(missing_system_prerequisites)
+    case " $remaining " in
+        *" nodejs "*) fail "Node.js 22.12 or newer is still unavailable; install a current Node.js LTS release and rerun setup" ;;
+    esac
     [ -z "$remaining" ] || fail "prerequisite installation completed but these commands remain missing: $remaining"
 fi
 
@@ -499,20 +634,40 @@ cargo install \
 "$LOADBOT_BIN" --version || fail "Loadbot failed its version verification check"
 "$LOADBOT_BIN" --help >/dev/null || fail "Loadbot failed its help verification check"
 
-say "Generating shell completion scripts..."
-mkdir -p "$COMPLETION_DIR"
-for completion_shell in bash zsh fish powershell; do
-    extension=$completion_shell
-    [ "$completion_shell" != powershell ] || extension=ps1
-    destination=$COMPLETION_DIR/loadbot.$extension
-    temporary=$COMPLETION_DIR/.loadbot.$extension.tmp.$$
-    if COMPLETE=$completion_shell "$LOADBOT_BIN" >"$temporary"; then
-        mv -f "$temporary" "$destination"
+if [ "$WANT_GUI" = true ]; then
+    if frontend_dependencies_current; then
+        say "Lockfile-pinned GUI dependencies are current."
     else
-        rm -f "$temporary"
-        fail "Loadbot failed to generate $completion_shell completions"
+        say "Restoring lockfile-pinned GUI dependencies..."
+        npm --prefix "$PROJECT_DIR/src/gui" ci || fail "npm ci failed while restoring GUI dependencies"
+        cp "$PROJECT_DIR/src/gui/package-lock.json" "$PROJECT_DIR/src/gui/node_modules/.loadbot-package-lock.json"
     fi
-done
+    say "Building the native Loadbot GUI..."
+    npm --prefix "$PROJECT_DIR/src/gui" run desktop:build || fail "native Loadbot GUI build failed"
+    GUI_BUILD=$PROJECT_DIR/src/gui/src-tauri/target/release/loadbot-desktop
+    [ -x "$GUI_BUILD" ] || fail "Tauri completed, but $GUI_BUILD was not created"
+    GUI_TEMP=$INSTALL_BIN/.loadbot-desktop.tmp.$$
+    cp "$GUI_BUILD" "$GUI_TEMP"
+    chmod 755 "$GUI_TEMP"
+    mv -f "$GUI_TEMP" "$INSTALL_BIN/loadbot-desktop"
+fi
+
+if [ "$WANT_COMPLETION" = true ]; then
+    say "Generating shell completion scripts..."
+    mkdir -p "$COMPLETION_DIR"
+    for completion_shell in bash zsh fish powershell; do
+        extension=$completion_shell
+        [ "$completion_shell" != powershell ] || extension=ps1
+        destination=$COMPLETION_DIR/loadbot.$extension
+        temporary=$COMPLETION_DIR/.loadbot.$extension.tmp.$$
+        if COMPLETE=$completion_shell "$LOADBOT_BIN" >"$temporary"; then
+            mv -f "$temporary" "$destination"
+        else
+            rm -f "$temporary"
+            fail "Loadbot failed to generate $completion_shell completions"
+        fi
+    done
+fi
 
 if [ -n "$profile_path" ] && [ "$profile_change" != unchanged ]; then
     [ "$(profile_signature "$profile_path")" = "$profile_before" ] ||
@@ -527,12 +682,17 @@ case ":$PATH:" in
     *":$INSTALL_BIN:"*) ;;
     *) PATH=$INSTALL_BIN:$PATH; export PATH ;;
 esac
+record_install_mode
 
 say ""
 say "Loadbot installed and verified successfully:"
 say "  $LOADBOT_BIN"
 if [ -n "$profile_path" ]; then
-    say "Completion configured for $shell_name in:"
+    if [ "$WANT_COMPLETION" = true ]; then
+        say "PATH and completion configured for $shell_name in:"
+    else
+        say "PATH configured for $shell_name in:"
+    fi
     say "  $profile_path"
     say "Open a new terminal, or reload this configuration now:"
     case "$shell_name" in
@@ -542,9 +702,13 @@ if [ -n "$profile_path" ]; then
     esac
 else
     say "The login shell was not recognized, so no profile was changed."
-    say "Configure PATH and completion manually for the shell you use:"
-    say "  Bash: export PATH=\"$INSTALL_BIN:\$PATH\"; . \"$COMPLETION_DIR/loadbot.bash\""
-    say "  Zsh:  export PATH=\"$INSTALL_BIN:\$PATH\"; . \"$COMPLETION_DIR/loadbot.zsh\""
-    say "  Fish: fish_add_path \"$INSTALL_BIN\"; source \"$COMPLETION_DIR/loadbot.fish\""
+    if [ "$WANT_COMPLETION" = true ]; then
+        say "Configure PATH and completion manually for the shell you use:"
+        say "  Bash: export PATH=\"$INSTALL_BIN:\$PATH\"; . \"$COMPLETION_DIR/loadbot.bash\""
+        say "  Zsh:  export PATH=\"$INSTALL_BIN:\$PATH\"; . \"$COMPLETION_DIR/loadbot.zsh\""
+        say "  Fish: fish_add_path \"$INSTALL_BIN\"; source \"$COMPLETION_DIR/loadbot.fish\""
+    else
+        say "Add $INSTALL_BIN to PATH in the shell you use."
+    fi
 fi
 say "The already-running parent process was not modified."

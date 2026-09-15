@@ -203,4 +203,62 @@ Describe "Loadbot PowerShell setup" {
         Assert-MockCalled Set-LoadbotUserPath -Times 0
         Test-Path $profile | Should -BeFalse
     }
+
+    It "offers all setup modes and supports cancellation" {
+        Mock Read-Host { "5" }
+        Select-LoadbotSetupMode | Should -BeNullOrEmpty
+        Assert-MockCalled Invoke-LoadbotCargoInstall -Times 0
+    }
+
+    It "reports each missing Windows GUI development prerequisite" {
+        Mock Test-LoadbotNodeSupported { $false }
+        Mock Test-LoadbotWindowsBuildTools { $false }
+        Mock Test-LoadbotWebView2 { $false }
+        Mock Get-LoadbotCommand {
+            param($Name)
+            if ($Name -in @("git", "cargo", "rustc", "winget")) {
+                [pscustomobject]@{ Source = "C:\fake\$Name.exe" }
+            }
+        }
+        $missing = @(Get-MissingLoadbotPrerequisites -IncludeGui)
+        $missing | Should -Contain "node"
+        $missing | Should -Contain "npm"
+        $missing | Should -Contain "webview2"
+        $missing | Should -Contain "msvc-build-tools"
+    }
+
+    It "installs GUI-only beside the launcher without generating completion" {
+        $guiRoot = Join-Path $script:project "src\gui"
+        $builtGui = Join-Path $guiRoot "src-tauri\target\release\loadbot-desktop.exe"
+        Mock Test-Path { $true } -ParameterFilter { $LiteralPath -eq $builtGui }
+        Mock Copy-Item { }
+        Mock Test-LoadbotNodeSupported { $true }
+        Mock Test-LoadbotWindowsBuildTools { $true }
+        Mock Test-LoadbotWebView2 { $true }
+        Mock Test-LoadbotFrontendDependencies { $false }
+        Mock Get-LoadbotCommand {
+            param($Name)
+            if ($Name -in @("git", "cargo", "rustc", "winget", "node", "npm")) {
+                [pscustomobject]@{ Source = "C:\fake\$Name.exe" }
+            }
+        }
+
+        Invoke-LoadbotSetup -Mode gui
+
+        Test-Path (Join-Path $installRoot "completions\loadbot.ps1") | Should -BeFalse
+        Assert-MockCalled Copy-Item -Times 1 -ParameterFilter { $LiteralPath -eq $builtGui -and $Destination -eq (Join-Path $installBin "loadbot-desktop.exe") }
+        Assert-MockCalled Invoke-LoadbotExecutable -Times 1 -ParameterFilter {
+            $Executable -eq "C:\fake\npm.exe" -and $Arguments -contains "ci"
+        }
+        Assert-MockCalled Invoke-LoadbotExecutable -Times 1 -ParameterFilter {
+            $Executable -eq "C:\fake\npm.exe" -and $Arguments -contains "desktop:build"
+        }
+    }
+
+    It "repair uses the recorded component selection" {
+        Set-Content -LiteralPath (Join-Path $installRoot "loadbot-install-mode") -Value "cli"
+        Invoke-LoadbotSetup -Mode repair
+        Assert-MockCalled Invoke-LoadbotCargoInstall -Times 1
+        Assert-MockCalled Invoke-LoadbotExecutable -Times 0 -ParameterFilter { $Arguments -contains "desktop:build" }
+    }
 }

@@ -52,6 +52,9 @@ jobs:
       - name: Test setup PATH handling (Windows PowerShell)
         shell: powershell
         run: ./tests/setup_path_test.ps1
+      - name: Test Windows setup behavior
+        shell: pwsh
+        run: Invoke-Pester ./tests/setup_ps1.Tests.ps1 -CI
       - name: Diagnose Windows shell resolution
         shell: pwsh
         run: |

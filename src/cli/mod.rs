@@ -1,9 +1,11 @@
 mod args;
 pub(crate) mod completion;
+mod gui;
 mod launcher;
 mod menus;
 mod operations;
 mod output;
+mod setup;
 mod shortcuts;
 
 use loadbot::paths;
@@ -43,8 +45,14 @@ pub fn run() -> Result<()> {
             command
         }
     };
-    let paths = Paths::discover()?;
-    dispatch_command(&paths, command)
+    match command {
+        Commands::Gui { dev } => gui::run(dev),
+        Commands::Setup(arguments) => setup::run(arguments),
+        command => {
+            let paths = Paths::discover()?;
+            dispatch_command(&paths, command)
+        }
+    }
 }
 
 fn collect_main_command<P: Prompt>(prompt: &mut P) -> Result<Option<Commands>> {
@@ -115,6 +123,7 @@ fn dispatch_command(paths: &Paths, command: Commands) -> Result<()> {
         },
         Commands::Shortcut { command } => run_shortcut(paths, command),
         Commands::Catalog { command } => run_catalog(paths, command),
+        Commands::Gui { .. } | Commands::Setup(_) => unreachable!(),
         Commands::Rot { .. } => unreachable!(),
     }
 }

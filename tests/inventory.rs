@@ -6,6 +6,7 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 
 use loadbot::{
+    catalog::Runner,
     config::{self, CatalogSource, LocalConfig},
     interaction::{Notice, OperationContext, Unattended},
     launcher::{self, EntrySource},
@@ -68,6 +69,25 @@ fn catalog(paths: &Paths, name: &str, contents: &str) {
         .catalogs
         .insert(name.into(), CatalogSource::new(url, false));
     fs::write(paths.config(), toml::to_string(&local).unwrap()).unwrap();
+}
+
+fn installed_tool(paths: &Paths, catalog: &str, tool: &str, url: &str) -> PathBuf {
+    let directory = paths.tool(catalog, tool).unwrap();
+    fs::create_dir_all(&directory).unwrap();
+    for args in [vec!["init"], vec!["config", "remote.origin.url", url]] {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(&directory)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    directory
 }
 
 fn observe(context: &mut OperationContext<'_>) -> Arc<Mutex<Vec<Vec<String>>>> {
@@ -173,6 +193,63 @@ runner = "powershell"
         !paths.tools().exists(),
         "inventory must not install or inspect tool contents"
     );
+}
+
+#[test]
+fn shared_shortcut_add_validates_project_target_duplicates_and_persists_atomically() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = paths(root.path());
+    let url = "https://example.invalid/tool.git";
+    catalog(
+        &paths,
+        "alpha",
+        &format!("version = 1\n[tools.demo]\ntype = 'git'\nurl = '{url}'\n"),
+    );
+    let project = installed_tool(&paths, "alpha", "demo", url);
+    fs::create_dir_all(project.join("scripts")).unwrap();
+    fs::write(project.join("scripts/run.py"), "print('safe')\n").unwrap();
+    let mut policy = Unattended;
+    let mut context = OperationContext::new(&mut policy);
+
+    let created = operations::shortcut_add(
+        &paths,
+        "alpha",
+        "demo",
+        "run",
+        "scripts/run.py",
+        Some("Run it".into()),
+        Some(Runner::Python),
+        &mut context,
+    )
+    .unwrap();
+    assert_eq!(created.name, "run");
+    let saved = loadbot::shortcuts::load(&paths.shortcuts().unwrap()).unwrap();
+    assert_eq!(
+        saved.shortcuts["run"].description.as_deref(),
+        Some("Run it")
+    );
+    assert_eq!(saved.shortcuts["run"].runner, Some(Runner::Python));
+    let before = fs::read(paths.shortcuts().unwrap()).unwrap();
+
+    for (name, target, expected) in [
+        ("run", "scripts/run.py", "already exists"),
+        ("unsafe", "../outside", "must not escape"),
+        ("missing", "scripts/missing.py", "missing or is not a file"),
+    ] {
+        let error = operations::shortcut_add(
+            &paths,
+            "alpha",
+            "demo",
+            name,
+            target,
+            None,
+            None,
+            &mut context,
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains(expected), "{error:#}");
+        assert_eq!(fs::read(paths.shortcuts().unwrap()).unwrap(), before);
+    }
 }
 
 #[test]

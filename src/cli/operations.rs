@@ -1,7 +1,11 @@
 //! CLI adapter: render backend results; domain validation lives in the library.
 use super::output;
 use anyhow::Result;
-use loadbot::{catalog::ResolvedTool, operations as backend, paths::Paths};
+use loadbot::{
+    catalog::{ResolvedTool, Runner},
+    operations as backend,
+    paths::Paths,
+};
 use std::path::PathBuf;
 
 pub fn catalog_add(paths: &Paths, name: &str, url: String, writable: bool) -> Result<()> {
@@ -72,6 +76,30 @@ pub fn tool_add(
         )
     })
     .map(|_| ())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn shortcut_add(
+    paths: &Paths,
+    catalog: &str,
+    tool: &str,
+    name: &str,
+    path: &str,
+    description: Option<String>,
+    runner: Option<Runner>,
+) -> Result<backend::ShortcutIdentity> {
+    output::with_context(|context| {
+        backend::shortcut_add(
+            paths,
+            catalog,
+            tool,
+            name,
+            path,
+            description,
+            runner,
+            context,
+        )
+    })
 }
 
 pub fn tool_list(paths: &Paths) -> Result<()> {

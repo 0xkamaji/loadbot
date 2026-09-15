@@ -11,7 +11,9 @@ use anyhow::{Context, Result, bail};
 use super::menus::Prompt;
 use super::operations;
 use loadbot::paths::{self, Paths};
-use loadbot::shortcuts::{self, Shortcut};
+use loadbot::shortcuts;
+#[cfg(test)]
+use loadbot::shortcuts::Shortcut;
 use loadbot::{catalog::ResolvedTool, catalog::Runner};
 
 const BROWSE_TOOLS: &str = "Browse installed tools...";
@@ -42,7 +44,7 @@ fn run_interactive_from<P: Prompt>(
                     return Ok(());
                 }
             }
-            ProjectAction::Browse => return run_selected_file(paths, prompt, shortcut_path),
+            ProjectAction::Browse => return run_selected_file(paths, prompt),
             ProjectAction::Exit => return Ok(()),
             ProjectAction::Cancelled => return cancelled(),
         }
@@ -50,13 +52,12 @@ fn run_interactive_from<P: Prompt>(
 }
 
 pub fn add_shortcut<P: Prompt>(paths: &Paths, prompt: &mut P) -> Result<()> {
-    let shortcut_path = paths.shortcuts()?;
     let Some(selected) = select_installed_file(paths, prompt)? else {
         return Ok(());
     };
-    create_shortcut(
+    create_shortcut_for_paths(
         prompt,
-        &shortcut_path,
+        paths,
         &selected.catalog,
         &selected.tool,
         &selected.relative,
@@ -71,9 +72,20 @@ pub fn add_shortcuts_for_tool<P: Prompt>(
     tool: &str,
 ) -> Result<()> {
     let root = operations::installed_tool_path(paths, tool, catalog)?;
-    add_shortcuts_for_tool_from(prompt, &paths.shortcuts()?, catalog, tool, &root)
+    loop {
+        let Some(relative) = browse(prompt, &root, "Select file:")? else {
+            return Ok(());
+        };
+        if !create_shortcut_for_paths(prompt, paths, catalog, tool, &relative)? {
+            return Ok(());
+        }
+        if prompt.confirm("Add another shortcut?", false)? != Some(true) {
+            return Ok(());
+        }
+    }
 }
 
+#[cfg(test)]
 fn add_shortcuts_for_tool_from<P: Prompt>(
     prompt: &mut P,
     shortcut_path: &Path,
@@ -94,7 +106,7 @@ fn add_shortcuts_for_tool_from<P: Prompt>(
     }
 }
 
-fn run_selected_file<P: Prompt>(paths: &Paths, prompt: &mut P, shortcut_path: &Path) -> Result<()> {
+fn run_selected_file<P: Prompt>(paths: &Paths, prompt: &mut P) -> Result<()> {
     let Some(selected) = select_installed_file(paths, prompt)? else {
         return Ok(());
     };
@@ -105,9 +117,9 @@ fn run_selected_file<P: Prompt>(paths: &Paths, prompt: &mut P, shortcut_path: &P
     ))?;
     launch_file(&target)?;
     if prompt.confirm("Save as a Loadbot shortcut?", false)? == Some(true)
-        && let Some(name) = save_shortcut(
+        && let Some(name) = save_shortcut_for_paths(
             prompt,
-            shortcut_path,
+            paths,
             &selected.catalog,
             &selected.tool,
             &selected.relative,
@@ -379,6 +391,7 @@ fn browse<P: Prompt>(prompt: &mut P, root: &Path, root_label: &str) -> Result<Op
     }
 }
 
+#[cfg(test)]
 fn save_shortcut<P: Prompt>(
     prompt: &mut P,
     shortcut_path: &Path,
@@ -386,6 +399,19 @@ fn save_shortcut<P: Prompt>(
     tool: &str,
     relative: &Path,
 ) -> Result<Option<String>> {
+    let Some(name) = shortcut_name(prompt, relative)? else {
+        return Ok(None);
+    };
+    let shortcut = Shortcut::new(
+        catalog.to_owned(),
+        tool.to_owned(),
+        shortcuts::portable_path(relative)?,
+    )?;
+    shortcuts::save(shortcut_path, &name, shortcut)?;
+    Ok(Some(name))
+}
+
+fn shortcut_name<P: Prompt>(prompt: &mut P, relative: &Path) -> Result<Option<String>> {
     let default = relative
         .file_stem()
         .and_then(|name| name.to_str())
@@ -399,15 +425,32 @@ fn save_shortcut<P: Prompt>(
         return Ok(None);
     };
     paths::validate_name(&name).context("invalid shortcut name")?;
-    let shortcut = Shortcut::new(
-        catalog.to_owned(),
-        tool.to_owned(),
-        shortcuts::portable_path(relative)?,
-    )?;
-    shortcuts::save(shortcut_path, &name, shortcut)?;
     Ok(Some(name))
 }
 
+fn save_shortcut_for_paths<P: Prompt>(
+    prompt: &mut P,
+    paths: &Paths,
+    catalog: &str,
+    tool: &str,
+    relative: &Path,
+) -> Result<Option<String>> {
+    let Some(name) = shortcut_name(prompt, relative)? else {
+        return Ok(None);
+    };
+    operations::shortcut_add(
+        paths,
+        catalog,
+        tool,
+        &name,
+        &shortcuts::portable_path(relative)?,
+        None,
+        None,
+    )?;
+    Ok(Some(name))
+}
+
+#[cfg(test)]
 fn create_shortcut<P: Prompt>(
     prompt: &mut P,
     shortcut_path: &Path,
@@ -416,6 +459,20 @@ fn create_shortcut<P: Prompt>(
     relative: &Path,
 ) -> Result<bool> {
     let Some(name) = save_shortcut(prompt, shortcut_path, catalog, tool, relative)? else {
+        return Ok(false);
+    };
+    prompt.message(&format!("Shortcut '{name}' saved."))?;
+    Ok(true)
+}
+
+fn create_shortcut_for_paths<P: Prompt>(
+    prompt: &mut P,
+    paths: &Paths,
+    catalog: &str,
+    tool: &str,
+    relative: &Path,
+) -> Result<bool> {
+    let Some(name) = save_shortcut_for_paths(prompt, paths, catalog, tool, relative)? else {
         return Ok(false);
     };
     prompt.message(&format!("Shortcut '{name}' saved."))?;

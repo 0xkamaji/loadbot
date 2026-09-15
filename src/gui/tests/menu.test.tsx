@@ -9,6 +9,11 @@ const projectRows = () => within(screen.getByRole('group', { name: 'Projects' })
 const shortcutRows = () => within(screen.getByRole('group', { name: 'Shortcuts' }));
 
 describe('injected menu outside Tauri', () => {
+  const adapter = (projects: readonly LoadbotProject[], open = vi.fn(async () => {})): LoadbotAdapter => ({
+    readInventory: async () => projects,
+    readCatalogs: async () => [...new Set(projects.map((item) => item.catalog))].map((name, index) => ({ name, url: 'fixture', writable: true, state: 'installed' as const, default: index === 0 })),
+    openProjectFolder: open, addCatalog: vi.fn(), addProject: vi.fn(), addShortcut: vi.fn(), syncCatalog: vi.fn(),
+  });
   it('changes project/shortcut, resets isolated forms, and preserves state through the drawer', async () => {
     const user = userEvent.setup();
     render(<LoadbotMenu {...fixtureMenuDependencies} />);
@@ -52,7 +57,9 @@ describe('injected menu outside Tauri', () => {
     expect(selected).toHaveAttribute('aria-pressed', 'true');
     await user.keyboard('{Enter}');
     expect(screen.getByRole('heading', { name: 'Inspect recording' })).toBeInTheDocument();
-    await user.keyboard('{End}{Enter}');
+    await user.click(screen.getByRole('button', { name: 'Catalog context: personal' }));
+    await user.click(screen.getByRole('menuitemradio', { name: /community/ }));
+    await projectRows().getByRole('button', { name: 're-toolkit community' }).click();
     const shared = shortcutRows().getByRole('button', { name: 'Export strings [shared]' });
     shared.focus();
     await user.keyboard('{ArrowDown} ');
@@ -60,50 +67,99 @@ describe('injected menu outside Tauri', () => {
   });
 
   it('renders a supplied adapter in an ordinary parent and delegates close to that parent', async () => {
-    const adapter: LoadbotAdapter = {
-      readInventory: vi.fn(async () => [{ catalog: 'test', tool: 'injected', entries: [] }]),
-      openProjectFolder: vi.fn(async () => {}),
-    };
+    const injected = adapter([{ catalog: 'test', tool: 'injected', entries: [] }]);
     const close = vi.fn();
     const user = userEvent.setup();
-    render(<div style={{ width: 700, height: 500 }}><LoadbotMenu adapter={adapter} mode="fixture" host={{ onClose: close }} /></div>);
+    render(<div style={{ width: 700, height: 500 }}><LoadbotMenu adapter={injected} mode="fixture" host={{ onClose: close }} /></div>);
     expect(await screen.findByRole('button', { name: 'injected test' })).toBeInTheDocument();
     expect(screen.getByText('No shortcuts in this fixture project.')).toBeInTheDocument();
     await user.keyboard('{Escape}');
     expect(close).not.toHaveBeenCalled();
     await user.click(screen.getByRole('button', { name: 'Close Loadbot menu' }));
     expect(close).toHaveBeenCalledOnce();
-    expect(adapter.readInventory).toHaveBeenCalledOnce();
   });
 
   it('ignores stale adapter responses and displays empty/error results honestly', async () => {
     let resolve!: (projects: readonly LoadbotProject[]) => void;
     const unavailable = vi.fn(async () => { throw new Error('unavailable'); });
-    const slow: LoadbotAdapter = { readInventory: () => new Promise((done) => { resolve = done; }), openProjectFolder: unavailable };
-    const empty: LoadbotAdapter = { readInventory: async () => [], openProjectFolder: unavailable };
+    const slow = { ...adapter([], unavailable), readInventory: () => new Promise<readonly LoadbotProject[]>((done) => { resolve = done; }) };
+    const empty = adapter([], unavailable);
     const view = render(<LoadbotMenu adapter={slow} mode="fixture" />);
     await act(async () => {});
     view.rerender(<LoadbotMenu adapter={empty} mode="fixture" />);
     await screen.findByText('No fixture projects available.');
     await act(async () => resolve([{ catalog: 'old', tool: 'stale', entries: [] }]));
     expect(screen.queryByRole('button', { name: 'stale old' })).not.toBeInTheDocument();
-    view.rerender(<LoadbotMenu adapter={{ readInventory: async () => { throw new Error('Fixture read failed'); }, openProjectFolder: unavailable }} mode="fixture" />);
+    view.rerender(<LoadbotMenu adapter={{ ...adapter([], unavailable), readInventory: async () => { throw new Error('Fixture read failed'); } }} mode="fixture" />);
     expect(await screen.findByText('Fixture unavailable: Fixture read failed')).toBeInTheDocument();
   });
 
   it('opens the row-specific qualified project without changing selection and displays failures', async () => {
     const user = userEvent.setup();
     const projects: readonly LoadbotProject[] = [
-      { catalog: 'first', tool: 'duplicate', entries: [] },
-      { catalog: 'second', tool: 'duplicate', entries: [] },
+      { catalog: 'first', tool: 'selected', entries: [] },
+      { catalog: 'first', tool: 'target', entries: [] },
     ];
     const open = vi.fn().mockRejectedValue(new Error('Project directory is missing'));
-    const adapter: LoadbotAdapter = { readInventory: async () => projects, openProjectFolder: open };
-    render(<LoadbotMenu adapter={adapter} />);
-    const first = await projectRows().findByRole('button', { name: 'duplicate first' });
-    await user.click(screen.getByRole('button', { name: 'Open project folder: duplicate (second)' }));
+    render(<LoadbotMenu adapter={adapter(projects, open)} />);
+    const first = await projectRows().findByRole('button', { name: 'selected first' });
+    await user.click(screen.getByRole('button', { name: 'Open project folder: target (first)' }));
     expect(first).toHaveAttribute('aria-pressed', 'true');
-    expect(open).toHaveBeenCalledWith({ catalog: 'second', tool: 'duplicate' });
+    expect(open).toHaveBeenCalledWith({ catalog: 'first', tool: 'target' });
     expect(await screen.findByText('Project directory is missing')).toBeInTheDocument();
+  });
+
+  it('opens, cancels, validates, and submits compact management flows', async () => {
+    const user = userEvent.setup();
+    let projects: readonly LoadbotProject[] = [{ catalog: 'personal', tool: 'existing', entries: [] }];
+    let catalogs = [{ name: 'personal', url: 'catalog', writable: true, state: 'installed' as const, default: true }];
+    const addProject = vi.fn(async (input) => {
+      projects = [...projects, { catalog: input.catalog, tool: input.name, entries: [] }];
+      return { catalog: input.catalog, tool: input.name };
+    });
+    const addShortcut = vi.fn(async (input) => {
+      projects = projects.map((project) => project.tool === input.tool ? { ...project, entries: [{ name: input.name, path: input.path, source: 'personal' as const }] } : project);
+      return { catalog: input.catalog, tool: input.tool, name: input.name, path: input.path };
+    });
+    const managed: LoadbotAdapter = {
+      ...adapter(projects), readInventory: async () => projects, readCatalogs: async () => catalogs,
+      addProject, addShortcut,
+      addCatalog: vi.fn(async (input) => {
+        catalogs = [...catalogs, { name: input.name, url: input.url, writable: input.writable, state: 'installed', default: false }];
+        return { catalog: input.name };
+      }),
+      syncCatalog: vi.fn(async () => {}),
+    };
+    render(<LoadbotMenu adapter={managed} />);
+    await projectRows().findByRole('button', { name: 'existing personal' });
+
+    await user.click(screen.getByRole('button', { name: '+ ADD PROJECT' }));
+    expect(screen.getByRole('dialog', { name: 'Add project' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'CANCEL' }));
+    expect(addProject).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: '+ ADD PROJECT' }));
+    await user.type(screen.getByLabelText('Project name *'), 'new-project');
+    await user.type(screen.getByLabelText('Git repository URL *'), 'https://example.test/new.git');
+    await user.click(screen.getByRole('button', { name: 'ADD PROJECT' }));
+    expect(await projectRows().findByRole('button', { name: 'new-project personal' })).toHaveAttribute('aria-pressed', 'true');
+
+    await user.click(screen.getByRole('button', { name: '+ ADD SHORTCUT' }));
+    expect(screen.getByRole('heading', { name: 'ADD SHORTCUT / new-project' })).toBeInTheDocument();
+    await user.type(screen.getByLabelText('Shortcut name *'), 'inspect');
+    await user.type(screen.getByLabelText('Repository-relative path *'), 'scripts/inspect.py');
+    await user.selectOptions(screen.getByLabelText('Runner (optional)'), 'python');
+    await user.click(screen.getByRole('button', { name: 'ADD SHORTCUT' }));
+    expect(await shortcutRows().findByRole('button', { name: 'inspect' })).toHaveAttribute('aria-pressed', 'true');
+    expect(addShortcut).toHaveBeenCalledWith(expect.objectContaining({ catalog: 'personal', tool: 'new-project', runner: 'python' }));
+
+    await user.click(screen.getByRole('button', { name: 'Catalog context: personal' }));
+    await user.click(screen.getByRole('button', { name: 'SYNC CATALOG' }));
+    expect(managed.syncCatalog).toHaveBeenCalledWith('personal');
+    await user.click(screen.getByRole('button', { name: 'Catalog context: personal' }));
+    await user.click(screen.getByRole('button', { name: '+ ADD CATALOG' }));
+    await user.type(screen.getByLabelText('Catalog name *'), 'community');
+    await user.type(screen.getByLabelText('Git repository URL *'), 'https://example.test/catalog.git');
+    await user.click(screen.getByRole('button', { name: 'ADD AND USE' }));
+    expect(await screen.findByRole('button', { name: 'Catalog context: community' })).toBeInTheDocument();
   });
 });

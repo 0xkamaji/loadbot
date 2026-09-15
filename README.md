@@ -63,17 +63,24 @@ loadbot gui
 loadbot setup
 ```
 
-`loadbot gui` launches the installed native read-only desktop application; it
+`loadbot gui` launches the installed native desktop workspace; it
 does not start npm, Vite, a browser preview, or fixture data. `loadbot setup`
 reopens the source bootstrap for configuration or repair. Developers can use
 `loadbot gui --dev` for the source checkout and hot reload.
 
-The optional **desktop GUI** uses Tauri 2 and React to display real local,
-read-only Loadbot inventory on Windows and Linux. Explicit fixture previews remain
+The optional **desktop GUI** uses Tauri 2 and React to display and maintain real local
+Loadbot catalogs, projects, and personal shortcuts on Windows and Linux. Catalog
+sync is explicit, and shortcut/tool execution remains unavailable. Explicit fixture previews remain
 available for development. See [desktop development and browser preview](docs/gui-phase1.md)
 for launch commands, prerequisites, reusable component boundaries, and validation.
 Its separate Cargo workspace keeps desktop dependencies out of the normal CLI
 builds and tests below.
+
+In the GUI, the compact header control switches session catalog context without
+changing Loadbot's configured default. `RELOAD LOCAL` only rereads local state;
+`SYNC CATALOG` is the separate explicit Git synchronization action. Project,
+shortcut, and catalog mutations use the same Rust validation and persistence
+operations as the CLI. See [Phase 4B real management](docs/gui-management.md).
 
 Loadbot requires Git and a Rust toolchain with Cargo 1.85 or newer because the crate uses Rust edition 2024. Cargo downloads the crate dependencies declared by `Cargo.toml` and `Cargo.lock`; the setup scripts do not install individual Rust crates.
 

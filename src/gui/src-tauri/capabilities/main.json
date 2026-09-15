@@ -1,6 +1,6 @@
 {
   "identifier": "main-inventory",
-  "description": "The main local window may read Loadbot inventory only.",
+  "description": "The main local window may read inventory and open resolved project folders.",
   "windows": ["main"],
-  "permissions": ["read-local-inventory"]
+  "permissions": ["read-local-inventory", "open-project-folder"]
 }

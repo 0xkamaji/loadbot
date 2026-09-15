@@ -401,6 +401,29 @@ pub fn read_project_inventory(
     Ok(project_inventory(&tools, &shortcut_file))
 }
 
+/// Resolve an installed project's real directory from its qualified Loadbot identity.
+///
+/// The caller decides how to present the directory. This function performs no OS open,
+/// process launch, catalog synchronization, or mutation.
+pub fn resolve_project_directory(
+    paths: &Paths,
+    catalog: &str,
+    tool: &str,
+    context: &mut OperationContext<'_>,
+) -> Result<PathBuf> {
+    let directory = operations::installed_tool_path(paths, tool, catalog, context)?;
+    let directory = fs::canonicalize(&directory).with_context(|| {
+        format!(
+            "could not resolve project directory {}",
+            directory.display()
+        )
+    })?;
+    if !directory.is_dir() {
+        bail!("resolved project path is not a directory");
+    }
+    Ok(directory)
+}
+
 pub fn project_inventory(
     tools: &[ResolvedTool],
     shortcut_file: &shortcuts::ShortcutFile,

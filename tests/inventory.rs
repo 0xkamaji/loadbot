@@ -176,6 +176,45 @@ runner = "powershell"
 }
 
 #[test]
+fn qualified_project_identity_resolves_the_existing_managed_directory_without_writes() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = paths(root.path());
+    catalog(
+        &paths,
+        "alpha",
+        "version = 1\n[tools.demo]\ntype = 'git'\nurl = 'https://example.invalid/tool.git'\n[tools.demo.commands.inspect]\npath = 'inspect.sh'\n",
+    );
+    let project = paths.tool("alpha", "demo").unwrap();
+    fs::create_dir_all(&project).unwrap();
+    for args in [
+        vec!["init"],
+        vec![
+            "config",
+            "remote.origin.url",
+            "https://example.invalid/tool.git",
+        ],
+    ] {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(&project)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+    }
+    let before = snapshot(root.path());
+    let mut policy = Unattended;
+    let mut context = OperationContext::new(&mut policy);
+
+    assert_eq!(
+        launcher::resolve_project_directory(&paths, "alpha", "demo", &mut context).unwrap(),
+        fs::canonicalize(&project).unwrap()
+    );
+    assert!(launcher::resolve_project_directory(&paths, "beta", "demo", &mut context).is_err());
+    assert_eq!(snapshot(root.path()), before);
+}
+
+#[test]
 fn skipped_catalog_is_an_explicit_failure_not_a_partial_or_empty_success() {
     let root = tempfile::tempdir().unwrap();
     let paths = paths(root.path());

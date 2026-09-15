@@ -3,10 +3,16 @@ import type { LoadbotAdapter, LoadbotProject, LoadbotShortcut } from '../loadbot
 
 /** One query seam for tests/host composition, not a generic RPC interface. */
 export type InventoryQuery = () => Promise<unknown>;
+export type ProjectFolderOpen = (project: Pick<LoadbotProject, 'catalog' | 'tool'>) => Promise<unknown>;
 
 async function nativeInventoryQuery(): Promise<unknown> {
   if (!isTauri()) throw new Error('Local inventory requires the native Loadbot application.');
   return invoke('read_loadbot_inventory');
+}
+
+async function nativeProjectFolderOpen(project: Pick<LoadbotProject, 'catalog' | 'tool'>): Promise<unknown> {
+  if (!isTauri()) throw new Error('Opening project folders requires the native Loadbot application.');
+  return invoke('open_loadbot_project', { catalog: project.catalog, tool: project.tool });
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -43,18 +49,32 @@ function inventory(value: unknown): readonly LoadbotProject[] {
   });
 }
 
-export function createTauriLoadbotAdapter(query: InventoryQuery = nativeInventoryQuery): LoadbotAdapter {
+function nativeError(error: unknown, fallback: string): Error {
+  if (error instanceof Error) return error;
+  const message = typeof error === 'string' ? error
+    : error && typeof error === 'object' && 'message' in error && typeof error.message === 'string' ? error.message
+      : fallback;
+  return new Error(message);
+}
+
+export function createTauriLoadbotAdapter(
+  query: InventoryQuery = nativeInventoryQuery,
+  openProject: ProjectFolderOpen = nativeProjectFolderOpen,
+): LoadbotAdapter {
   return {
     async readInventory() {
       try {
         return inventory(await query());
       } catch (error: unknown) {
-        if (error instanceof Error) throw error;
-        // Tauri serializes Rust's InventoryReadError as { message }, rather than Error.
-        const message = typeof error === 'string' ? error
-          : error && typeof error === 'object' && 'message' in error && typeof error.message === 'string' ? error.message
-            : 'Could not read local Loadbot inventory.';
-        throw new Error(message);
+        // Tauri serializes Rust command failures as { message }, rather than Error.
+        throw nativeError(error, 'Could not read local Loadbot inventory.');
+      }
+    },
+    async openProjectFolder(project) {
+      try {
+        await openProject(project);
+      } catch (error: unknown) {
+        throw nativeError(error, 'Could not open the project folder.');
       }
     },
   };

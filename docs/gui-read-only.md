@@ -1,5 +1,10 @@
 # Real local read-only inventory — Windows and Linux
 
+> This document records the earlier inventory-only phase. The current workspace
+> retains these read/failure semantics and adds only qualified project-folder open,
+> local reload, and presentation interactions described in
+> [Phase 4A workspace and read-only interaction](gui-workspace.md).
+
 ## Baseline and result
 
 Started from clean, fetched, up-to-date `main` at
@@ -94,18 +99,18 @@ StrictMode may issue an extra initial read; each is equally observational.
 
 ## Thin native boundary and compositions
 
-- `src/gui/src-tauri/src/main.rs` registers **only** `read_loadbot_inventory()`.
-  It creates `Paths`, `Unattended`, and `OperationContext` on a blocking worker,
+- This phase originally registered **only** `read_loadbot_inventory()`. Phase 4A
+  retains it and adds the narrowly qualified `open_loadbot_project()` capability.
+  The read creates `Paths`, `Unattended`, and `OperationContext` on a blocking worker,
   disables terminal access, and calls the library query. It accepts no path,
   executable, shell string, or operation selector from JavaScript.
 - Success is a serialized project array; failure is `{ "message": "..." }`.
   `frontend/hosts/tauriInventoryAdapter.ts` invokes the query, validates the small
   record shape, preserves strings, and converts serialized errors into `Error`
   for the existing controller. There is one adapter for both operating systems.
-- `build.rs` declares the single application command for Tauri's ACL;
-  `permissions/inventory.toml` and `capabilities/main.json` permit that read on
-  the local `main` window. No filesystem, shell, opener, execution, or mutation
-  plugin permission was added. Native window controls retain native behavior.
+- At this phase boundary, `build.rs` declared the single application command for
+  Tauri's ACL. Phase 4A adds a separate qualified folder-open permission without
+  adding a general filesystem, shell, execution, or mutation plugin permission.
 - `frontend/hosts/realComposition.ts` supplies the real adapter and `mode: 'local'`.
   `standalone.tsx` always uses it. Missing native runtime is an explicit error,
   never a reason to fall back to fictional data.
@@ -120,8 +125,10 @@ StrictMode may issue an extra initial read; each is equally observational.
 The small presentation-only mode changes source labels, loading/error/empty text,
 and the no-inputs explanation. Real mode has no **Sample form ready** state or demo
 fields. Layout, artwork, mascot, fonts, nine-slice skins, and selection controls
-retain their established implementations. Add Project, Refresh Catalog, Run, and
-Open Project Folder remain disabled. The drawer is still a labeled placeholder.
+retain their established implementations. At this phase boundary, Add Project,
+Refresh Catalog, Run, and Open Project Folder remained disabled. Phase 4A omits
+the management/execution controls and implements only the qualified folder action.
+The terminal remains a labeled, non-executing placeholder.
 
 ## Development and maintainer verification
 

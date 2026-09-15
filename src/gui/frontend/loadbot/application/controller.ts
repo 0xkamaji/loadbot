@@ -15,11 +15,18 @@ export interface LoadbotState {
   readonly values: SampleValues;
   readonly missingInputIds: readonly string[];
   readonly drawerOpen: boolean;
+  readonly projectFolder: {
+    readonly status: 'idle' | 'opening' | 'opened' | 'error';
+    readonly projectId?: string;
+    readonly message?: string;
+  };
 }
 
 export interface LoadbotActions {
   selectProject(id: string): void;
   selectShortcut(id: string): void;
+  reloadInventory(): void;
+  openProjectFolder(id: string): void;
   changeSampleInput(id: string, value: string | boolean): void;
   useSamplePath(id: string): void;
   toggleDrawer(): void;
@@ -30,10 +37,12 @@ export interface LoadbotActions {
  */
 export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: SampleForms = noSampleForms) {
   let state: LoadbotState = {
-    inventory: { status: 'loading' }, fields: [], values: {}, missingInputIds: [], drawerOpen: false,
+    inventory: { status: 'loading' }, fields: [], values: {}, missingInputIds: [], drawerOpen: true,
+    projectFolder: { status: 'idle' },
   };
   const listeners = new Set<() => void>();
   let generation = 0;
+  let folderGeneration = 0;
   const publish = (next: LoadbotState) => {
     state = next;
     listeners.forEach((listener) => listener());
@@ -54,12 +63,39 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
       if (state.inventory.status !== 'ready') return;
       const project = state.inventory.projects.find((item) => projectKey(item) === id);
       if (!project || project === state.project) return;
-      publish({ ...state, ...selection(project) });
+      folderGeneration++;
+      publish({ ...state, ...selection(project), projectFolder: { status: 'idle' } });
     },
     selectShortcut(id) {
       const shortcut = state.project?.entries.find((item) => shortcutKey(item) === id);
       if (!shortcut || shortcut === state.shortcut) return;
       publish({ ...state, ...selection(state.project, shortcut) });
+    },
+    reloadInventory() { beginInventoryRead(); },
+    openProjectFolder(id) {
+      if (state.inventory.status !== 'ready') return;
+      const project = state.inventory.projects.find((item) => projectKey(item) === id);
+      if (!project) return;
+      const request = ++folderGeneration;
+      publish({ ...state, projectFolder: { status: 'opening', projectId: id } });
+      const identity = { catalog: project.catalog, tool: project.tool };
+      Promise.resolve().then(() => adapter.openProjectFolder(identity)).then(
+        () => {
+          if (request === folderGeneration) publish({
+            ...state,
+            projectFolder: { status: 'opened', projectId: id, message: `Opened ${project.tool}.` },
+          });
+        },
+        (error: unknown) => {
+          if (request === folderGeneration) publish({
+            ...state,
+            projectFolder: {
+              status: 'error', projectId: id,
+              message: error instanceof Error ? error.message : 'Could not open the project folder.',
+            },
+          });
+        },
+      );
     },
     changeSampleInput,
     useSamplePath(id) {
@@ -68,6 +104,32 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
     },
     toggleDrawer() { publish({ ...state, drawerOpen: !state.drawerOpen }); },
   };
+  function beginInventoryRead() {
+    const request = ++generation;
+    const selectedProject = state.project && projectKey(state.project);
+    const selectedShortcut = state.shortcut && shortcutKey(state.shortcut);
+    folderGeneration++;
+    publish({ ...state, inventory: { status: 'loading' }, ...selection(), projectFolder: { status: 'idle' } });
+    Promise.resolve().then(() => adapter.readInventory()).then(
+      (projects) => {
+        if (request !== generation) return;
+        const project = projects.find((item) => projectKey(item) === selectedProject) ?? projects[0];
+        const shortcut = project?.entries.find((item) => shortcutKey(item) === selectedShortcut);
+        publish({
+          ...state,
+          inventory: { status: 'ready', projects },
+          ...selection(project, shortcut),
+        });
+      },
+      (error: unknown) => {
+        if (request === generation) publish({
+          ...state, inventory: { status: 'error', message: error instanceof Error ? error.message : undefined },
+          ...selection(), projectFolder: { status: 'idle' },
+        });
+      },
+    );
+    return request;
+  }
   return {
     getSnapshot: () => state,
     subscribe(listener: () => void) {
@@ -79,18 +141,7 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
      * it does not claim to cancel an adapter's underlying work.
      */
     start() {
-      const request = ++generation;
-      publish({ ...state, inventory: { status: 'loading' }, ...selection() });
-      Promise.resolve().then(() => adapter.readInventory()).then(
-        (projects) => {
-          if (request === generation) publish({ ...state, inventory: { status: 'ready', projects }, ...selection(projects[0]) });
-        },
-        (error: unknown) => {
-          if (request === generation) publish({
-            ...state, inventory: { status: 'error', message: error instanceof Error ? error.message : undefined }, ...selection(),
-          });
-        },
-      );
+      const request = beginInventoryRead();
       return () => { if (request === generation) generation++; };
     },
   };

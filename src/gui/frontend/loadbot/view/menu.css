@@ -9,39 +9,61 @@
 .lb-mascot { width: 52px; height: 52px; object-fit: contain; flex-shrink: 0; }
 .lb-fixture-badge { margin-left: auto; font-size: 12px; text-align: right; }
 .lb-fixture-badge span { display: block; font-size: 10px; margin-top: var(--lb-space-1); }
-.lb-workspace {
-  display: grid; grid-template-columns: minmax(210px, 30%) minmax(0, 1fr);
-  grid-template-rows: minmax(350px, 1fr);
-  gap: var(--lb-space-2); flex: 1; min-height: 0; overflow: auto;
+.lb-catalog-context, .lb-reload { min-height: 36px; font-size: 11px; padding-block: 4px; }
+.lb-catalog-context { min-width: 132px; max-width: 220px; }
+.lb-catalog-context > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lb-reload { min-width: 112px; }
+.lb-main-terminal {
+  display: grid; flex: 1; min-height: 0; overflow: hidden;
 }
-.lb-sidebar, .lb-shortcut-panel { display: flex; flex-direction: column; gap: var(--lb-space-2); }
-.lb-shortcut-panel { overflow-y: auto; }
-.lb-shortcut-panel h2 { flex-shrink: 0; }
-.lb-shortcut-panel h2 span { font-size: 14px; }
-.lb-shortcut-panel > .lb-menu-list { flex: 1 0 140px; max-height: 40%; }
-.lb-project-actions { display: grid; gap: var(--lb-space-2); }
+.lb-main-terminal.lb-terminal-closed { grid-template-rows: minmax(0, 1fr); }
+.lb-workspace {
+  display: grid; min-width: 0; min-height: 0; overflow: hidden;
+}
+.lb-sidebar { display: flex; flex-direction: column; gap: var(--lb-space-2); overflow: hidden; }
+.lb-project-row { display: grid; grid-template-columns: minmax(0, 1fr) 34px; align-items: stretch; }
+.lb-project-select { min-width: 0; }
+.lb-open-project {
+  width: 34px; min-width: 34px; min-height: 34px; padding: 0; opacity: .42;
+  border-width: 4px; align-self: center;
+}
+.lb-project-row:hover .lb-open-project, .lb-open-project:focus-visible { opacity: 1; }
+.lb-shortcut-panel {
+  display: grid; min-width: 0; min-height: 0; overflow: hidden;
+}
+.lb-shortcut-list, .lb-selected-shortcut { min-width: 0; min-height: 0; overflow: hidden; }
+.lb-shortcut-list { display: flex; flex-direction: column; gap: var(--lb-space-2); }
+.lb-shortcut-list h2 span { font-size: 14px; }
+.lb-selected-shortcut { overflow: auto; }
+.lb-selected-shortcut > h2 { margin-bottom: var(--lb-space-2); }
 .lb-note, .lb-metadata { font-size: 11px; line-height: 1.6; }
 .lb-metadata { opacity: .85; }
-.lb-details { border-top: 2px solid var(--lb-text); padding-top: var(--lb-space-3); flex-shrink: 0; }
+.lb-details { min-width: 0; }
 .lb-details > p { margin-top: var(--lb-space-2); }
+.lb-facts { display: grid; grid-template-columns: minmax(90px, auto) minmax(0, 1fr); gap: var(--lb-space-2) var(--lb-space-3); margin: var(--lb-space-3) 0 0; font-size: 12px; }
+.lb-facts dt { color: var(--lb-disabled-text); }
+.lb-facts dd { margin: 0; overflow-wrap: anywhere; }
 .lb-fields { display: grid; gap: var(--lb-space-2); margin: var(--lb-space-3) 0; }
 .lb-run { display: flex; gap: var(--lb-space-3); align-items: center; }
 .lb-run .lb-button { flex-shrink: 0; min-width: 170px; }
 .lb-run .lb-status { flex: 1; }
+.lb-main-terminal > .lb-drawer { max-height: none; height: 100%; overflow: auto; }
+.lb-toolbar { align-items: center; }
+.lb-toolbar > .lb-note { margin-left: auto; text-align: right; }
 
 @container loadbot (max-width: 680px) {
-  .lb-workspace { grid-template-columns: minmax(0, 1fr); grid-template-rows: 235px minmax(480px, 1fr); }
-  .lb-project-actions { grid-template-columns: 1fr 1fr; }
-  .lb-project-actions .lb-note { grid-column: 1 / -1; }
   .lb-fixture-badge span { display: none; }
-  .lb-header { gap: var(--lb-space-2); }
+  .lb-header { gap: var(--lb-space-2); flex-wrap: wrap; }
   .lb-header h1 { font-size: 22px; }
   .lb-mascot { width: 44px; height: 44px; }
+  .lb-catalog-context { margin-left: auto; }
+  .lb-fixture-badge { order: 5; width: 100%; text-align: left; margin-left: 0; }
 }
 @container loadbot (max-width: 440px) {
   .lb-fixture-badge { font-size: 9px; max-width: 72px; }
   .lb-header h1 { font-size: 18px; letter-spacing: 1px; }
   .lb-mascot { width: 36px; height: 36px; }
   .lb-run { flex-direction: column; align-items: stretch; }
-  .lb-workspace { grid-template-rows: 235px minmax(620px, 1fr); }
+  .lb-reload { min-width: 96px; }
+  .lb-toolbar > .lb-note { display: none; }
 }

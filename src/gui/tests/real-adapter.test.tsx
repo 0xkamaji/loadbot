@@ -42,8 +42,7 @@ describe('one platform-neutral real read adapter', () => {
     expect(screen.getByText('LOCAL INVENTORY')).toBeInTheDocument();
     expect(screen.queryByText(/fixture|sample form ready/i)).not.toBeInTheDocument();
     expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'RUN SHORTCUT' })).toBeDisabled();
-    expect(screen.getByText('Execution is not connected.')).toBeInTheDocument();
+    expect(screen.getByText(/Read-only inventory\. Execution is not connected\./)).toBeInTheDocument();
   });
 
   it('preserves empty versus failed reads through the unchanged controller and presentation', async () => {
@@ -67,7 +66,20 @@ describe('one platform-neutral real read adapter', () => {
     expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
     expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Use sample/ })).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'RUN SHORTCUT' })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: 'RUN SHORTCUT' })).not.toBeInTheDocument();
+  });
+
+  it('opens a project by qualified identity through exactly one semantic native command', async () => {
+    tauri.invoke.mockClear();
+    tauri.invoke.mockResolvedValueOnce(undefined);
+    const adapter = createTauriLoadbotAdapter();
+    await adapter.openProjectFolder({ catalog: 'catalog with spaces', tool: 'tool; $(not-a-shell)' });
+    expect(tauri.invoke).toHaveBeenCalledWith('open_loadbot_project', {
+      catalog: 'catalog with spaces', tool: 'tool; $(not-a-shell)',
+    });
+    expect(tauri.invoke).toHaveBeenCalledTimes(1);
+    tauri.invoke.mockRejectedValueOnce({ message: 'project is not installed' });
+    await expect(adapter.openProjectFolder({ catalog: 'x', tool: 'y' })).rejects.toThrow('project is not installed');
   });
 
   it('rejects malformed payloads and unavailable hosts rather than substituting fixtures', async () => {

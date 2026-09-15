@@ -1,6 +1,8 @@
 fn main() {
-    let mut attributes = tauri_build::Attributes::new()
-        .app_manifest(tauri_build::AppManifest::new().commands(&["read_loadbot_inventory"]));
+    let mut attributes = tauri_build::Attributes::new().app_manifest(
+        tauri_build::AppManifest::new()
+            .commands(&["read_loadbot_inventory", "open_loadbot_project"]),
+    );
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         // Windows resources require an ICO container. Embed the approved 100x100
         // PNG byte-for-byte, without resampling or generating replacement artwork.

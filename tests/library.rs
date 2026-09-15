@@ -262,15 +262,19 @@ fn exercise_headless_session() {
     );
     assert_eq!(report.result.unwrap().notices.len(), report.notices.len());
     catalog::update(&paths.catalog_file("personal"), |catalog| {
-        catalog.tools.get_mut("demo").unwrap().commands.insert(
-            "inspect".into(),
-            catalog::CommandConfig {
-                path: "scripts with spaces/run.sh".into(),
-                description: Some("Inspect project".into()),
-                runner: Some(catalog::Runner::Sh),
-                extra: Default::default(),
-            },
-        );
+        catalog
+            .tools
+            .get_mut("demo")
+            .unwrap()
+            .commands
+            .insert("inspect".into(), {
+                let mut command = catalog::CommandConfig::legacy(
+                    "scripts with spaces/run.sh".into(),
+                    Some(catalog::Runner::Sh),
+                );
+                command.description = Some("Inspect project".into());
+                command
+            });
         Ok(())
     })
     .unwrap();
@@ -295,7 +299,9 @@ fn exercise_headless_session() {
         "scripts with spaces/run.sh".into(),
     )
     .unwrap();
-    shortcut.runner = Some(catalog::Runner::Sh);
+    shortcut
+        .set_legacy_runner(Some(catalog::Runner::Sh))
+        .unwrap();
     let report = context.run(|_| shortcuts::save(&file, "personal-inspect", shortcut.clone()));
     assert_eq!(report.status(), OperationStatus::Succeeded);
     assert_eq!(
@@ -328,8 +334,8 @@ fn exercise_headless_session() {
             &paths,
             &project.catalog,
             &project.tool,
-            &entry.path,
-            entry.runner,
+            &entry.invocation.as_legacy().unwrap().path,
+            entry.invocation.as_legacy().unwrap().runner,
             entry.source,
             context,
         )
@@ -602,7 +608,9 @@ fn cli_read_rendering_and_rot_json_remain_compatible() {
     let mut shortcut =
         shortcuts::Shortcut::new("personal".into(), "demo".into(), "missing.sh".into()).unwrap();
     shortcut.description = Some("Description".into());
-    shortcut.runner = Some(catalog::Runner::Sh);
+    shortcut
+        .set_legacy_runner(Some(catalog::Runner::Sh))
+        .unwrap();
     shortcuts::save(&file, "demo", shortcut).unwrap();
     assert_eq!(cli(&fixture, &["shortcut", "list"]).stdout, b"Name: demo\nCatalog: personal\nTool: demo\nPath: missing.sh\nDescription: Description\nRunner: sh\n");
     assert_eq!(
@@ -709,9 +717,8 @@ fn saving_validates_public_records_before_touching_storage() {
                         "demo"
                     }
                     .into(),
-                    path: "run.sh".into(),
+                    invocation: loadbot::recipe::StoredInvocation::legacy("run.sh".into(), None),
                     description: None,
-                    runner: None,
                     extra: Default::default(),
                 }
             } else {

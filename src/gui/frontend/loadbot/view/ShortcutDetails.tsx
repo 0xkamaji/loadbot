@@ -14,8 +14,10 @@ export function ShortcutDetails({ state, actions, mode }: { state: LoadbotState;
       <dt>Project</dt><dd>{project?.tool}</dd>
       <dt>Catalog</dt><dd>{project?.catalog}</dd>
       <dt>Source</dt><dd>{shortcut.source === 'catalog' ? 'Shared catalog command' : 'Personal shortcut'}</dd>
-      <dt>Runner</dt><dd>{shortcut.runner ?? 'Not specified'}</dd>
-      <dt>Target</dt><dd title={shortcut.path}>{shortcut.path}</dd>
+      {shortcut.path && <><dt>Runner</dt><dd>{shortcut.runner ?? 'Not specified'}</dd>
+        <dt>Target</dt><dd title={shortcut.path}>{shortcut.path}</dd></>}
+      {shortcut.recipe && <><dt>Invocation</dt><dd>Recipe version {shortcut.recipe.version}</dd>
+        <dt>Behavior</dt><dd>{shortcut.recipe.behavior}</dd></>}
     </dl>
     <p className="lb-note">Inventory details. Execution is not connected.</p>
   </div>;

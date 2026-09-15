@@ -5,7 +5,7 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
-use crate::{config, paths, shortcuts};
+use crate::{config, paths};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CatalogFile {
@@ -57,15 +57,76 @@ impl ToolConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct CommandConfig {
-    pub path: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invocation: crate::recipe::StoredInvocation,
     pub description: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub runner: Option<Runner>,
-    #[serde(flatten)]
     pub extra: BTreeMap<String, toml::Value>,
+}
+
+impl CommandConfig {
+    pub fn legacy(path: String, runner: Option<Runner>) -> Self {
+        Self {
+            invocation: crate::recipe::StoredInvocation::legacy(path, runner),
+            description: None,
+            extra: BTreeMap::new(),
+        }
+    }
+
+    pub fn legacy_invocation(&self) -> Option<&crate::recipe::LegacyInvocation> {
+        self.invocation.as_legacy()
+    }
+
+    pub fn recipe(recipe: crate::recipe::RecipeDefinition) -> Result<Self> {
+        recipe.validate()?;
+        Ok(Self {
+            invocation: crate::recipe::StoredInvocation::Recipe(recipe),
+            description: None,
+            extra: BTreeMap::new(),
+        })
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct CommandConfigWire {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    runner: Option<Runner>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    recipe: Option<crate::recipe::RecipeDefinition>,
+    #[serde(flatten)]
+    extra: BTreeMap<String, toml::Value>,
+}
+
+impl Serialize for CommandConfig {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let (path, runner, recipe) = self.invocation.parts();
+        CommandConfigWire {
+            path,
+            description: self.description.clone(),
+            runner,
+            recipe,
+            extra: self.extra.clone(),
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for CommandConfig {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let wire = CommandConfigWire::deserialize(deserializer)?;
+        let invocation =
+            crate::recipe::StoredInvocation::from_parts(wire.path, wire.runner, wire.recipe)
+                .map_err(serde::de::Error::custom)?;
+        Ok(Self {
+            invocation,
+            description: wire.description,
+            extra: wire.extra,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -86,6 +147,18 @@ impl Runner {
             Self::Sh => "sh",
             Self::Python => "python",
             Self::Powershell => "powershell",
+        }
+    }
+
+    pub fn executable_candidates(self) -> &'static [&'static str] {
+        match self {
+            Self::Direct => &[],
+            Self::Bash => &["bash"],
+            Self::Sh => &["sh"],
+            Self::Python if cfg!(windows) => &["python", "python3"],
+            Self::Python => &["python3", "python"],
+            Self::Powershell if cfg!(windows) => &["powershell", "pwsh"],
+            Self::Powershell => &["pwsh", "powershell"],
         }
     }
 }
@@ -127,6 +200,7 @@ pub fn load_or_default(path: &Path) -> Result<CatalogFile> {
 }
 
 pub fn save(path: &Path, catalog: &CatalogFile) -> Result<()> {
+    validate(catalog, path)?;
     reject_symlink(path)?;
     config::save_toml(path, catalog)
 }
@@ -154,6 +228,11 @@ fn reject_symlink(path: &Path) -> Result<()> {
 fn parse(contents: &str, path: &Path) -> Result<CatalogFile> {
     let catalog: CatalogFile = toml::from_str(contents)
         .with_context(|| format!("could not parse catalog file {}", path.display()))?;
+    validate(&catalog, path)?;
+    Ok(catalog)
+}
+
+fn validate(catalog: &CatalogFile, path: &Path) -> Result<()> {
     if catalog.version != 1 {
         bail!(
             "unsupported catalog version {} in {}",
@@ -167,12 +246,23 @@ fn parse(contents: &str, path: &Path) -> Result<CatalogFile> {
         for (name, command) in &tool.commands {
             paths::validate_name(name)
                 .with_context(|| format!("tool '{tool_name}' contains an unsafe command name"))?;
-            shortcuts::relative_path(&command.path).with_context(|| {
-                format!("command '{name}' for tool '{tool_name}' contains an unsafe path")
-            })?;
+            match &command.invocation {
+                crate::recipe::StoredInvocation::Legacy(legacy) => {
+                    crate::shortcuts::relative_path(&legacy.path).with_context(|| {
+                        format!("command '{name}' for tool '{tool_name}' contains an unsafe path")
+                    })?;
+                }
+                crate::recipe::StoredInvocation::Recipe(recipe) => {
+                    recipe.validate().with_context(|| {
+                        format!(
+                            "command '{name}' for tool '{tool_name}' contains an invalid recipe"
+                        )
+                    })?;
+                }
+            }
         }
     }
-    Ok(catalog)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -223,9 +313,15 @@ recipe_hint = { version = 1, arguments = ["--check"] }
         )
         .unwrap();
         let command = &with_commands.tools["demo"].commands["audit"];
-        assert_eq!(command.path, "scripts/audit.sh");
+        assert_eq!(
+            command.legacy_invocation().unwrap().path,
+            "scripts/audit.sh"
+        );
         assert_eq!(command.description.as_deref(), Some("Audit the repository"));
-        assert_eq!(command.runner, Some(Runner::Bash));
+        assert_eq!(
+            command.legacy_invocation().unwrap().runner,
+            Some(Runner::Bash)
+        );
         assert_eq!(command.extra["future"].as_bool(), Some(true));
         assert_eq!(
             command.extra["recipe_hint"]
@@ -259,6 +355,67 @@ recipe_hint = { version = 1, arguments = ["--check"] }
             );
             assert!(parse(&input, Path::new("catalog.toml")).is_err());
         }
+    }
+
+    #[test]
+    fn catalog_recipe_round_trips_without_legacy_fields_and_mixed_forms_are_rejected() {
+        let input = r#"version = 1
+
+[tools.demo]
+type = "git"
+url = "demo.git"
+
+[tools.demo.commands.triage]
+description = "Triage a sample"
+future = "preserved"
+
+[tools.demo.commands.triage.recipe]
+version = 1
+behavior = "run"
+program = { type = "interpreter", runner = "python" }
+working_directory = { type = "project-root" }
+
+[[tools.demo.commands.triage.recipe.arguments]]
+type = "project-path"
+path = "triage.py"
+"#;
+        let parsed = parse(input, Path::new("catalog.toml")).unwrap();
+        let command = &parsed.tools["demo"].commands["triage"];
+        assert!(command.legacy_invocation().is_none());
+        assert_eq!(command.invocation.as_recipe().unwrap().version, 1);
+        assert_eq!(command.extra["future"].as_str(), Some("preserved"));
+
+        let serialized = toml::to_string(&parsed).unwrap();
+        let value: toml::Value = toml::from_str(&serialized).unwrap();
+        let entry = &value["tools"]["demo"]["commands"]["triage"];
+        assert!(entry.get("path").is_none());
+        assert!(entry.get("runner").is_none());
+        assert_eq!(
+            parse(&serialized, Path::new("catalog.toml")).unwrap(),
+            parsed
+        );
+
+        #[derive(Deserialize)]
+        #[allow(dead_code)]
+        struct OldCommandConfig {
+            path: String,
+        }
+        assert!(toml::from_str::<OldCommandConfig>(&toml::to_string(command).unwrap()).is_err());
+
+        let mixed = input.replace(
+            "description = \"Triage a sample\"",
+            "description = \"Triage a sample\"\npath = \"triage.py\"",
+        );
+        let error = parse(&mixed, Path::new("catalog.toml")).unwrap_err();
+        assert!(format!("{error:#}").contains("both a legacy path and a recipe"));
+        let unsupported = input.replace(
+            "version = 1\nbehavior = \"run\"",
+            "version = 2\nbehavior = \"run\"",
+        );
+        let error = parse(&unsupported, Path::new("catalog.toml")).unwrap_err();
+        assert!(format!("{error:#}").contains("unsupported recipe version 2"));
+        let unsupported_runner = input.replace("runner = \"python\"", "runner = \"fish\"");
+        assert!(parse(&unsupported_runner, Path::new("catalog.toml")).is_err());
     }
 
     #[cfg(unix)]

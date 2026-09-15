@@ -13,6 +13,10 @@ use loadbot::{
     operations,
     paths::Paths,
     process::Event,
+    recipe::{
+        InvocationBehavior, RecipeDefinition, RecipeProgram, StoredInvocation, WorkingDirectory,
+    },
+    shortcuts::{self, Shortcut},
 };
 
 fn paths(root: &Path) -> Paths {
@@ -196,6 +200,94 @@ runner = "powershell"
 }
 
 #[test]
+fn inventory_exposes_recipe_definitions_without_legacy_path_or_runner_fields() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = paths(root.path());
+    catalog(
+        &paths,
+        "recipes",
+        r#"version = 1
+[tools.demo]
+type = "git"
+url = "https://example.invalid/tool.git"
+[tools.demo.commands.triage]
+description = "Triage"
+[tools.demo.commands.triage.recipe]
+version = 1
+behavior = "run"
+program = { type = "interpreter", runner = "python" }
+working_directory = { type = "project-root" }
+[[tools.demo.commands.triage.recipe.arguments]]
+type = "project-path"
+path = "triage.py"
+"#,
+    );
+    let mut policy = Unattended;
+    let mut context = OperationContext::new(&mut policy);
+    let projects = launcher::read_project_inventory(&paths, &mut context).unwrap();
+    let value = serde_json::to_value(&projects[0].entries[0]).unwrap();
+    assert!(value.get("path").is_none());
+    assert!(value.get("runner").is_none());
+    assert_eq!(value["recipe"]["version"], 1);
+    assert_eq!(value["recipe"]["behavior"], "run");
+    assert_eq!(value["recipe"]["arguments"][0]["type"], "project-path");
+}
+
+#[test]
+fn existing_execution_entry_points_refuse_both_recipe_behaviors_without_spawning() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = paths(root.path());
+    let shortcut_path = paths.shortcuts().unwrap();
+    fs::create_dir_all(shortcut_path.parent().unwrap()).unwrap();
+    for behavior in [InvocationBehavior::Run, InvocationBehavior::Launch] {
+        let name = match behavior {
+            InvocationBehavior::Run => "run-recipe",
+            InvocationBehavior::Launch => "launch-recipe",
+        };
+        let recipe = RecipeDefinition {
+            version: 1,
+            behavior,
+            program: RecipeProgram::Executable {
+                name: "never-started".into(),
+            },
+            working_directory: WorkingDirectory::ProjectRoot,
+            arguments: vec![],
+        };
+        shortcuts::save(
+            &shortcut_path,
+            name,
+            Shortcut::with_invocation(
+                "personal".into(),
+                "demo".into(),
+                StoredInvocation::Recipe(recipe),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    }
+    let mut policy = Unattended;
+    let mut context = OperationContext::new(&mut policy);
+    let starts = Arc::new(Mutex::new(Vec::new()));
+    let received = starts.clone();
+    context.process.observer = Some(Arc::new(move |event| {
+        if let Event::Starting { program, .. } = event {
+            received.lock().unwrap().push(program);
+        }
+    }));
+    for name in ["run-recipe", "launch-recipe"] {
+        let error =
+            launcher::run_shortcut_from(&paths, &shortcut_path, name, &mut context).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("Recipe execution is not implemented")
+        );
+    }
+    assert!(starts.lock().unwrap().is_empty());
+    assert!(!paths.tools().exists());
+}
+
+#[test]
 fn pre_gui_management_installation_is_shared_by_catalog_and_inventory_queries() {
     let root = tempfile::tempdir().unwrap();
     let paths = paths(root.path());
@@ -272,7 +364,10 @@ fn shared_shortcut_add_validates_project_target_duplicates_and_persists_atomical
         saved.shortcuts["run"].description.as_deref(),
         Some("Run it")
     );
-    assert_eq!(saved.shortcuts["run"].runner, Some(Runner::Python));
+    assert_eq!(
+        saved.shortcuts["run"].legacy().unwrap().runner,
+        Some(Runner::Python)
+    );
     let before = fs::read(paths.shortcuts().unwrap()).unwrap();
 
     for (name, target, expected) in [

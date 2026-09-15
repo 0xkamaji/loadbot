@@ -4,6 +4,7 @@ use crate::{
     catalog::Runner,
     operations,
     paths::{self, Paths},
+    recipe::StoredInvocation,
     shortcuts::{self, Shortcut},
 };
 use anyhow::{Context, Result, bail};
@@ -53,11 +54,14 @@ pub fn run_shortcut_from(
         .shortcuts
         .get(name)
         .with_context(|| format!("shortcut '{name}' does not exist"))?;
+    let legacy = shortcut
+        .legacy()
+        .context("structured Recipe execution is not implemented")?;
     let root = paths.tool(&shortcut.catalog, &shortcut.tool)?;
     let _repository_lease = context.lease(&root)?;
-    let target =
-        resolve_target(paths, shortcut, context).with_context(|| broken_message(name, shortcut))?;
-    match shortcut.runner {
+    let target = resolve_target(paths, shortcut, &legacy.path, context)
+        .with_context(|| broken_message(name, shortcut))?;
+    match legacy.runner {
         Some(runner) => {
             let root =
                 operations::installed_tool_path(paths, &shortcut.tool, &shortcut.catalog, context)?;
@@ -70,10 +74,11 @@ pub fn run_shortcut_from(
 fn resolve_target(
     paths: &Paths,
     shortcut: &Shortcut,
+    path: &str,
     context: &mut OperationContext<'_>,
 ) -> Result<PathBuf> {
     let root = operations::installed_tool_path(paths, &shortcut.tool, &shortcut.catalog, context)?;
-    let relative = shortcuts::relative_path(&shortcut.path)?;
+    let relative = shortcuts::relative_path(path)?;
     safe_target(&root, &relative)
 }
 
@@ -159,15 +164,7 @@ pub fn launch_with_runner_in(
     if runner == Runner::Direct {
         return run_command_in(Command::new(target), target, working_directory, context);
     }
-    let executables: &[&str] = match runner {
-        Runner::Direct => unreachable!(),
-        Runner::Bash => &["bash"],
-        Runner::Sh => &["sh"],
-        Runner::Python if cfg!(windows) => &["python", "python3"],
-        Runner::Python => &["python3", "python"],
-        Runner::Powershell if cfg!(windows) => &["powershell", "pwsh"],
-        Runner::Powershell => &["pwsh", "powershell"],
-    };
+    let executables = runner.executable_candidates();
     for executable in executables {
         let mut command = Command::new(executable);
         script_argument(&mut command, target, working_directory, executable)?;
@@ -311,9 +308,13 @@ fn is_native_executable(path: &Path) -> Result<bool> {
 }
 
 fn broken_message(name: &str, shortcut: &Shortcut) -> String {
+    let invocation = match &shortcut.invocation {
+        StoredInvocation::Legacy(legacy) => format!("path: {}", legacy.path),
+        StoredInvocation::Recipe(_) => "invocation: recipe".to_owned(),
+    };
     format!(
-        "shortcut '{name}' is broken:\n\ncatalog: {}\ntool: {}\npath: {}",
-        shortcut.catalog, shortcut.tool, shortcut.path
+        "shortcut '{name}' is broken:\n\ncatalog: {}\ntool: {}\n{}",
+        shortcut.catalog, shortcut.tool, invocation
     )
 }
 
@@ -353,15 +354,40 @@ pub struct Project {
     pub entries: Vec<ProjectEntry>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectEntry {
     pub name: String,
-    pub path: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub runner: Option<Runner>,
+    pub invocation: StoredInvocation,
     pub source: EntrySource,
+}
+
+impl serde::Serialize for ProjectEntry {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        #[derive(serde::Serialize)]
+        struct Wire<'a> {
+            name: &'a str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            path: Option<&'a str>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            description: Option<&'a str>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            runner: Option<Runner>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            recipe: Option<&'a crate::recipe::RecipeDefinition>,
+            source: EntrySource,
+        }
+        let legacy = self.invocation.as_legacy();
+        Wire {
+            name: &self.name,
+            path: legacy.map(|legacy| legacy.path.as_str()),
+            description: self.description.as_deref(),
+            runner: legacy.and_then(|legacy| legacy.runner),
+            recipe: self.invocation.as_recipe(),
+            source: self.source,
+        }
+        .serialize(serializer)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
@@ -440,9 +466,8 @@ pub fn project_inventory(
         for (name, command) in &tool.definition.commands {
             projects.entry(key.clone()).or_default().push(ProjectEntry {
                 name: name.clone(),
-                path: command.path.clone(),
                 description: command.description.clone(),
-                runner: command.runner,
+                invocation: command.invocation.clone(),
                 source: EntrySource::Catalog,
             });
         }
@@ -456,9 +481,8 @@ pub fn project_inventory(
             .or_default()
             .push(ProjectEntry {
                 name: name.clone(),
-                path: shortcut.path.clone(),
                 description: shortcut.description.clone(),
-                runner: shortcut.runner,
+                invocation: shortcut.invocation.clone(),
                 source: EntrySource::Personal,
             });
     }

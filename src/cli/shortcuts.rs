@@ -3,18 +3,25 @@ use anyhow::{Context, Result, bail};
 use loadbot::shortcuts::remove;
 use loadbot::{
     paths,
+    recipe::StoredInvocation,
     shortcuts::{Shortcut, load, remove_if_matches},
 };
 use std::path::Path;
 fn details(name: &str, shortcut: &Shortcut) -> String {
     let mut text = format!(
-        "Name: {name}\nCatalog: {}\nTool: {}\nPath: {}",
-        shortcut.catalog, shortcut.tool, shortcut.path
+        "Name: {name}\nCatalog: {}\nTool: {}",
+        shortcut.catalog, shortcut.tool
     );
+    match &shortcut.invocation {
+        StoredInvocation::Legacy(legacy) => text.push_str(&format!("\nPath: {}", legacy.path)),
+        StoredInvocation::Recipe(recipe) => {
+            text.push_str(&format!("\nRecipe: {:?}", recipe.behavior))
+        }
+    }
     if let Some(description) = &shortcut.description {
         text.push_str(&format!("\nDescription: {description}"));
     }
-    if let Some(runner) = shortcut.runner {
+    if let Some(runner) = shortcut.legacy().and_then(|legacy| legacy.runner) {
         text.push_str(&format!("\nRunner: {}", runner.as_str()));
     }
     text

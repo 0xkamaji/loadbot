@@ -41,6 +41,28 @@ describe('one platform-neutral real read adapter', () => {
     }
   });
 
+  it('maps a semantic Recipe inventory entry without inventing a legacy path', async () => {
+    const recipe = {
+      version: 1, behavior: 'run',
+      program: { type: 'interpreter', runner: 'python' },
+      working_directory: { type: 'project-root' },
+      arguments: [
+        { type: 'project-path', path: 'triage.py' },
+        { type: 'input', id: 'sample', label: 'Sample', kind: 'file', required: true },
+      ],
+    };
+    const adapter = createTauriLoadbotAdapter(async () => [{
+      catalog: 'personal', tool: 'demo', entries: [{ name: 'triage', recipe, source: 'catalog' }],
+    }]);
+    const entry = (await adapter.readInventory())[0].entries[0];
+    expect(entry.path).toBeUndefined();
+    expect(entry.runner).toBeUndefined();
+    expect(entry.recipe).toEqual(recipe);
+    await expect(createTauriLoadbotAdapter(async () => [{
+      catalog: 'personal', tool: 'demo', entries: [{ name: 'mixed', path: 'run.sh', recipe, source: 'catalog' }],
+    }]).readInventory()).rejects.toThrow(/expected legacy path or Recipe/);
+  });
+
   it('uses the native inventory and layout composition with no sample forms', async () => {
     tauri.invoke.mockClear();
     tauri.invoke.mockImplementation(async (command: string) => command === 'read_loadbot_inventory' ? serializedInventory

@@ -79,19 +79,20 @@ pub fn shortcut_add(
     let root = installed_tool_path(paths, tool_name, catalog_name, context)?;
     let relative = shortcuts::relative_path(path)?;
     crate::launcher::safe_target(&root, &relative)?;
+    let portable = shortcuts::portable_path(&relative)?;
     let mut shortcut = Shortcut::new(
         catalog_name.to_owned(),
         tool_name.to_owned(),
-        shortcuts::portable_path(&relative)?,
+        portable.clone(),
     )?;
     shortcut.description = description.filter(|value| !value.trim().is_empty());
-    shortcut.runner = runner;
+    shortcut.invocation = crate::recipe::StoredInvocation::legacy(portable.clone(), runner);
     shortcuts::save(&paths.shortcuts()?, name, shortcut.clone())?;
     Ok(ShortcutIdentity {
         name: name.to_owned(),
         catalog: shortcut.catalog,
         tool: shortcut.tool,
-        path: shortcut.path,
+        path: portable,
     })
 }
 

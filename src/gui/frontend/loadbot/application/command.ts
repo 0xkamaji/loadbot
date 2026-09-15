@@ -1,4 +1,5 @@
 import type { LoadbotProject, LoadbotShortcut } from '../contract';
+import { shortcutTarget } from '../identity';
 
 export interface CommandDefinitionSummary {
   readonly name: string;
@@ -159,7 +160,7 @@ function resolveProject(reference: string, context: CommandContext): LoadbotProj
 }
 
 function qualifiedShortcut(shortcut: LoadbotShortcut): string {
-  return `${shortcut.source}::${shortcut.name}::${shortcut.path}`;
+  return `${shortcut.source}::${shortcut.name}::${shortcutTarget(shortcut)}`;
 }
 
 function shortcutCompletionCandidates(project: LoadbotProject): readonly CommandCompletionCandidate[] {
@@ -175,7 +176,7 @@ function resolveShortcut(reference: string, project: LoadbotProject): LoadbotSho
   const [possibleSource, possibleName, ...path] = reference.split('::');
   const qualified = (possibleSource === 'catalog' || possibleSource === 'personal') && possibleName !== undefined;
   const matches = project.entries.filter((shortcut) => qualified
-    ? shortcut.source === possibleSource && shortcut.name === possibleName && (!path.length || shortcut.path === path.join('::'))
+    ? shortcut.source === possibleSource && shortcut.name === possibleName && (!path.length || shortcutTarget(shortcut) === path.join('::'))
     : shortcut.name === reference);
   if (matches.length === 1) return matches[0];
   if (!matches.length) return { kind: 'error', code: 'shortcut-not-found', subject: reference };

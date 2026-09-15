@@ -13,7 +13,7 @@ test('normal entry uses the real read composition and preserves qualified record
       },
     } });
   }, inventory);
-  await page.goto('/');
+  await page.goto('/desktop.html');
   await expect(page.getByRole('button', { name: 'demo alpha' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'demo beta' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'inspect [shared]' })).toBeVisible();
@@ -43,7 +43,7 @@ for (const scenario of ['empty', 'error'] as const) {
         },
       } });
     }, scenario);
-    await page.goto('/');
+    await page.goto('/desktop.html');
     await expect(page.getByText(scenario === 'empty'
       ? 'No projects with commands or shortcuts in local Loadbot data.'
       : "Inventory read failed: catalog 'offline' is not installed")).toBeVisible();
@@ -53,7 +53,7 @@ for (const scenario of ['empty', 'error'] as const) {
 }
 
 test('ordinary browser at the native entry reports missing runtime rather than loading fixtures', async ({ page }) => {
-  await page.goto('/');
+  await page.goto('/desktop.html');
   await expect(page.getByText('Inventory read failed: Local inventory requires the native Loadbot application.')).toBeVisible();
   await expect(page.getByRole('group', { name: 'Projects', exact: true }).getByRole('button')).toHaveCount(0);
 });

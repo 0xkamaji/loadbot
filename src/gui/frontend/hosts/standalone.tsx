@@ -1,10 +1,10 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
-import { fixtureMenuDependencies } from './fixtureComposition';
+import { realMenuDependencies } from './realComposition';
 import { LoadbotMenu } from '../loadbot/LoadbotMenu';
 import './host.css';
 
-// The Tauri host owns native window controls. This entry also previews in a browser.
+// The native host owns window controls and the local inventory bridge on both platforms.
 createRoot(document.getElementById('root')!).render(
-  <StrictMode><LoadbotMenu {...fixtureMenuDependencies} /></StrictMode>,
+  <StrictMode><LoadbotMenu {...realMenuDependencies} /></StrictMode>,
 );

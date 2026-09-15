@@ -5,11 +5,12 @@ import type { ShellCallbacks } from '../ui/components';
 import { LoadbotMenuView } from './view/LoadbotMenuView';
 
 /** Public composition seam. A parent supplies capabilities and optional UI demos. */
-export function LoadbotMenu({ adapter, sampleForms, host }: {
+export function LoadbotMenu({ adapter, sampleForms, host, mode = 'local' }: {
   adapter: LoadbotAdapter;
   sampleForms?: SampleForms;
   host?: ShellCallbacks;
+  mode?: 'local' | 'fixture';
 }) {
-  const application = useLoadbotApplication(adapter, sampleForms);
-  return <LoadbotMenuView {...application} host={host} />;
+  const application = useLoadbotApplication(adapter, mode === 'fixture' ? sampleForms : undefined);
+  return <LoadbotMenuView {...application} host={host} mode={mode} />;
 }

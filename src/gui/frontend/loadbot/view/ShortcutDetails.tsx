@@ -3,7 +3,7 @@ import type { LoadbotActions, LoadbotState } from '../application/controller';
 import { Button, Checkbox, InputControl, PathSelector, StatusDisplay } from '../../ui/components';
 
 /** Chooses widgets and wording. Application state supplies values and validation. */
-export function ShortcutDetails({ state, actions }: { state: LoadbotState; actions: LoadbotActions }) {
+export function ShortcutDetails({ state, actions, mode }: { state: LoadbotState; actions: LoadbotActions; mode: 'local' | 'fixture' }) {
   const statusId = useId();
   const { shortcut, fields, values, missingInputIds } = state;
   if (!shortcut) return <div className="lb-details"><p>Select a shortcut to see its details.</p></div>;
@@ -11,8 +11,8 @@ export function ShortcutDetails({ state, actions }: { state: LoadbotState; actio
   return <div className="lb-details">
     <h3>{shortcut.name}</h3>
     {shortcut.description && <p>{shortcut.description}</p>}
-    <p className="lb-metadata" title={shortcut.path}>{shortcut.source === 'catalog' ? 'Shared' : 'Personal'} · {shortcut.runner ?? 'Inferred runner'} · {shortcut.path}</p>
-    <form onSubmit={(event) => event.preventDefault()} aria-label="Sample shortcut inputs">
+    <p className="lb-metadata" title={shortcut.path}>{shortcut.source === 'catalog' ? 'Shared' : 'Personal'} · {shortcut.runner ?? (mode === 'fixture' ? 'Inferred runner' : 'Runner not specified')} · {shortcut.path}</p>
+    <form onSubmit={(event) => event.preventDefault()} aria-label={mode === 'fixture' ? 'Sample shortcut inputs' : 'Shortcut details'}>
       <div className="lb-fields">
         {fields.map((field) => field.kind === 'boolean'
           ? <Checkbox key={field.id} label={field.label} checked={Boolean(values[field.id])} onChange={(event) => actions.changeSampleInput(field.id, event.target.checked)} />
@@ -28,11 +28,11 @@ export function ShortcutDetails({ state, actions }: { state: LoadbotState; actio
             : <InputControl key={field.id} label={field.label} value={String(values[field.id] ?? '')} required={field.required} placeholder={field.placeholder}
               aria-invalid={missingInputIds.includes(field.id) ? true : undefined} aria-describedby={statusId}
               onChange={(event) => actions.changeSampleInput(field.id, event.target.value)} />)}
-        {!fields.length && <p className="lb-note">No sample inputs for this shortcut.</p>}
+        {!fields.length && <p className="lb-note">{mode === 'fixture' ? 'No sample inputs for this shortcut.' : 'Inventory only; shortcut inputs are not exposed.'}</p>}
       </div>
       <div className="lb-run">
         <Button disabled aria-describedby={statusId}>RUN SHORTCUT</Button>
-        <StatusDisplay id={statusId}>{missing.length
+        <StatusDisplay id={statusId}>{mode === 'local' ? 'Execution is not connected.' : missing.length
           ? `Input required: ${missing.map((field) => field.label.toLowerCase()).join(', ')}. Execution is not connected.`
           : 'Sample form ready. Execution is not connected.'}</StatusDisplay>
       </div>

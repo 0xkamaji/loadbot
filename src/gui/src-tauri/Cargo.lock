@@ -1905,7 +1905,9 @@ dependencies = [
 name = "loadbot-desktop"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "loadbot",
+ "serde",
  "tauri",
  "tauri-build",
 ]

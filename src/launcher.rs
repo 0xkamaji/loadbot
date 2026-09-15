@@ -346,26 +346,59 @@ struct ProjectKey {
     catalog: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct Project {
     pub tool: String,
     pub catalog: String,
     pub entries: Vec<ProjectEntry>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct ProjectEntry {
     pub name: String,
     pub path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub runner: Option<Runner>,
     pub source: EntrySource,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum EntrySource {
     Catalog,
     Personal,
+}
+
+/// Read the existing launcher inventory without writes, synchronization, or launch checks.
+///
+/// Unlike the CLI's warning-plus-partial inventory, this complete-snapshot query fails
+/// if `all_tools` skips any catalog. The original typed notices remain in `context`.
+/// Missing optional configuration/shortcut files retain their normal empty semantics.
+pub fn read_project_inventory(
+    paths: &Paths,
+    context: &mut OperationContext<'_>,
+) -> Result<Vec<Project>> {
+    let notice_start = context.notices.len();
+    let tools = operations::all_tools(paths, context)?;
+    let skipped: Vec<_> = context.notices[notice_start..]
+        .iter()
+        .filter_map(|notice| match notice {
+            crate::interaction::Notice::SkippedCatalog { name, diagnostic } => {
+                Some(format!("catalog '{name}': {diagnostic}"))
+            }
+            _ => None,
+        })
+        .collect();
+    if !skipped.is_empty() {
+        bail!(
+            "could not read complete Loadbot inventory: {}",
+            skipped.join("; ")
+        );
+    }
+    let shortcut_file = shortcuts::load(&paths.shortcuts()?)?;
+    Ok(project_inventory(&tools, &shortcut_file))
 }
 
 pub fn project_inventory(

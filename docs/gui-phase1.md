@@ -1,9 +1,11 @@
-# Standalone GUI — Phase 1
+# Standalone GUI development
 
-Phase 1 provides a Tauri 2 desktop target and a React/TypeScript menu built with
+Loadbot provides a Tauri 2 desktop target and a React/TypeScript menu built with
 Vite. The menu uses the approved PNG controls and static mascot from
 `src/gui/loadbot-gui-assets/`. Both reference images were visually inspected.
-This phase's fixture-only scope overrides the handoff's broader backend roadmap.
+The normal native entry now displays [real local read-only inventory](gui-read-only.md).
+Fixtures remain available explicitly for development. Mutations and execution are
+still unavailable; the handoff's broader roadmap is not an implementation claim.
 
 The consolidated `main` baseline has been launched natively successfully by the
 maintainer. The subsequent structural pass and its local verification are described
@@ -31,8 +33,11 @@ Browser-only development (no Rust or Tauri system dependencies):
 npm --prefix src/gui run dev
 ```
 
-- Main menu: <http://127.0.0.1:1420/>
+- Fixture menu: <http://127.0.0.1:1420/fixture.html>
 - Development-only parent overlay: <http://127.0.0.1:1420/embed.html>
+
+The normal `/` entry requires Tauri for its real read. In an ordinary browser it
+reports the missing native runtime rather than falling back to fixture data.
 
 The overlay uses the same `LoadbotMenu` with the fixture adapter. Its parent owns
 the dialog, close callback, Escape behavior, focus containment, and focus return.
@@ -100,17 +105,17 @@ In the actual native window, compare the supplied `references/01-main-window.png
 and `references/02-interface-kit.png` beneath `src/gui/loadbot-gui-assets/`:
 
 1. Check mascot, font, near-black/beige skins, and fixed pixel-border corners.
-2. Select `radio`, then return to `re-toolkit`; select different shortcuts and
-   verify their details and sample inputs. Missing input feedback should clear
-   after sample values are supplied; Run must remain disabled.
-3. Set a sample path and checkbox, toggle Terminal twice, and check retained state.
-   The drawer must say it is not connected and offer no shell input.
+2. Select actual local projects and shortcuts; verify catalog/source qualification,
+   descriptions and relative paths. Run must remain disabled, with no sample
+   inputs injected into the native local-data view.
+3. Toggle Terminal twice and check retained selection. The drawer must say it is
+   not connected and offer no shell input.
 4. Use Tab/Shift+Tab, arrow keys, Home/End, Enter/Space; check focus versus selection.
    Scroll the long project/shortcut labels and resize down to 420 × 480. Run and
    the toolbar must remain reachable by scrolling.
 5. Exercise native minimize/maximize/restore and Close. Check that closing the
    window exits the native process; stop the development watcher with Ctrl+C.
-6. Confirm the fixture banner and disabled Run/catalog/folder actions throughout.
+6. Confirm the LOCAL INVENTORY label and disabled Run/catalog/folder actions throughout.
    Record the commit, OS, scale factor, screenshots, and any native-console errors
    in the verification record. Browser screenshots do not satisfy this step.
 
@@ -118,8 +123,9 @@ and `references/02-interface-kit.png` beneath `src/gui/loadbot-gui-assets/`:
 
 `src/gui/src-tauri/Cargo.toml` is an **independent Cargo workspace** with its own
 tracked `Cargo.lock`, and depends on the root `loadbot` library via `../../..`.
-It currently registers no backend commands. The root `Cargo.toml`, `Cargo.lock`,
-CLI entry point, command tree, completion, and backend are unchanged. Normal
+It registers only `read_loadbot_inventory`, delegating to the existing library's
+read-only inventory composition. The root dependency graph and CLI contracts
+remain independent of Tauri. Normal
 `cargo build`, `cargo test`, and `cargo install --path .` do not resolve or compile
 Tauri. Node dependencies and generated output are ignored by Git.
 
@@ -140,7 +146,8 @@ Paths below are relative to `src/gui/`:
 | `frontend/ui/components.tsx` | Application-neutral frames, buttons, menu rows/lists, inputs/path selectors, checkboxes, status and drawer primitives. |
 | `frontend/ui/theme.ts`, `theme.css` | Approved skin, tokens, asset URLs, font, spacing and control states, using manifest nine-slice measurements. |
 | `frontend/loadbot/fixtures/` | Inventory adapter and separately injected UI-demo configuration. No filesystem/configuration access. |
-| `frontend/hosts/fixtureComposition.ts` | Explicit choice of fixture adapter and sample forms for both current hosts. |
+| `frontend/hosts/fixtureComposition.ts` | Explicit choice of fixture adapter and sample forms for the development preview and overlay. |
+| `frontend/hosts/realComposition.ts`, `tauriInventoryAdapter.ts` | Normal Windows/Linux native entry: real semantic read through the Tauri query, without sample forms. |
 | `frontend/hosts/standalone.tsx`, `host.css` | Standalone mount and viewport sizing; also works in a normal browser. |
 | `frontend/hosts/embed.tsx`, `embed.html` | Development-only parent-owned overlay and focus lifecycle. |
 | `src-tauri/` | Tauri setup, native window configuration/lifetime, Rust library dependency. Future native calls belong here and in a host-side adapter. |
@@ -160,7 +167,7 @@ Loadbot-specific styles are scoped to `.lb-theme`. The parent's height must be
 defined. Only the standalone/example hosts style `html`, `body`, and `#root`.
 There are no Tauri frontend imports anywhere in the reusable menu.
 
-## Working fixture behavior
+## Explicit development fixture behavior
 
 - Project selection updates shortcuts and selects the first available entry.
 - Shortcut selection updates description, source, repository-relative path,
@@ -231,26 +238,11 @@ responses, and the optional close callback.
 See [the verification record](gui-phase1-verification.md) for the actual local
 results and environment limitations.
 
-## Next phase — read-only data only
+## Current data boundary and next phase
 
-1. Add a host-side adapter using `operations::all_tools`, `shortcuts::load`, and
-   `launcher::project_inventory` on a worker thread. Preserve catalog qualification
-   and `EntrySource`; inventory is not an installation/launchability check. Use
-   structured results and notices rather than parsing CLI output.
-2. Add read-only catalog and selected-project status/path projections through the
-   adapter and application state. Distinguish an inventory reread from Git
-   synchronization. Keep registration, synchronization, execution, and native
-   folder-opening actions unavailable in that phase.
-3. Omit the injected sample-form configuration when displaying real data. The
-   current `ProjectEntry` has name/path/description/runner/source, **no input schema**;
-   `launch_command` has no arbitrary GUI argument list. Do not persist
-   UI-only `SampleForms` or translate sample folder values into shell strings.
-   Any future input support needs a separate explicit backend contract.
-4. Preserve structured notices, truthful data provenance, and stale-response
-   handling. Follow `gui-readiness.md` for worker/context rules and
-   `gui-architecture.md` for the new presentation boundary. No read-only adapter
-   implementation is included in this structural pass.
-
-Execution and mutation are deferred beyond the next read-only phase. A real
-terminal requires a separately designed terminal/PTY lifecycle; the placeholder
-makes no claim to implement it. Rot hosting/transport likewise remains future work.
+The [read-only inventory guide](gui-read-only.md) documents the implemented Rust
+query, Tauri boundary, error policy, path ownership, and separate Windows/Linux
+verification results. It also lists exact native launch commands and Linux system
+packages. The next review can add deliberate mutations/actions; shortcut execution,
+output and terminal/PTY behavior remain separate future work. Sample forms are
+never a real argument schema. Rot and personality/model integration remain future work.

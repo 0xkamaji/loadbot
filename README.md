@@ -55,8 +55,9 @@ The Loadbot executable and Loadbot source repository do not have to live beneath
 
 ## Build and Install
 
-The optional **Phase 1 desktop GUI** uses Tauri 2 and React, with clearly marked
-fixture data. See [desktop development and browser preview](docs/gui-phase1.md)
+The optional **desktop GUI** uses Tauri 2 and React to display real local,
+read-only Loadbot inventory on Windows and Linux. Explicit fixture previews remain
+available for development. See [desktop development and browser preview](docs/gui-phase1.md)
 for launch commands, prerequisites, reusable component boundaries, and validation.
 Its separate Cargo workspace keeps desktop dependencies out of the normal CLI
 builds and tests below.
@@ -914,7 +915,7 @@ before a later failure. The CLI renders notices immediately to preserve output
 order and stdout/stderr routing, including output preceding a prompt or error.
 Other callers can inspect the report without rendering anything. This is a
 synchronous API; it adds no service or process-control protocol. The separate
-Phase 1 GUI currently uses an injected fixture adapter.
+GUI now reads inventory through a thin Tauri adapter over the same library.
 
 `tests/library.rs` exercises the public API with isolated directories and local
 Git repositories. The existing CLI and setup tests remain the compatibility suite.
@@ -932,7 +933,8 @@ Backend concurrency, persistence recovery, and observable process execution are 
 boundaries, public call flow, headless verification, Rot compatibility, and the
 direction for a Tauri frontend calling the existing Rust library.
 
-[GUI architecture](docs/gui-architecture.md) describes the current fixture-backed
+[GUI architecture](docs/gui-architecture.md) describes the current
 adapter, headless application state, reusable presentation primitives, and host
 composition, including the intended future alternative-host and cosmetic-personality
-boundaries. The real read-only data adapter remains the next, separate phase.
+boundaries. [Real read-only GUI inventory](docs/gui-read-only.md) describes the
+implemented read path, Windows/Linux prerequisites, error semantics, and verification.

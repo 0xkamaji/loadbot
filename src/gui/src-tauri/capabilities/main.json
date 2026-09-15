@@ -1,0 +1,6 @@
+{
+  "identifier": "main-inventory",
+  "description": "The main local window may read Loadbot inventory only.",
+  "windows": ["main"],
+  "permissions": ["read-local-inventory"]
+}

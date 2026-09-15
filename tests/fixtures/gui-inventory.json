@@ -1,0 +1,17 @@
+[
+  {
+    "catalog": "alpha",
+    "tool": "demo",
+    "entries": [
+      {"name": "inspect", "path": "recipes/inspect file.py", "description": "Inspect π data", "runner": "python", "source": "catalog"},
+      {"name": "inspect", "path": "recipes/inspect file.py", "source": "personal"}
+    ]
+  },
+  {
+    "catalog": "beta",
+    "tool": "demo",
+    "entries": [
+      {"name": "inspect", "path": "scripts/inspect.ps1", "runner": "powershell", "source": "catalog"}
+    ]
+  }
+]

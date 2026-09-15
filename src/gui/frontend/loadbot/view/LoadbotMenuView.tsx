@@ -7,8 +7,8 @@ import { ShortcutDetails } from './ShortcutDetails';
 import './menu.css';
 
 /** Pure Loadbot layout: no adapter, fixture, native API, or asynchronous work. */
-export function LoadbotMenuView({ state, actions, host }: {
-  state: LoadbotState; actions: LoadbotActions; host?: ShellCallbacks;
+export function LoadbotMenuView({ state, actions, host, mode }: {
+  state: LoadbotState; actions: LoadbotActions; host?: ShellCallbacks; mode: 'local' | 'fixture';
 }) {
   const drawerId = useId();
   const unavailableId = useId();
@@ -18,7 +18,7 @@ export function LoadbotMenuView({ state, actions, host }: {
     <header className="lb-header">
       <img className="lb-mascot" src={mascot} alt="" />
       <h1>LOADBOT</h1>
-      <span className="lb-fixture-badge">FIXTURE PREVIEW<span>Phase 1 · no live operations</span></span>
+      <span className="lb-fixture-badge">{mode === 'fixture' ? 'FIXTURE PREVIEW' : 'LOCAL INVENTORY'}<span>{mode === 'fixture' ? 'Phase 1 · no live operations' : 'Read-only · no live actions'}</span></span>
       {host?.onClose && <IconButton icon="close" label="Close Loadbot menu" onClick={host.onClose} />}
     </header>
     <div className="lb-workspace">
@@ -29,9 +29,9 @@ export function LoadbotMenuView({ state, actions, host }: {
             title={`${item.catalog}/${item.tool}`} onClick={() => actions.selectProject(projectKey(item))}>
             {item.tool}<small>{item.catalog}</small>
           </MenuRow>)}
-          {inventory.status === 'loading' && <StatusDisplay>Loading fixture projects…</StatusDisplay>}
-          {inventory.status === 'error' && <StatusDisplay>Fixture unavailable: {inventory.message ?? 'Could not read fixture data.'}</StatusDisplay>}
-          {inventory.status === 'ready' && !projects.length && <StatusDisplay>No fixture projects available.</StatusDisplay>}
+          {inventory.status === 'loading' && <StatusDisplay>{mode === 'fixture' ? 'Loading fixture projects…' : 'Reading local Loadbot inventory…'}</StatusDisplay>}
+          {inventory.status === 'error' && <StatusDisplay>{mode === 'fixture' ? 'Fixture unavailable: ' : 'Inventory read failed: '}{inventory.message ?? (mode === 'fixture' ? 'Could not read fixture data.' : 'Could not read local Loadbot data.')}</StatusDisplay>}
+          {inventory.status === 'ready' && !projects.length && <StatusDisplay>{mode === 'fixture' ? 'No fixture projects available.' : 'No projects with commands or shortcuts in local Loadbot data.'}</StatusDisplay>}
         </MenuList>
         <div className="lb-project-actions">
           <Button disabled aria-describedby={unavailableId}>+ Add project</Button>
@@ -46,9 +46,9 @@ export function LoadbotMenuView({ state, actions, host }: {
             title={`${item.name} [${item.source === 'catalog' ? 'shared' : 'personal'}]`} onClick={() => actions.selectShortcut(shortcutKey(item))}>
             {item.name}{project.entries.some((other) => other !== item && other.name === item.name) && <small>[{item.source === 'catalog' ? 'shared' : 'personal'}]</small>}
           </MenuRow>)}
-          {project && !project.entries.length && <StatusDisplay>No shortcuts in this fixture project.</StatusDisplay>}
+          {project && !project.entries.length && <StatusDisplay>{mode === 'fixture' ? 'No shortcuts in this fixture project.' : 'No shortcuts in this project.'}</StatusDisplay>}
         </MenuList>
-        <ShortcutDetails key={project && shortcut ? selectionKey(project, shortcut) : 'empty'} state={state} actions={actions} />
+        <ShortcutDetails key={project && shortcut ? selectionKey(project, shortcut) : 'empty'} state={state} actions={actions} mode={mode} />
       </Panel>
     </div>
     <BottomDrawer open={drawerOpen} id={drawerId} label="Terminal placeholder">

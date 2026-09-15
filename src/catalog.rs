@@ -217,6 +217,7 @@ path = "scripts/audit.sh"
 description = "Audit the repository"
 runner = "bash"
 future = true
+recipe_hint = { version = 1, arguments = ["--check"] }
 "#,
             Path::new("catalog.toml"),
         )
@@ -226,6 +227,17 @@ future = true
         assert_eq!(command.description.as_deref(), Some("Audit the repository"));
         assert_eq!(command.runner, Some(Runner::Bash));
         assert_eq!(command.extra["future"].as_bool(), Some(true));
+        assert_eq!(
+            command.extra["recipe_hint"]
+                .get("arguments")
+                .and_then(toml::Value::as_array)
+                .and_then(|arguments| arguments.first())
+                .and_then(toml::Value::as_str),
+            Some("--check")
+        );
+        let serialized = toml::to_string(&with_commands).unwrap();
+        let reparsed = parse(&serialized, Path::new("catalog.toml")).unwrap();
+        assert_eq!(reparsed, with_commands);
 
         let without_commands = parse(
             "version = 1\n\n[tools.demo]\ntype = \"git\"\nurl = \"demo.git\"\n",

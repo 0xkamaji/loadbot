@@ -24,10 +24,15 @@ describe('injected menu outside Tauri', () => {
     expect(screen.getByRole('status')).toHaveTextContent('Sample form ready');
     expect(screen.getByRole('button', { name: 'RUN SHORTCUT' })).toBeDisabled();
     expect(screen.getByRole('region', { name: 'Bottom workspace' })).toBeVisible();
-    await user.click(screen.getByRole('button', { name: 'Terminal' }));
+    expect(screen.getByRole('tab', { name: 'TERMINAL' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'ACTIVITY' })).toBeInTheDocument();
+    const consoleButton = screen.getByRole('button', { name: 'Console' });
+    await user.click(consoleButton);
     expect(screen.queryByRole('region', { name: 'Bottom workspace' })).not.toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Terminal' }));
+    expect(consoleButton).toHaveAttribute('aria-expanded', 'false');
+    await user.click(consoleButton);
     expect(screen.getByRole('region', { name: 'Bottom workspace' })).toBeVisible();
+    expect(consoleButton).toHaveAttribute('aria-expanded', 'true');
     expect(screen.getByRole('region', { name: 'Bottom workspace' })).not.toContainElement(screen.getByLabelText('Input folder *'));
     expect(screen.getByLabelText('Input folder *')).toHaveValue('samples/');
     expect(screen.getByRole('checkbox')).toBeChecked();

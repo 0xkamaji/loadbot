@@ -1,5 +1,58 @@
 import { expect, test } from '@playwright/test';
 
+function contrastRatio(foreground: string, background: string): number {
+  const luminance = (color: string) => {
+    const source = color.trim();
+    const values = source.startsWith('#')
+      ? [source.slice(1, 3), source.slice(3, 5), source.slice(5, 7)].map((value) => Number.parseInt(value, 16))
+      : source.match(/[\d.]+/g)!.slice(0, 3).map(Number);
+    const channels = values.map((value) => {
+      const channel = value / 255;
+      return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+    });
+    return channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722;
+  };
+  const [lighter, darker] = [luminance(foreground), luminance(background)].sort((a, b) => b - a);
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
+test('console terminology and light-surface activity contrast remain clear', async ({ page }) => {
+  await page.goto('/fixture.html');
+  const consoleButton = page.getByRole('button', { name: 'Console', exact: true });
+  const terminalTab = page.getByRole('tab', { name: 'TERMINAL' });
+  const activityTab = page.getByRole('tab', { name: 'ACTIVITY' });
+  await expect(consoleButton).toBeVisible();
+  await expect(terminalTab).toHaveAttribute('aria-selected', 'true');
+  await expect(activityTab).toHaveAttribute('aria-selected', 'false');
+
+  const colors = await terminalTab.evaluate((element) => {
+    const theme = getComputedStyle(element.closest('.lb-theme')!);
+    return {
+      surface: theme.getPropertyValue('--lb-terminal-surface'),
+      primary: theme.getPropertyValue('--lb-terminal-text'),
+      muted: theme.getPropertyValue('--lb-terminal-muted'),
+      success: theme.getPropertyValue('--lb-terminal-success'),
+      error: theme.getPropertyValue('--lb-terminal-error'),
+      activeTab: getComputedStyle(element).color,
+      inactiveTab: getComputedStyle(element.nextElementSibling!).color,
+    };
+  });
+  for (const foreground of [colors.primary, colors.muted, colors.success, colors.error]) {
+    expect(contrastRatio(foreground, colors.surface)).toBeGreaterThanOrEqual(4.5);
+  }
+  expect(contrastRatio(colors.activeTab, colors.surface)).toBeGreaterThanOrEqual(4.5);
+  expect(contrastRatio(colors.inactiveTab, colors.surface)).toBeGreaterThanOrEqual(4.5);
+  expect(colors.activeTab).not.toBe(colors.inactiveTab);
+
+  await activityTab.click();
+  await expect(activityTab).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByRole('tabpanel', { name: 'Activity' })).toBeVisible();
+  await consoleButton.click();
+  await expect(page.getByRole('region', { name: 'Bottom workspace' })).toBeHidden();
+  await consoleButton.click();
+  await expect(page.getByRole('tabpanel', { name: 'Activity' })).toBeVisible();
+});
+
 test('approved skins, focus, scrolling, resizing, and drawer preserve a usable menu', async ({ page }, testInfo) => {
   const errors: string[] = [];
   page.on('pageerror', (error) => errors.push(error.message));
@@ -28,7 +81,7 @@ test('approved skins, focus, scrolling, resizing, and drawer preserve a usable m
   await page.getByRole('checkbox').check();
   await expect(page.getByRole('region', { name: 'Bottom workspace' })).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath('drawer-1000x680.png') });
-  await page.getByRole('button', { name: 'Terminal', exact: true }).click();
+  await page.getByRole('button', { name: 'Console', exact: true }).click();
   await expect(page.getByLabel('Input folder *')).toHaveValue('samples/');
   await expect(page.getByRole('checkbox')).toBeChecked();
   await page.setViewportSize({ width: 722, height: 480 });
@@ -45,14 +98,14 @@ test('approved skins, focus, scrolling, resizing, and drawer preserve a usable m
   await page.screenshot({ path: testInfo.outputPath('long-labels.png') });
   for (const size of [{ width: 722, height: 480 }, { width: 420, height: 480 }]) {
     await page.setViewportSize(size);
-    await page.getByRole('button', { name: 'Terminal', exact: true }).click();
+    await page.getByRole('button', { name: 'Console', exact: true }).click();
     await expect(page.getByRole('region', { name: 'Bottom workspace' })).toBeVisible();
     await page.getByRole('button', { name: 'RUN SHORTCUT' }).scrollIntoViewIfNeeded();
     await expect(page.getByRole('button', { name: 'RUN SHORTCUT' })).toBeInViewport();
-    await expect(page.getByRole('button', { name: 'Terminal', exact: true })).toBeInViewport();
+    await expect(page.getByRole('button', { name: 'Console', exact: true })).toBeInViewport();
     expect(await frame.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
     await page.screenshot({ path: testInfo.outputPath(`small-drawer-${size.width}.png`) });
-    await page.getByRole('button', { name: 'Terminal', exact: true }).click();
+    await page.getByRole('button', { name: 'Console', exact: true }).click();
   }
   expect(errors).toEqual([]);
 });

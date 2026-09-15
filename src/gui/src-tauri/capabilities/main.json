@@ -1,6 +1,6 @@
 {
   "identifier": "main-inventory",
-  "description": "The main local window may read inventory and open resolved project folders.",
+  "description": "The main local window may read inventory, open resolved project folders, and persist its workspace layout.",
   "windows": ["main"],
-  "permissions": ["read-local-inventory", "open-project-folder"]
+  "permissions": ["read-local-inventory", "open-project-folder", "workspace-layout"]
 }

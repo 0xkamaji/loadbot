@@ -84,6 +84,9 @@ test('three splitters drag, clamp, persist, and reset independently', async ({ p
   await expect(projects).toHaveAttribute('aria-valuenow', '340');
   await projects.dblclick();
   await expect(projects).toHaveAttribute('aria-valuenow', '260');
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem('loadbot.workspace.panes.v1')!).projects)).toBe(260);
+  await page.reload();
+  await expect(projects).toHaveAttribute('aria-valuenow', '260');
 });
 
 test('development overlay owns bounds, close, and keyboard focus without Tauri', async ({ page }, testInfo) => {

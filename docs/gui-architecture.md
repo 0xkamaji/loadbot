@@ -56,17 +56,18 @@ Native window ownership / browser dialog lifecycle remain outside the menu.
 | `loadbot/application/controller.ts` | `createLoadbotApplication`, `LoadbotState`, `LoadbotActions`: loading/error/ready state, qualified local selection, local reload, qualified folder-open state, sample values/validation, drawer state, subscriptions and read lifetime. Pure TypeScript; no DOM or React runtime. |
 | `loadbot/application/sampleForms.ts` | Optional local demonstration fields/defaults and validation helpers. Separate from the backend contract. |
 | `loadbot/application/useLoadbotApplication.ts` | Thin React binding using `useSyncExternalStore`; owns subscription/effect cleanup. |
-| `loadbot/LoadbotMenu.tsx` | Public composition component accepting an adapter, optional sample forms, and optional shell callbacks. |
+| `loadbot/LoadbotMenu.tsx` | Public composition component accepting an adapter, host-selected workspace-layout store, optional sample forms, and optional shell callbacks. |
 | `loadbot/view/LoadbotMenuView.tsx`, `ShortcutDetails.tsx`, `menu.css`, `workspaceLayout.ts` | Loadbot presentation: quiet catalog context, project navigation/folder affordances, shortcut list/details, local reload, GUI-local pane preferences, fixture sample widgets, mascot, and non-executing terminal workspace. Receives state/actions, not an adapter. |
 | `loadbot/fixtures/adapter.ts` | Fictional inventory behind `LoadbotAdapter`; each read returns an independent snapshot. |
 | `loadbot/fixtures/sampleForms.ts` | Separate UI-demo configuration keyed by qualified selection identity. Never sent to a backend. |
 | `ui/components.tsx`, `ui/Splitter.tsx` | Application frame, panel, button/icon button, menu row/list, splitter, input/path-selector, checkbox, status and drawer primitives. Generic labels, values, content and callbacks; no Loadbot data imports. |
 | `ui/theme.ts`, `ui/theme.css` | Approved PNG asset mapping, nine-slice tokens, colors, font, spacing, control states and shared shell skins. |
 | `hosts/tauriInventoryAdapter.ts` | One Windows/Linux real adapter: invokes inventory read and qualified folder-open commands, checks the structured projection, and normalizes errors, not paths. |
-| `hosts/realComposition.ts` | Normal standalone composition: real adapter, local/read-only presentation, no sample forms. |
+| `hosts/tauriWorkspaceLayoutStore.ts` | Native host implementation for the opaque GUI-local layout document. Pane names, validation, defaults, and clamping stay in presentation code. |
+| `hosts/realComposition.ts` | Normal standalone composition: real adapter, native layout store, local/read-only presentation, no sample forms. |
 | `hosts/fixtureComposition.ts` | Explicit development/test composition choosing the fixture adapter and sample forms. |
 | `hosts/standalone.tsx`, `embed.tsx`, `host.css` | Viewport or parent-overlay ownership, mount/unmount, parent Close/Escape/focus behavior. The browser overlay is still dev-only. |
-| `../src-tauri/` | Native lifecycle and independent workspace; inventory read delegates to the library, while folder opening resolves catalog/tool identity in Rust and passes one literal path to the platform file manager. |
+| `../src-tauri/` | Native lifecycle and independent workspace; inventory read delegates to the library, folder opening resolves catalog/tool identity in Rust, and one fixed app-local file persists an opaque layout document. |
 
 ## Consumed capability contract
 

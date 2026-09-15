@@ -6,5 +6,7 @@ commands.allow = [
   "add_loadbot_catalog",
   "add_loadbot_project",
   "add_loadbot_shortcut",
+  "add_loadbot_recipe_shortcut",
+  "update_loadbot_recipe_shortcut",
   "sync_loadbot_catalog",
 ]

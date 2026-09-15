@@ -4,6 +4,7 @@ import type {
   CatalogSyncActivity, CatalogSyncActivitySink, LoadbotCatalog, LoadbotProject, LoadbotRecipe,
   LoadbotInterpreterRunner, LoadbotRecipeArgument, LoadbotRunner, LoadbotShortcut,
   ProjectIdentity, ShortcutIdentity,
+  RecipeShortcutInput,
 } from '../loadbot/contract';
 
 /** One query seam for tests/host composition, not a generic RPC interface. */
@@ -14,6 +15,8 @@ export interface ManagementBridge {
   addCatalog(input: AddCatalogInput): Promise<unknown>;
   addProject(input: AddProjectInput): Promise<unknown>;
   addShortcut(input: AddShortcutInput): Promise<unknown>;
+  addRecipeShortcut(input: RecipeShortcutInput): Promise<unknown>;
+  updateRecipeShortcut(input: RecipeShortcutInput): Promise<unknown>;
   syncCatalog(catalog: string, onActivity?: CatalogSyncActivitySink): Promise<unknown>;
 }
 
@@ -50,6 +53,14 @@ const nativeManagementBridge: ManagementBridge = {
       catalog: input.catalog, tool: input.tool, name: input.name, path: input.path,
       description: input.description, runner: input.runner,
     });
+  },
+  async addRecipeShortcut(input) {
+    requireTauri('Recipe shortcut management');
+    return invoke('add_loadbot_recipe_shortcut', { ...input });
+  },
+  async updateRecipeShortcut(input) {
+    requireTauri('Recipe shortcut management');
+    return invoke('update_loadbot_recipe_shortcut', { ...input });
   },
   async syncCatalog(catalog, onActivity) {
     requireTauri('Catalog synchronization');
@@ -181,7 +192,7 @@ function projectIdentity(value: unknown): ProjectIdentity {
 }
 function shortcutIdentity(value: unknown): ShortcutIdentity {
   const item = record(value);
-  return { ...projectIdentity(item), name: text(item.name), path: text(item.path) };
+  return { ...projectIdentity(item), name: text(item.name), path: optionalText(item.path) };
 }
 
 function nativeError(error: unknown, fallback: string): Error {
@@ -228,6 +239,14 @@ export function createTauriLoadbotAdapter(
     async addShortcut(input) {
       try { return shortcutIdentity(await management.addShortcut(input)); }
       catch (error: unknown) { throw nativeError(error, 'Could not add the shortcut.'); }
+    },
+    async addRecipeShortcut(input) {
+      try { return shortcutIdentity(await management.addRecipeShortcut(input)); }
+      catch (error: unknown) { throw nativeError(error, 'Could not add the Recipe shortcut.'); }
+    },
+    async updateRecipeShortcut(input) {
+      try { return shortcutIdentity(await management.updateRecipeShortcut(input)); }
+      catch (error: unknown) { throw nativeError(error, 'Could not update the Recipe shortcut.'); }
     },
     async syncCatalog(catalog, onActivity) {
       try { await management.syncCatalog(catalog, onActivity); }

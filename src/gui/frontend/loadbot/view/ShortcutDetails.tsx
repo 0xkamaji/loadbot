@@ -7,7 +7,7 @@ export function ShortcutDetails({ state, actions, mode }: { state: LoadbotState;
   const statusId = useId();
   const { project, shortcut, fields, values, missingInputIds } = state;
   if (!shortcut) return <div className="lb-details"><p>Select a shortcut to see its details.</p></div>;
-  if (mode === 'local') return <div className="lb-details">
+  if (mode === 'local' || shortcut.recipe) return <div className="lb-details">
     <h3>{shortcut.name}</h3>
     {shortcut.description && <p>{shortcut.description}</p>}
     <dl className="lb-facts">
@@ -17,8 +17,16 @@ export function ShortcutDetails({ state, actions, mode }: { state: LoadbotState;
       {shortcut.path && <><dt>Runner</dt><dd>{shortcut.runner ?? 'Not specified'}</dd>
         <dt>Target</dt><dd title={shortcut.path}>{shortcut.path}</dd></>}
       {shortcut.recipe && <><dt>Invocation</dt><dd>Recipe version {shortcut.recipe.version}</dd>
-        <dt>Behavior</dt><dd>{shortcut.recipe.behavior}</dd></>}
+        <dt>Behavior</dt><dd>{shortcut.recipe.behavior === 'run' ? 'Run Recipe' : 'Launch Application'}</dd>
+        <dt>Program</dt><dd>{shortcut.recipe.program.type === 'project-file' ? `Project File · ${shortcut.recipe.program.path}`
+          : shortcut.recipe.program.type === 'interpreter' ? `Interpreter · ${shortcut.recipe.program.runner}`
+            : `Executable · ${shortcut.recipe.program.name}`}</dd>
+        <dt>Working directory</dt><dd>{shortcut.recipe.working_directory.type === 'project-relative'
+          ? `Project relative · ${shortcut.recipe.working_directory.path}` : shortcut.recipe.working_directory.type === 'target-parent' ? 'Target parent' : 'Project root'}</dd>
+        <dt>Arguments</dt><dd>{shortcut.recipe.arguments.length || 'None'}</dd></>}
     </dl>
+    {mode === 'local' && shortcut.recipe && shortcut.source === 'personal' && <Button className="lb-edit-recipe" onClick={() => actions.openSelectedRecipeEditor()}>EDIT RECIPE</Button>}
+    {shortcut.recipe && shortcut.source === 'catalog' && <p className="lb-note">Shared catalog Recipes are read-only here.</p>}
     <p className="lb-note">Inventory details. Execution is not connected.</p>
   </div>;
   const missing = fields.filter((field) => missingInputIds.includes(field.id));

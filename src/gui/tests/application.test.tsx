@@ -11,7 +11,7 @@ describe('headless capability and application boundary', () => {
     readInventory,
     readCatalogs: async () => [{ name: 'personal', url: 'test', writable: true, state: 'installed', default: false }, { name: 'community', url: 'test', writable: false, state: 'installed', default: false }, { name: 'one', url: 'test', writable: true, state: 'installed', default: false }, { name: 'two', url: 'test', writable: true, state: 'installed', default: false }, { name: 'three', url: 'test', writable: true, state: 'installed', default: false }],
     openProjectFolder,
-    addCatalog: vi.fn(), addProject: vi.fn(), addShortcut: vi.fn(), syncCatalog: vi.fn(),
+    addCatalog: vi.fn(), addProject: vi.fn(), addShortcut: vi.fn(), addRecipeShortcut: vi.fn(), updateRecipeShortcut: vi.fn(), syncCatalog: vi.fn(),
   });
 
   it('returns independent serializable fixture snapshots without widget metadata', async () => {
@@ -238,6 +238,7 @@ describe('headless capability and application boundary', () => {
         ] } : item);
         return { catalog: input.catalog, tool: input.tool, name: input.name, path: input.path };
       }),
+      addRecipeShortcut: vi.fn(), updateRecipeShortcut: vi.fn(),
       syncCatalog: vi.fn(async () => {}),
     };
     const application = createLoadbotApplication(managed);
@@ -355,5 +356,61 @@ describe('headless capability and application boundary', () => {
     expect(await application.actions.addShortcut({ name: 'duplicate', path: 'run.sh' })).toBe(false);
     expect(application.getSnapshot().management).toEqual({ status: 'error', kind: 'add-shortcut', message: 'shortcut already exists' });
     expect(application.getSnapshot().project?.entries).toEqual([]);
+  });
+
+  it('owns Recipe draft ordering and saves/reopens authoritative personal Recipes', async () => {
+    let projects: LoadbotProject[] = [{ catalog: 'one', tool: 'demo', entries: [] }];
+    const managed = adapter(async () => structuredClone(projects));
+    managed.addRecipeShortcut = vi.fn(async (input) => {
+      projects = [{ ...projects[0]!, entries: [{ name: input.name, description: input.description, recipe: input.recipe, source: 'personal' }] }];
+      return { catalog: input.catalog, tool: input.tool, name: input.name };
+    });
+    managed.updateRecipeShortcut = vi.fn(async (input) => {
+      projects = [{ ...projects[0]!, entries: [{ name: input.name, description: input.description, recipe: input.recipe, source: 'personal' }] }];
+      return { catalog: input.catalog, tool: input.tool, name: input.name };
+    });
+    const application = createLoadbotApplication(managed);
+    application.start();
+    await vi.waitFor(() => expect(application.getSnapshot().inventory.status).toBe('ready'));
+
+    application.actions.openRecipeCreator('run');
+    application.actions.updateRecipeDetails({ name: 'build', description: 'Build it' });
+    application.actions.setRecipeProgram({ type: 'executable', name: 'cargo' });
+    application.actions.addRecipeParameter('literal');
+    const literal = application.getSnapshot().recipeEditor!.draft.arguments[0]!;
+    application.actions.updateRecipeParameter(literal.key, { type: 'literal', value: 'build' });
+    application.actions.addRecipeParameter('switch');
+    const flag = application.getSnapshot().recipeEditor!.draft.arguments[1]!;
+    application.actions.updateRecipeParameter(flag.key, { type: 'switch', id: 'release', label: 'Release', value: '--release', default: false }, true);
+    application.actions.moveRecipeParameter(flag.key, -1);
+
+    expect(await application.actions.saveRecipe()).toBe(true);
+    expect(managed.addRecipeShortcut).toHaveBeenCalledWith(expect.objectContaining({
+      catalog: 'one', tool: 'demo', name: 'build', recipe: expect.objectContaining({
+        behavior: 'run', arguments: [expect.objectContaining({ id: 'release' }), { type: 'literal', value: 'build' }],
+      }),
+    }));
+    expect(application.getSnapshot().shortcut).toMatchObject({ name: 'build', recipe: { behavior: 'run' } });
+    expect(application.getSnapshot().recipeEditor).toBeUndefined();
+
+    expect(application.actions.openSelectedRecipeEditor()).toBe(true);
+    application.actions.setRecipeBehavior('launch');
+    expect(await application.actions.saveRecipe()).toBe(true);
+    expect(managed.updateRecipeShortcut).toHaveBeenCalledWith(expect.objectContaining({ name: 'build', recipe: expect.objectContaining({ behavior: 'launch' }) }));
+    expect(application.getSnapshot().shortcut).toMatchObject({ recipe: { behavior: 'launch' } });
+    expect(application.getSnapshot().activity.map((entry) => entry.operation)).toContain('shortcut-update');
+  });
+
+  it('keeps cancelled/invalid Recipe drafts out of adapter persistence', async () => {
+    const managed = adapter(async () => [{ catalog: 'one', tool: 'demo', entries: [] }]);
+    const application = createLoadbotApplication(managed);
+    application.start();
+    await vi.waitFor(() => expect(application.getSnapshot().inventory.status).toBe('ready'));
+    application.actions.openRecipeCreator('run');
+    expect(await application.actions.saveRecipe()).toBe(false);
+    expect(application.getSnapshot().recipeEditor?.errors).toContain('Shortcut name is required.');
+    expect(managed.addRecipeShortcut).not.toHaveBeenCalled();
+    application.actions.closeRecipeEditor();
+    expect(application.getSnapshot().recipeEditor).toBeUndefined();
   });
 });

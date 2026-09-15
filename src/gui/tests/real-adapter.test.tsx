@@ -16,7 +16,7 @@ const tauri = vi.hoisted(() => ({
 vi.mock('@tauri-apps/api/core', () => tauri);
 const management = (names: readonly string[] = ['personal']): ManagementBridge => ({
   readCatalogs: async () => names.map((name, index) => ({ name, url: 'test', writable: true, state: 'installed', default: index === 0 })),
-  addCatalog: vi.fn(), addProject: vi.fn(), addShortcut: vi.fn(), syncCatalog: vi.fn(),
+  addCatalog: vi.fn(), addProject: vi.fn(), addShortcut: vi.fn(), addRecipeShortcut: vi.fn(), updateRecipeShortcut: vi.fn(), syncCatalog: vi.fn(),
 });
 
 describe('one platform-neutral real read adapter', () => {
@@ -136,6 +136,7 @@ describe('one platform-neutral real read adapter', () => {
       if (command === 'add_loadbot_catalog') return { catalog: input?.name };
       if (command === 'add_loadbot_project') return { catalog: input?.catalog, tool: input?.name };
       if (command === 'add_loadbot_shortcut') return { catalog: input?.catalog, tool: input?.tool, name: input?.name, path: input?.path };
+      if (command === 'add_loadbot_recipe_shortcut' || command === 'update_loadbot_recipe_shortcut') return { catalog: input?.catalog, tool: input?.tool, name: input?.name, path: null };
       if (command === 'sync_loadbot_catalog') {
         const channel = input?.onActivity as InstanceType<typeof tauri.Channel>;
         channel.onmessage({ stage: 'repository-checked', catalog: input?.catalog } as never);
@@ -148,6 +149,9 @@ describe('one platform-neutral real read adapter', () => {
     await adapter.addCatalog({ name: 'other', url: 'other-repo', writable: false });
     await adapter.addProject({ catalog: 'personal', name: 'demo', url: 'tool-repo', commit: false, push: false });
     await adapter.addShortcut({ catalog: 'personal', tool: 'demo', name: 'inspect', path: 'scripts/inspect.py', runner: 'python' });
+    const recipe = { version: 1, behavior: 'run' as const, program: { type: 'executable' as const, name: 'cargo' }, working_directory: { type: 'project-root' as const }, arguments: [{ type: 'literal' as const, value: 'build' }] };
+    await adapter.addRecipeShortcut({ catalog: 'personal', tool: 'demo', name: 'build', recipe });
+    await adapter.updateRecipeShortcut({ catalog: 'personal', tool: 'demo', name: 'build', description: 'Build it', recipe: { ...recipe, behavior: 'launch' } });
     const activity = vi.fn();
     await adapter.syncCatalog('personal', activity);
     expect(activity).toHaveBeenCalledWith({ stage: 'repository-checked', catalog: 'personal', detail: undefined });
@@ -155,6 +159,8 @@ describe('one platform-neutral real read adapter', () => {
       ['add_loadbot_catalog', { name: 'other', url: 'other-repo', writable: false }],
       ['add_loadbot_project', { catalog: 'personal', name: 'demo', url: 'tool-repo', commit: false, push: false }],
       ['add_loadbot_shortcut', { catalog: 'personal', tool: 'demo', name: 'inspect', path: 'scripts/inspect.py', runner: 'python' }],
+      ['add_loadbot_recipe_shortcut', { catalog: 'personal', tool: 'demo', name: 'build', recipe }],
+      ['update_loadbot_recipe_shortcut', { catalog: 'personal', tool: 'demo', name: 'build', description: 'Build it', recipe: { ...recipe, behavior: 'launch' } }],
       ['sync_loadbot_catalog', { catalog: 'personal', onActivity: expect.any(tauri.Channel) }],
     ]);
     expect(JSON.stringify(tauri.invoke.mock.calls)).not.toMatch(/shell|powershell\.exe|xdg-open/);

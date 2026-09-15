@@ -14,7 +14,8 @@ use loadbot::{
     paths::Paths,
     process::Event,
     recipe::{
-        InvocationBehavior, RecipeDefinition, RecipeProgram, StoredInvocation, WorkingDirectory,
+        InvocationBehavior, RecipeArgument, RecipeDefinition, RecipeProgram, StoredInvocation,
+        WorkingDirectory,
     },
     shortcuts::{self, Shortcut},
 };
@@ -387,6 +388,219 @@ fn shared_shortcut_add_validates_project_target_duplicates_and_persists_atomical
         )
         .unwrap_err();
         assert!(format!("{error:#}").contains(expected), "{error:#}");
+        assert_eq!(fs::read(paths.shortcuts().unwrap()).unwrap(), before);
+    }
+}
+
+#[test]
+fn recipe_shortcut_create_and_update_are_atomic_and_never_migrate_legacy_entries() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = paths(root.path());
+    let url = "https://example.invalid/tool.git";
+    catalog(
+        &paths,
+        "alpha",
+        &format!("version = 1\n[tools.demo]\ntype = 'git'\nurl = '{url}'\n"),
+    );
+    let project = installed_tool(&paths, "alpha", "demo", url);
+    fs::create_dir_all(project.join("scripts")).unwrap();
+    fs::write(project.join("scripts/tool.py"), "print('safe')\n").unwrap();
+    let mut policy = Unattended;
+    let mut context = OperationContext::new(&mut policy);
+    let recipe = RecipeDefinition {
+        version: 1,
+        behavior: InvocationBehavior::Run,
+        program: RecipeProgram::Interpreter {
+            runner: Runner::Python,
+        },
+        working_directory: WorkingDirectory::ProjectRoot,
+        arguments: vec![
+            RecipeArgument::ProjectPath {
+                path: "scripts/tool.py".into(),
+            },
+            RecipeArgument::Input {
+                id: "format".into(),
+                label: "Format".into(),
+                kind: loadbot::recipe::InputKind::Text,
+                required: false,
+                default: Some("text".into()),
+                prefix: Some("--format".into()),
+            },
+            RecipeArgument::Switch {
+                id: "verbose".into(),
+                label: "Verbose".into(),
+                value: "--verbose".into(),
+                default: false,
+            },
+        ],
+    };
+
+    operations::shortcut_add_recipe(
+        &paths,
+        "alpha",
+        "demo",
+        "recipe",
+        Some("before".into()),
+        recipe.clone(),
+        &mut context,
+    )
+    .unwrap();
+    let after_recipe_create = fs::read(paths.shortcuts().unwrap()).unwrap();
+    let duplicate = operations::shortcut_add_recipe(
+        &paths,
+        "alpha",
+        "demo",
+        "recipe",
+        None,
+        recipe.clone(),
+        &mut context,
+    )
+    .unwrap_err();
+    assert!(format!("{duplicate:#}").contains("already exists"));
+    assert_eq!(
+        fs::read(paths.shortcuts().unwrap()).unwrap(),
+        after_recipe_create
+    );
+    operations::shortcut_add(
+        &paths,
+        "alpha",
+        "demo",
+        "legacy",
+        "scripts/tool.py",
+        None,
+        Some(Runner::Python),
+        &mut context,
+    )
+    .unwrap();
+    operations::shortcut_add_recipe(
+        &paths,
+        "alpha",
+        "demo",
+        "launch-app",
+        None,
+        RecipeDefinition {
+            version: 1,
+            behavior: InvocationBehavior::Launch,
+            program: RecipeProgram::ProjectFile {
+                path: "scripts/tool.py".into(),
+            },
+            working_directory: WorkingDirectory::TargetParent,
+            arguments: vec![],
+        },
+        &mut context,
+    )
+    .unwrap();
+    let mut updated = recipe;
+    updated.behavior = InvocationBehavior::Launch;
+    updated.program = RecipeProgram::Executable {
+        name: "tool-runner".into(),
+    };
+    updated.working_directory = WorkingDirectory::ProjectRelative {
+        path: "scripts".into(),
+    };
+    updated.arguments = vec![
+        RecipeArgument::Switch {
+            id: "verbose".into(),
+            label: "Detailed output".into(),
+            value: "--verbose".into(),
+            default: true,
+        },
+        RecipeArgument::Literal {
+            value: "one value".into(),
+        },
+        RecipeArgument::ProjectPath {
+            path: "scripts/tool.py".into(),
+        },
+    ];
+    operations::shortcut_update_recipe(
+        &paths,
+        "alpha",
+        "demo",
+        "recipe",
+        Some("after".into()),
+        updated.clone(),
+        &mut context,
+    )
+    .unwrap();
+
+    let saved = shortcuts::load(&paths.shortcuts().unwrap()).unwrap();
+    assert_eq!(
+        saved.shortcuts["recipe"].invocation.as_recipe(),
+        Some(&updated)
+    );
+    assert_eq!(
+        saved.shortcuts["recipe"].description.as_deref(),
+        Some("after")
+    );
+    assert_eq!(
+        saved.shortcuts["legacy"].legacy().unwrap().runner,
+        Some(Runner::Python)
+    );
+    assert_eq!(
+        saved.shortcuts["launch-app"]
+            .invocation
+            .as_recipe()
+            .unwrap()
+            .behavior,
+        InvocationBehavior::Launch
+    );
+    let serialized = fs::read_to_string(paths.shortcuts().unwrap()).unwrap();
+    let recipe_value: toml::Value = toml::from_str(&serialized).unwrap();
+    assert!(recipe_value["shortcuts"]["recipe"].get("path").is_none());
+    assert!(recipe_value["shortcuts"]["recipe"].get("runner").is_none());
+
+    let before = fs::read(paths.shortcuts().unwrap()).unwrap();
+    let error = operations::shortcut_update_recipe(
+        &paths,
+        "alpha",
+        "demo",
+        "legacy",
+        None,
+        updated,
+        &mut context,
+    )
+    .unwrap_err();
+    assert!(format!("{error:#}").contains("cannot be edited as a Recipe"));
+    assert_eq!(fs::read(paths.shortcuts().unwrap()).unwrap(), before);
+
+    for (name, invalid) in [
+        (
+            "invalid-program",
+            RecipeDefinition {
+                version: 1,
+                behavior: InvocationBehavior::Run,
+                program: RecipeProgram::Executable {
+                    name: "cargo run".into(),
+                },
+                working_directory: WorkingDirectory::ProjectRoot,
+                arguments: vec![],
+            },
+        ),
+        (
+            "missing-path",
+            RecipeDefinition {
+                version: 1,
+                behavior: InvocationBehavior::Run,
+                program: RecipeProgram::ProjectFile {
+                    path: "scripts/missing.py".into(),
+                },
+                working_directory: WorkingDirectory::ProjectRoot,
+                arguments: vec![],
+            },
+        ),
+    ] {
+        assert!(
+            operations::shortcut_add_recipe(
+                &paths,
+                "alpha",
+                "demo",
+                name,
+                None,
+                invalid,
+                &mut context,
+            )
+            .is_err()
+        );
         assert_eq!(fs::read(paths.shortcuts().unwrap()).unwrap(), before);
     }
 }

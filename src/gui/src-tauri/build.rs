@@ -7,6 +7,8 @@ fn main() {
             "add_loadbot_catalog",
             "add_loadbot_project",
             "add_loadbot_shortcut",
+            "add_loadbot_recipe_shortcut",
+            "update_loadbot_recipe_shortcut",
             "sync_loadbot_catalog",
             "read_loadbot_workspace_layout",
             "write_loadbot_workspace_layout",

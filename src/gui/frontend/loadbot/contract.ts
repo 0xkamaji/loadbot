@@ -66,9 +66,13 @@ export interface AddShortcutInput {
   readonly catalog: string; readonly tool: string; readonly name: string; readonly path: string;
   readonly description?: string; readonly runner?: LoadbotRunner;
 }
+export interface RecipeShortcutInput {
+  readonly catalog: string; readonly tool: string; readonly name: string;
+  readonly description?: string; readonly recipe: LoadbotRecipe;
+}
 export interface CatalogIdentity { readonly catalog: string }
 export interface ProjectIdentity { readonly catalog: string; readonly tool: string }
-export interface ShortcutIdentity extends ProjectIdentity { readonly name: string; readonly path: string }
+export interface ShortcutIdentity extends ProjectIdentity { readonly name: string; readonly path?: string }
 
 export type CatalogSyncStage = 'validating' | 'repository-checked' | 'updating-repository' | 'current' | 'updated';
 export interface CatalogSyncActivity {
@@ -88,5 +92,7 @@ export interface LoadbotAdapter {
   addCatalog(input: AddCatalogInput): Promise<CatalogIdentity>;
   addProject(input: AddProjectInput): Promise<ProjectIdentity>;
   addShortcut(input: AddShortcutInput): Promise<ShortcutIdentity>;
+  addRecipeShortcut(input: RecipeShortcutInput): Promise<ShortcutIdentity>;
+  updateRecipeShortcut(input: RecipeShortcutInput): Promise<ShortcutIdentity>;
   syncCatalog(catalog: string, onActivity?: CatalogSyncActivitySink): Promise<void>;
 }

@@ -50,11 +50,20 @@ inventory even with zero shortcuts, so the confirmed result can be selected afte
 the authoritative reread. Adding a definition does not silently pull/install its
 repository.
 
-`ADD SHORTCUT` targets the selected catalog-qualified installed project. It accepts a
-name, repository-relative existing file, optional description, and an existing
-Loadbot runner value. Rust validates that the project is installed, the path remains
-inside it, the target is a file, and the shortcut name is not already present before
-atomically saving `shortcuts.toml`.
+`ADD SHORTCUT` targets the selected catalog-qualified installed project. Users may
+retain the compact Legacy path/runner workflow or author a structured Run Recipe or
+Launch Application Recipe. The Recipe builder edits the Phase 2 behavior, program,
+working-directory policy, and ordered argument primitives directly through the
+controller and adapter; it has no GUI-only persistence schema. Rust validates the
+installed project and fixed project-owned paths before atomically saving
+`shortcuts.toml`.
+
+Personal Recipes can be reopened and edited in place. Name/identity changes are
+deliberately deferred; updates preserve unrelated entries and unknown metadata and
+fail on a concurrent definition change. Legacy entries are not converted by opening
+them, and shared catalog Recipes remain read-only because their authority is the
+Git-backed `catalog.toml`. The preview of an incomplete draft is presentation-only
+and never becomes an execution command.
 
 One controller-owned management state prevents concurrent duplicate submissions and
 represents progress, success, and failure. A successful operation selects its known
@@ -79,6 +88,8 @@ identity behavior, session command history, and deliberate system-terminal bound
 ## Phase boundary
 
 Fixtures remain isolated behind `LoadbotAdapter`; their management calls return a
-controlled unavailable error and never touch real state. Edit, delete, background
-sync, catalog initialization, project pulling, shortcut execution, PTY/system-terminal
-execution, Rot GUI integration, and model/personality behavior are not implemented.
+controlled unavailable error and never touch real state. Fixtures include Legacy,
+Run Recipe, and Launch Recipe inspection examples. Delete, background sync, catalog
+initialization, project pulling, Recipe/shortcut execution, application launching,
+Output UI, PTY/system-terminal execution, Rot GUI integration, and model/personality
+behavior are not implemented.

@@ -82,9 +82,9 @@ export function TextareaControl({ label, id, ...props }: TextareaHTMLAttributes<
   </label>;
 }
 
-export function Dialog({ label, children, onClose }: { label: string; children: ReactNode; onClose(): void }) {
+export function Dialog({ label, children, onClose, className = '' }: { label: string; children: ReactNode; onClose(): void; className?: string }) {
   return <div className="lb-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-    <section className="lb-dialog lb-panel" role="dialog" aria-modal="true" aria-label={label}>{children}</section>
+    <section className={`lb-dialog lb-panel ${className}`} role="dialog" aria-modal="true" aria-label={label}>{children}</section>
   </div>;
 }
 

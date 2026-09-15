@@ -2,24 +2,27 @@ import { useEffect, useState, type FormEvent } from 'react';
 import type { LoadbotRunner } from '../contract';
 import type { LoadbotActions, LoadbotState, ManagementKind } from '../application/controller';
 import { Button, Checkbox, Dialog, InputControl, SelectControl, StatusDisplay, TextareaControl } from '../../ui/components';
+import { RecipeBuilder } from './RecipeBuilder';
 
-export type ManagementDialog = Extract<ManagementKind, 'add-catalog' | 'add-project' | 'add-shortcut'>;
+export type ManagementDialog = Extract<ManagementKind, 'add-catalog' | 'add-project' | 'add-shortcut'> | 'recipe-editor';
 
 export function ManagementDialogs({ dialog, state, actions, onClose }: {
   dialog?: ManagementDialog; state: LoadbotState; actions: LoadbotActions; onClose(): void;
 }) {
-  useEffect(() => {
-    if (!dialog) return;
-    const close = (event: KeyboardEvent) => { if (event.key === 'Escape' && state.management.status !== 'submitting') onClose(); };
-    window.addEventListener('keydown', close);
-    return () => window.removeEventListener('keydown', close);
-  }, [dialog, onClose, state.management.status]);
-  if (!dialog) return null;
-  const close = () => {
+  function close() {
     if (state.management.status === 'submitting') return;
     actions.clearManagementStatus();
+    actions.closeRecipeEditor();
     onClose();
-  };
+  }
+  useEffect(() => {
+    if (!dialog && !state.recipeEditor) return;
+    const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') close(); };
+    window.addEventListener('keydown', escape);
+    return () => window.removeEventListener('keydown', escape);
+  }, [dialog, onClose, state.management.status, state.recipeEditor]);
+  if (!dialog && !state.recipeEditor) return null;
+  if (dialog === 'recipe-editor' || state.recipeEditor) return <RecipeBuilder state={state} actions={actions} onClose={close} onDone={onClose} />;
   if (dialog === 'add-catalog') return <AddCatalogForm state={state} actions={actions} onClose={close} onDone={onClose} />;
   if (dialog === 'add-project') return <AddProjectForm state={state} actions={actions} onClose={close} onDone={onClose} />;
   return <AddShortcutForm state={state} actions={actions} onClose={close} onDone={onClose} />;
@@ -77,6 +80,7 @@ function AddProjectForm({ state, actions, onClose, onDone }: FormProps) {
 }
 
 function AddShortcutForm({ state, actions, onClose, onDone }: FormProps) {
+  const [kind, setKind] = useState<'choose' | 'legacy'>('choose');
   const [name, setName] = useState('');
   const [path, setPath] = useState('');
   const [description, setDescription] = useState('');
@@ -91,6 +95,13 @@ function AddShortcutForm({ state, actions, onClose, onDone }: FormProps) {
   }
   return <Dialog label="Add shortcut" onClose={onClose}>
     <h2>ADD SHORTCUT / {state.project?.tool}</h2>
+    {kind === 'choose' ? <div className="lb-shortcut-kind">
+      <p>What should this shortcut do?</p>
+      <Button onClick={() => actions.openRecipeCreator('run')}>RUN RECIPE<span>Structured tool invocation with future observed output.</span></Button>
+      <Button onClick={() => actions.openRecipeCreator('launch')}>LAUNCH APPLICATION<span>Start an application and hand off its lifecycle.</span></Button>
+      <Button onClick={() => setKind('legacy')}>SIMPLE LEGACY SHORTCUT<span>Keep the existing path and optional runner workflow.</span></Button>
+      <div className="lb-dialog-actions"><Button onClick={onClose}>CANCEL</Button></div>
+    </div> :
     <form onSubmit={submit}>
       <InputControl autoFocus label="Shortcut name" value={name} onChange={(event) => setName(event.target.value)} required disabled={busy} />
       <InputControl label="Repository-relative path" value={path} onChange={(event) => setPath(event.target.value)} required disabled={busy} placeholder="scripts/example.py" />
@@ -101,7 +112,7 @@ function AddShortcutForm({ state, actions, onClose, onDone }: FormProps) {
       </SelectControl>
       <FormStatus state={state} kind="add-shortcut" />
       <div className="lb-dialog-actions"><Button onClick={onClose} disabled={busy}>CANCEL</Button><Button type="submit" disabled={busy}>{busy ? 'ADDING…' : 'ADD SHORTCUT'}</Button></div>
-    </form>
+    </form>}
   </Dialog>;
 }
 

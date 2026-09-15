@@ -7,6 +7,7 @@ use loadbot::{
     launcher::{self, Project},
     operations::{self, CatalogState, ShortcutIdentity},
     paths::Paths,
+    recipe::RecipeDefinition,
 };
 use std::fs;
 #[cfg(unix)]
@@ -217,6 +218,50 @@ async fn add_loadbot_shortcut(
 }
 
 #[tauri::command]
+async fn add_loadbot_recipe_shortcut(
+    catalog: String,
+    tool: String,
+    name: String,
+    description: Option<String>,
+    recipe: RecipeDefinition,
+) -> Result<ShortcutIdentity, DesktopError> {
+    run_loadbot_worker("Recipe shortcut add", move |paths, context| {
+        operations::shortcut_add_recipe(
+            paths,
+            &catalog,
+            &tool,
+            &name,
+            description,
+            recipe,
+            context,
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+async fn update_loadbot_recipe_shortcut(
+    catalog: String,
+    tool: String,
+    name: String,
+    description: Option<String>,
+    recipe: RecipeDefinition,
+) -> Result<ShortcutIdentity, DesktopError> {
+    run_loadbot_worker("Recipe shortcut update", move |paths, context| {
+        operations::shortcut_update_recipe(
+            paths,
+            &catalog,
+            &tool,
+            &name,
+            description,
+            recipe,
+            context,
+        )
+    })
+    .await
+}
+
+#[tauri::command]
 async fn sync_loadbot_catalog(
     catalog: String,
     on_activity: Channel<BackendActivity>,
@@ -362,6 +407,8 @@ fn main() {
             add_loadbot_catalog,
             add_loadbot_project,
             add_loadbot_shortcut,
+            add_loadbot_recipe_shortcut,
+            update_loadbot_recipe_shortcut,
             sync_loadbot_catalog,
             read_loadbot_workspace_layout,
             write_loadbot_workspace_layout

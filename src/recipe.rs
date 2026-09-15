@@ -450,6 +450,48 @@ pub fn resolve_recipe(
     })
 }
 
+/// Validate the stored definition and every project-owned path without requiring
+/// runtime inputs. Authoring surfaces use this before persistence; execution still
+/// performs the complete validation again in [`resolve_recipe`].
+pub fn validate_recipe_for_project(
+    project_root: &Path,
+    recipe: &RecipeDefinition,
+) -> Result<(), RecipeError> {
+    recipe.validate()?;
+    let root = canonical_project_root(project_root)?;
+    match &recipe.program {
+        RecipeProgram::ProjectFile { path } => {
+            project_entry(&root, path, EntryKind::File)?;
+        }
+        RecipeProgram::Interpreter { .. } | RecipeProgram::Executable { .. } => {}
+    }
+    match &recipe.working_directory {
+        WorkingDirectory::ProjectRoot | WorkingDirectory::TargetParent => {}
+        WorkingDirectory::ProjectRelative { path } => {
+            project_entry(&root, path, EntryKind::Directory)?;
+        }
+    }
+    for argument in &recipe.arguments {
+        match argument {
+            RecipeArgument::ProjectPath { path } => {
+                project_entry(&root, path, EntryKind::Any)?;
+            }
+            RecipeArgument::Input {
+                id,
+                kind,
+                default: Some(default),
+                ..
+            } => {
+                resolve_default(id, *kind, default)?;
+            }
+            RecipeArgument::Literal { .. }
+            | RecipeArgument::Input { default: None, .. }
+            | RecipeArgument::Switch { .. } => {}
+        }
+    }
+    Ok(())
+}
+
 fn validate_project_path(field: &'static str, value: &str) -> Result<(), RecipeError> {
     shortcuts::relative_path(value)
         .map(|_| ())

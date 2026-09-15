@@ -184,6 +184,33 @@ pub fn save(path: &Path, name: &str, shortcut: Shortcut) -> Result<()> {
     config::save_toml(path, &shortcuts)
 }
 
+/// Replace one personal shortcut under the same lease/atomic-save discipline as
+/// creation, provided the definition has not changed since it was inspected.
+pub fn update_if_matches(
+    path: &Path,
+    name: &str,
+    expected: &Shortcut,
+    shortcut: Shortcut,
+) -> Result<()> {
+    paths::validate_name(name).context("invalid shortcut name")?;
+    shortcut.validate()?;
+    let _lease = crate::persistence::Lease::acquire(path)?;
+    let mut file = load(path)?;
+    let existing = file
+        .shortcuts
+        .get(name)
+        .with_context(|| format!("shortcut '{name}' does not exist"))?;
+    if existing != expected {
+        return Err(crate::persistence::Busy {
+            resource: path.to_owned(),
+        }
+        .into());
+    }
+    file.shortcuts.insert(name.to_owned(), shortcut);
+    reject_symlink(path)?;
+    config::save_toml(path, &file)
+}
+
 /// Remove only one definition, preserving metadata and the valid file when empty.
 pub fn remove(path: &Path, name: &str) -> Result<()> {
     remove_matching(path, name, None)

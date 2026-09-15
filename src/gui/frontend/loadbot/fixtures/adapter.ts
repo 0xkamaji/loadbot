@@ -27,6 +27,18 @@ const projects: readonly LoadbotProject[] = [
   {
     catalog: 'personal', tool: 'rotbot', entries: [
       { name: 'Inspect workspace', path: 'scripts/inspect.py', runner: 'python', source: 'personal', description: 'A fictional project entry, not an integration with Rot.' },
+      { name: 'Build report', source: 'personal', description: 'A structured fixture Recipe with ordered parameters.', recipe: {
+        version: 1, behavior: 'run', program: { type: 'interpreter', runner: 'python' },
+        working_directory: { type: 'project-root' }, arguments: [
+          { type: 'project-path', path: 'scripts/report.py' },
+          { type: 'input', id: 'format', label: 'Format', kind: 'text', required: true, prefix: '--format' },
+          { type: 'switch', id: 'verbose', label: 'Verbose', value: '--verbose', default: false },
+        ],
+      } },
+      { name: 'Open dashboard', source: 'catalog', description: 'A read-only shared Launch Recipe fixture.', recipe: {
+        version: 1, behavior: 'launch', program: { type: 'project-file', path: 'bin/dashboard' },
+        working_directory: { type: 'target-parent' }, arguments: [],
+      } },
     ],
   },
   {
@@ -53,5 +65,7 @@ export const fixtureAdapter: LoadbotAdapter = {
   async addCatalog() { throw new Error('Management is unavailable in fixture preview.'); },
   async addProject() { throw new Error('Management is unavailable in fixture preview.'); },
   async addShortcut() { throw new Error('Management is unavailable in fixture preview.'); },
+  async addRecipeShortcut() { throw new Error('Management is unavailable in fixture preview.'); },
+  async updateRecipeShortcut() { throw new Error('Management is unavailable in fixture preview.'); },
   async syncCatalog() { throw new Error('Management is unavailable in fixture preview.'); },
 };

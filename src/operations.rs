@@ -57,7 +57,7 @@ pub struct ShortcutIdentity {
     pub name: String,
     pub catalog: String,
     pub tool: String,
-    pub path: String,
+    pub path: Option<String>,
 }
 
 /// Add one personal shortcut through the same qualified project and path checks used
@@ -92,7 +92,78 @@ pub fn shortcut_add(
         name: name.to_owned(),
         catalog: shortcut.catalog,
         tool: shortcut.tool,
-        path: portable,
+        path: Some(portable),
+    })
+}
+
+/// Create one personal structured Recipe. Project-owned paths are checked against
+/// the installed project before the atomic shortcut transaction is attempted.
+pub fn shortcut_add_recipe(
+    paths: &Paths,
+    catalog_name: &str,
+    tool_name: &str,
+    name: &str,
+    description: Option<String>,
+    recipe: crate::recipe::RecipeDefinition,
+    context: &mut OperationContext<'_>,
+) -> Result<ShortcutIdentity> {
+    let _process_scope = crate::process::scope(&context.process);
+    context.process.cancellation.check()?;
+    paths::validate_name(name).context("invalid shortcut name")?;
+    let root = installed_tool_path(paths, tool_name, catalog_name, context)?;
+    crate::recipe::validate_recipe_for_project(&root, &recipe)?;
+    let mut shortcut = Shortcut::with_invocation(
+        catalog_name.to_owned(),
+        tool_name.to_owned(),
+        crate::recipe::StoredInvocation::Recipe(recipe),
+    )?;
+    shortcut.description = description.filter(|value| !value.trim().is_empty());
+    shortcuts::save(&paths.shortcuts()?, name, shortcut)?;
+    Ok(ShortcutIdentity {
+        name: name.to_owned(),
+        catalog: catalog_name.to_owned(),
+        tool: tool_name.to_owned(),
+        path: None,
+    })
+}
+
+/// Update an existing personal Recipe in place. Legacy shortcuts deliberately fail
+/// closed here and are never converted simply because an editor opened them.
+pub fn shortcut_update_recipe(
+    paths: &Paths,
+    catalog_name: &str,
+    tool_name: &str,
+    name: &str,
+    description: Option<String>,
+    recipe: crate::recipe::RecipeDefinition,
+    context: &mut OperationContext<'_>,
+) -> Result<ShortcutIdentity> {
+    let _process_scope = crate::process::scope(&context.process);
+    context.process.cancellation.check()?;
+    paths::validate_name(name).context("invalid shortcut name")?;
+    let root = installed_tool_path(paths, tool_name, catalog_name, context)?;
+    crate::recipe::validate_recipe_for_project(&root, &recipe)?;
+    let path = paths.shortcuts()?;
+    let current = shortcuts::load(&path)?;
+    let existing = current
+        .shortcuts
+        .get(name)
+        .with_context(|| format!("shortcut '{name}' does not exist"))?;
+    if existing.catalog != catalog_name || existing.tool != tool_name {
+        bail!("shortcut '{name}' does not belong to {catalog_name}/{tool_name}");
+    }
+    if existing.invocation.as_recipe().is_none() {
+        bail!("legacy shortcut '{name}' cannot be edited as a Recipe");
+    }
+    let mut replacement = existing.clone();
+    replacement.description = description.filter(|value| !value.trim().is_empty());
+    replacement.invocation = crate::recipe::StoredInvocation::Recipe(recipe);
+    shortcuts::update_if_matches(&path, name, existing, replacement)?;
+    Ok(ShortcutIdentity {
+        name: name.to_owned(),
+        catalog: catalog_name.to_owned(),
+        tool: tool_name.to_owned(),
+        path: None,
     })
 }
 

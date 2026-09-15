@@ -12,7 +12,7 @@ describe('injected menu outside Tauri', () => {
   const adapter = (projects: readonly LoadbotProject[], open = vi.fn(async () => {})): LoadbotAdapter => ({
     readInventory: async () => projects,
     readCatalogs: async () => [...new Set(projects.map((item) => item.catalog))].map((name, index) => ({ name, url: 'fixture', writable: true, state: 'installed' as const, default: index === 0 })),
-    openProjectFolder: open, addCatalog: vi.fn(), addProject: vi.fn(), addShortcut: vi.fn(), syncCatalog: vi.fn(),
+    openProjectFolder: open, addCatalog: vi.fn(), addProject: vi.fn(), addShortcut: vi.fn(), addRecipeShortcut: vi.fn(), updateRecipeShortcut: vi.fn(), syncCatalog: vi.fn(),
   });
   it('changes project/shortcut, resets isolated forms, and preserves state through the drawer', async () => {
     const user = userEvent.setup();
@@ -78,6 +78,21 @@ describe('injected menu outside Tauri', () => {
     await user.keyboard('{Enter}');
     await user.click(screen.getByRole('tab', { name: 'ACTIVITY' }));
     expect(screen.getByRole('tabpanel', { name: 'Activity' })).toHaveTextContent('No activity yet.');
+  });
+
+  it('inspects isolated Legacy, Run Recipe, and Launch Recipe fixtures without enabling management', async () => {
+    const user = userEvent.setup();
+    render(<LoadbotMenu {...fixtureMenuDependencies} />);
+    await user.click(await projectRows().findByRole('button', { name: 'rotbot personal' }));
+    await user.click(shortcutRows().getByRole('button', { name: 'Build report' }));
+    expect(screen.getByText('Run Recipe')).toBeInTheDocument();
+    expect(screen.getByText('Interpreter · python')).toBeInTheDocument();
+    await user.click(shortcutRows().getByRole('button', { name: 'Open dashboard' }));
+    expect(screen.getByText('Launch Application')).toBeInTheDocument();
+    expect(screen.getByText('Shared catalog Recipes are read-only here.')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'EDIT RECIPE' })).not.toBeInTheDocument();
+    await user.click(shortcutRows().getByRole('button', { name: 'Inspect workspace' }));
+    expect(screen.getByText(/scripts\/inspect.py/)).toBeInTheDocument();
   });
 
   it('completes registered commands and semantic identities without submitting or creating activity', async () => {
@@ -273,6 +288,7 @@ describe('injected menu outside Tauri', () => {
 
     await user.click(screen.getByRole('button', { name: '+ ADD SHORTCUT' }));
     expect(screen.getByRole('heading', { name: 'ADD SHORTCUT / new-project' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /SIMPLE LEGACY SHORTCUT/ }));
     await user.type(screen.getByLabelText('Shortcut name *'), 'inspect');
     await user.type(screen.getByLabelText('Repository-relative path *'), 'scripts/inspect.py');
     await user.selectOptions(screen.getByLabelText('Runner (optional)'), 'python');
@@ -291,5 +307,55 @@ describe('injected menu outside Tauri', () => {
     await user.type(screen.getByLabelText('Git repository URL *'), 'https://example.test/catalog.git');
     await user.click(screen.getByRole('button', { name: 'ADD AND USE' }));
     expect(await screen.findByRole('button', { name: 'Catalog context: community' })).toBeInTheDocument();
+  });
+
+  it('creates, inspects, reopens, and edits a structured Recipe without execution', async () => {
+    const user = userEvent.setup();
+    let projects: readonly LoadbotProject[] = [{ catalog: 'personal', tool: 'demo', entries: [] }];
+    const addRecipeShortcut = vi.fn(async (input) => {
+      projects = [{ ...projects[0]!, entries: [{ name: input.name, description: input.description, recipe: input.recipe, source: 'personal' as const }] }];
+      return { catalog: input.catalog, tool: input.tool, name: input.name };
+    });
+    const updateRecipeShortcut = vi.fn(async (input) => {
+      projects = [{ ...projects[0]!, entries: [{ name: input.name, description: input.description, recipe: input.recipe, source: 'personal' as const }] }];
+      return { catalog: input.catalog, tool: input.tool, name: input.name };
+    });
+    const managed: LoadbotAdapter = {
+      ...adapter(projects), readInventory: async () => projects, addRecipeShortcut, updateRecipeShortcut,
+    };
+    render(<LoadbotMenu adapter={managed} />);
+    await projectRows().findByRole('button', { name: 'demo personal' });
+
+    await user.click(screen.getByRole('button', { name: '+ ADD SHORTCUT' }));
+    await user.click(screen.getByRole('button', { name: /RUN RECIPE/ }));
+    expect(screen.getByRole('dialog', { name: 'Create Recipe shortcut' })).toBeInTheDocument();
+    await user.type(screen.getByLabelText('Shortcut name *'), 'build');
+    await user.type(screen.getByLabelText('Description (optional)'), 'Build project');
+    await user.type(screen.getByLabelText('Executable *'), 'cargo');
+    await user.click(screen.getByRole('button', { name: '+ ADD PARAMETER' }));
+    await user.clear(screen.getByLabelText('Label *'));
+    await user.type(screen.getByLabelText('Label *'), 'Profile');
+    expect(screen.getByLabelText('ID *')).toHaveValue('profile');
+    await user.clear(screen.getByLabelText('ID *'));
+    await user.type(screen.getByLabelText('ID *'), 'build-profile');
+    await user.clear(screen.getByLabelText('Label *'));
+    await user.type(screen.getByLabelText('Label *'), 'Mode');
+    expect(screen.getByLabelText('ID *')).toHaveValue('build-profile');
+    expect(screen.getByRole('region', { name: 'Recipe preview' })).toHaveTextContent('cargo {Mode}');
+    await user.click(screen.getByRole('button', { name: 'CREATE RECIPE' }));
+
+    expect(addRecipeShortcut).toHaveBeenCalledWith(expect.objectContaining({
+      name: 'build', recipe: expect.objectContaining({ behavior: 'run', program: { type: 'executable', name: 'cargo' } }),
+    }));
+    expect(await screen.findByRole('heading', { name: 'build' })).toBeInTheDocument();
+    expect(screen.getByText('Run Recipe')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'EDIT RECIPE' }));
+    expect(screen.getByRole('dialog', { name: 'Edit Recipe shortcut' })).toBeInTheDocument();
+    expect(screen.getByLabelText('Shortcut name *')).toBeDisabled();
+    await user.click(screen.getByRole('button', { name: 'LAUNCH APPLICATION' }));
+    await user.click(screen.getByRole('button', { name: 'SAVE RECIPE' }));
+    expect(updateRecipeShortcut).toHaveBeenCalledWith(expect.objectContaining({ recipe: expect.objectContaining({ behavior: 'launch' }) }));
+    expect(await screen.findByText('Launch Application')).toBeInTheDocument();
+    expect(screen.queryByText(/output/i)).not.toBeInTheDocument();
   });
 });

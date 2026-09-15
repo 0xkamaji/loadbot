@@ -1,10 +1,15 @@
 import type {
   AddCatalogInput, AddProjectInput, AddShortcutInput, CatalogSyncActivity, CatalogSyncStage, LoadbotAdapter, LoadbotCatalog,
   LoadbotProject, LoadbotShortcut,
+  LoadbotRecipe, LoadbotRecipeArgument,
 } from '../contract';
 import { projectKey, selectionKey, shortcutKey } from '../identity';
 import { completeLoadbotCommand, executeLoadbotCommand, type CommandCompletion, type CommandResult } from './command';
 import { initialValues, missingInputs, noSampleForms, type SampleField, type SampleForms, type SampleValues } from './sampleForms';
+import {
+  addDraftArgument, draftValidation, moveDraftArgument, newRecipeDraft, recipeDraftFromShortcut,
+  recipeFromDraft, removeDraftArgument, updateDraftArgument, type RecipeDraft, type RecipeParameterKind,
+} from './recipeEditor';
 
 export type InventoryState =
   | { readonly status: 'loading' }
@@ -14,13 +19,13 @@ export type CatalogState =
   | { readonly status: 'loading' }
   | { readonly status: 'ready'; readonly catalogs: readonly LoadbotCatalog[] }
   | { readonly status: 'error'; readonly message?: string };
-export type ManagementKind = 'add-catalog' | 'add-project' | 'add-shortcut' | 'sync-catalog';
+export type ManagementKind = 'add-catalog' | 'add-project' | 'add-shortcut' | 'update-shortcut' | 'sync-catalog';
 export type ManagementState =
   | { readonly status: 'idle' }
   | { readonly status: 'submitting'; readonly kind: ManagementKind; readonly message: string }
   | { readonly status: 'success'; readonly kind: ManagementKind; readonly message: string }
   | { readonly status: 'error'; readonly kind: ManagementKind; readonly message: string };
-export type ActivityOperation = 'catalog-sync' | 'catalog-add' | 'project-add' | 'shortcut-add' | 'local-reload' | 'project-folder-open';
+export type ActivityOperation = 'catalog-sync' | 'catalog-add' | 'project-add' | 'shortcut-add' | 'shortcut-update' | 'local-reload' | 'project-folder-open';
 export type ActivityStatus = 'in-progress' | 'info' | 'success' | 'error';
 export type ActivityStage = CatalogSyncStage | 'started' | 'authoritative-reload' | 'catalog-state' | 'completed' | 'failed';
 export interface ActivityEntry {
@@ -60,6 +65,7 @@ export interface LoadbotState {
   readonly command: CommandState;
   readonly activity: readonly ActivityEntry[];
   readonly management: ManagementState;
+  readonly recipeEditor?: { readonly draft: RecipeDraft; readonly errors: readonly string[] };
   readonly projectFolder: {
     readonly status: 'idle' | 'opening' | 'opened' | 'error';
     readonly projectId?: string;
@@ -76,6 +82,18 @@ export interface LoadbotActions {
   addCatalog(input: AddCatalogInput): Promise<boolean>;
   addProject(input: Omit<AddProjectInput, 'catalog'>): Promise<boolean>;
   addShortcut(input: Omit<AddShortcutInput, 'catalog' | 'tool'>): Promise<boolean>;
+  openRecipeCreator(behavior: LoadbotRecipe['behavior']): void;
+  openSelectedRecipeEditor(): boolean;
+  closeRecipeEditor(): void;
+  updateRecipeDetails(values: Partial<Pick<RecipeDraft, 'name' | 'description'>>): void;
+  setRecipeBehavior(behavior: LoadbotRecipe['behavior']): void;
+  setRecipeProgram(program: LoadbotRecipe['program']): void;
+  setRecipeWorkingDirectory(workingDirectory: LoadbotRecipe['working_directory']): void;
+  addRecipeParameter(kind: RecipeParameterKind): void;
+  updateRecipeParameter(key: number, value: LoadbotRecipeArgument, idManuallyEdited?: boolean): void;
+  removeRecipeParameter(key: number): void;
+  moveRecipeParameter(key: number, direction: -1 | 1): void;
+  saveRecipe(): Promise<boolean>;
   syncCatalog(): Promise<boolean>;
   clearManagementStatus(): void;
   selectBottomView(view: 'command' | 'activity'): void;
@@ -86,7 +104,7 @@ export interface LoadbotActions {
   toggleDrawer(): void;
 }
 
-interface ReadPreference { catalog?: string; projectId?: string; shortcutId?: string }
+interface ReadPreference { catalog?: string; projectId?: string; shortcutId?: string; shortcutName?: string }
 
 /** Deterministic application state, independent of React, DOM, themes and hosts.
  * Backend-confirmed writes are always followed by an authoritative workspace read.
@@ -103,6 +121,7 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
   let folderGeneration = 0;
   let activityId = 0;
   let commandId = 0;
+  let recipeArgumentKey = 1000;
   const publish = (next: LoadbotState) => {
     state = next;
     listeners.forEach((listener) => listener());
@@ -144,7 +163,8 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
         : catalogs.find((catalog) => catalog.default)?.name ?? projects[0]?.catalog ?? catalogs[0]?.name;
       const visible = projectsFor(projects, currentCatalog);
       const project = visible.find((item) => projectKey(item) === selectedProject) ?? visible[0];
-      const shortcut = project?.entries.find((item) => shortcutKey(item) === selectedShortcut);
+      const shortcut = project?.entries.find((item) => shortcutKey(item) === selectedShortcut)
+        ?? project?.entries.find((item) => item.source === 'personal' && item.name === preferred.shortcutName);
       publish({
         ...state, inventory: { status: 'ready', projects }, catalogState: { status: 'ready', catalogs }, currentCatalog,
         ...selection(project, shortcut),
@@ -280,8 +300,81 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
       if (!project) return false;
       return mutation('add-shortcut', 'shortcut-add', `Adding shortcut ${input.name}…`, `Shortcut ${input.name} added.`, { catalog: project.catalog, project: project.tool, shortcut: input.name }, async () => {
         const created = await adapter.addShortcut({ ...input, catalog: project.catalog, tool: project.tool });
-        return { catalog: created.catalog, projectId: projectKey(created), shortcutId: JSON.stringify(['personal', created.name, created.path]) };
+        return { catalog: created.catalog, projectId: projectKey(created), shortcutName: created.name };
       });
+    },
+    openRecipeCreator(behavior) {
+      publish({ ...state, recipeEditor: { draft: newRecipeDraft(behavior), errors: [] } });
+    },
+    openSelectedRecipeEditor() {
+      const draft = state.shortcut && recipeDraftFromShortcut(state.shortcut);
+      if (!draft) return false;
+      publish({ ...state, recipeEditor: { draft, errors: [] }, management: { status: 'idle' } });
+      return true;
+    },
+    closeRecipeEditor() {
+      if (state.management.status !== 'submitting') publish({ ...state, recipeEditor: undefined });
+    },
+    updateRecipeDetails(values) {
+      if (!state.recipeEditor) return;
+      publish({ ...state, recipeEditor: { draft: { ...state.recipeEditor.draft, ...values }, errors: [] } });
+    },
+    setRecipeBehavior(behavior) {
+      if (!state.recipeEditor) return;
+      publish({ ...state, recipeEditor: { draft: { ...state.recipeEditor.draft, recipe: { ...state.recipeEditor.draft.recipe, behavior } }, errors: [] } });
+    },
+    setRecipeProgram(program) {
+      if (!state.recipeEditor) return;
+      let working_directory = state.recipeEditor.draft.recipe.working_directory;
+      if (working_directory.type === 'target-parent' && program.type !== 'project-file') working_directory = { type: 'project-root' };
+      publish({ ...state, recipeEditor: { draft: { ...state.recipeEditor.draft, recipe: { ...state.recipeEditor.draft.recipe, program, working_directory } }, errors: [] } });
+    },
+    setRecipeWorkingDirectory(working_directory) {
+      if (!state.recipeEditor) return;
+      publish({ ...state, recipeEditor: { draft: { ...state.recipeEditor.draft, recipe: { ...state.recipeEditor.draft.recipe, working_directory } }, errors: [] } });
+    },
+    addRecipeParameter(kind) {
+      if (!state.recipeEditor) return;
+      publish({ ...state, recipeEditor: { draft: addDraftArgument(state.recipeEditor.draft, kind, ++recipeArgumentKey), errors: [] } });
+    },
+    updateRecipeParameter(key, value, idManuallyEdited) {
+      if (!state.recipeEditor) return;
+      publish({ ...state, recipeEditor: { draft: updateDraftArgument(state.recipeEditor.draft, key, value, idManuallyEdited), errors: [] } });
+    },
+    removeRecipeParameter(key) {
+      if (!state.recipeEditor) return;
+      publish({ ...state, recipeEditor: { draft: removeDraftArgument(state.recipeEditor.draft, key), errors: [] } });
+    },
+    moveRecipeParameter(key, direction) {
+      if (!state.recipeEditor) return;
+      publish({ ...state, recipeEditor: { draft: moveDraftArgument(state.recipeEditor.draft, key, direction), errors: [] } });
+    },
+    async saveRecipe() {
+      const editor = state.recipeEditor;
+      const project = state.project;
+      if (!editor || !project) return false;
+      const errors = draftValidation(editor.draft);
+      if (errors.length) {
+        publish({ ...state, recipeEditor: { ...editor, errors } });
+        return false;
+      }
+      const input = {
+        catalog: project.catalog, tool: project.tool, name: editor.draft.name.trim(),
+        description: editor.draft.description.trim() || undefined, recipe: recipeFromDraft(editor.draft),
+      };
+      const kind = editor.draft.mode === 'create' ? 'add-shortcut' : 'update-shortcut';
+      const operation = editor.draft.mode === 'create' ? 'shortcut-add' : 'shortcut-update';
+      const verb = editor.draft.mode === 'create' ? 'Creating' : 'Updating';
+      const completed = editor.draft.mode === 'create' ? 'created' : 'updated';
+      const result = await mutation(kind, operation, `${verb} Recipe ${input.name}…`, `Recipe ${input.name} ${completed}.`, {
+        catalog: project.catalog, project: project.tool, shortcut: input.name,
+      }, async () => {
+        const saved = editor.draft.mode === 'create'
+          ? await adapter.addRecipeShortcut(input) : await adapter.updateRecipeShortcut(input);
+        return { catalog: saved.catalog, projectId: projectKey(saved), shortcutName: saved.name };
+      });
+      if (result) publish({ ...state, recipeEditor: undefined });
+      return result;
     },
     async syncCatalog() {
       const catalog = state.currentCatalog;

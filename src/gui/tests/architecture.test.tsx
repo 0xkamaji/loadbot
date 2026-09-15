@@ -96,7 +96,7 @@ it('pins native/default and fixture entry points to distinct compositions', () =
   expect(realComposition).toContain("from './tauriWorkspaceLayoutStore'");
   expect(realComposition).not.toMatch(/from ['"].*fixture/);
   expect(tauriAdapter).toContain("invoke('open_loadbot_project', { catalog: project.catalog, tool: project.tool })");
-  for (const command of ['read_loadbot_catalogs', 'add_loadbot_catalog', 'add_loadbot_project', 'add_loadbot_shortcut', 'sync_loadbot_catalog']) {
+  for (const command of ['read_loadbot_catalogs', 'add_loadbot_catalog', 'add_loadbot_project', 'add_loadbot_shortcut', 'add_loadbot_recipe_shortcut', 'update_loadbot_recipe_shortcut', 'sync_loadbot_catalog']) {
     expect(tauriAdapter).toContain(command);
     expect(tauriMain).toContain(command);
     expect(tauriBuild).toContain(`"${command}"`);
@@ -106,6 +106,8 @@ it('pins native/default and fixture entry points to distinct compositions', () =
   expect(tauriMain).toContain('operations::catalog_add');
   expect(tauriMain).toContain('operations::tool_add');
   expect(tauriMain).toContain('operations::shortcut_add');
+  expect(tauriMain).toContain('operations::shortcut_add_recipe');
+  expect(tauriMain).toContain('operations::shortcut_update_recipe');
   expect(tauriMain).toContain('operations::catalog_sync');
   expect(tauriAdapter).toContain('new Channel<unknown>()');
   expect(tauriMain).toContain('Channel<BackendActivity>');

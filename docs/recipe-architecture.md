@@ -1,7 +1,8 @@
 # Recipe architecture audit and v1 direction
 
-This document records the Phase 1 audit and the Phase 2 core implementation. It
-is not an authorization to connect GUI execution or build an editor.
+This document records the Phase 1 audit, Phase 2 core implementation, and Phase 3
+personal Recipe authoring boundary. It is not an authorization to connect Recipe
+execution.
 
 > **Loadbot provides primitives. Catalogs provide knowledge. Recipes provide
 > opinion.**
@@ -314,7 +315,7 @@ details. Tauri remains a thin structured bridge. The application/controller owns
 form/run state and bounded output. GUI buttons, Command actions and CLI rendering
 delegate to these same operations.
 
-## Implemented in Phase 2
+## Implemented in Phases 2 and 3
 
 Phase 2 implements the shared versioned model, backward-compatible loader,
 validation, semantic inventory inspection, typed runtime inputs, and pure resolution
@@ -322,12 +323,29 @@ to structured program/argv/cwd. Existing execution remains restricted to legacy
 entries and retains its prior behavior; attempting to execute a Recipe reports that
 Recipe execution is not implemented.
 
+Phase 3 adds native GUI create/edit workflows for **personal** Recipe shortcuts.
+`operations::shortcut_add_recipe` validates the installed project and every fixed
+project-owned path before the existing leased atomic save. Recipe updates preserve
+the shortcut name, project identity, unknown metadata, and unrelated entries, and
+use a compare-under-lease transaction so a concurrently changed definition is not
+overwritten. Opening a Legacy shortcut never converts it. Shared catalog Recipes
+are inspectable but remain owned by `catalog.toml` and read-only in this GUI.
+
+The editor maps its user vocabulary directly onto the Phase 2 model: fixed project
+path → `ProjectPath`, value/runtime file/runtime directory/flag-plus-value →
+`Input`, flag → `Switch`, and literal → `Literal`. Move buttons reorder only the
+stored argument vector. Its incomplete-draft preview is a presentation projection
+with placeholders; backend validation and the stored Recipe remain authoritative.
+Project-relative target/path fields are textual in this phase because the native
+host has no file-dialog capability; Rust containment and existence checks are not
+weakened.
+
 ## Future phases
 
-The Recipe Builder GUI, Recipe create/update workflow, process execution, detached
-application launch, output UI, Command mutations, help discovery, environment
-overrides and PTY support are not implemented. A later execution phase must consume
-`ResolvedInvocation`; it must not reinterpret a preview string as a command.
+Process execution, detached application launch, output UI, Command mutations, help
+discovery, environment overrides and PTY support are not implemented. A later
+execution phase must consume `ResolvedInvocation`; it must not reinterpret a preview
+string as a command.
 
 Before implementing detached launch in a later phase, decide its precise Windows and
 Linux ownership/error contract. Before catalog recipes are published, decide how the

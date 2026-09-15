@@ -89,6 +89,8 @@ interface LoadbotAdapter {
   addCatalog(input: AddCatalogInput): Promise<CatalogIdentity>;
   addProject(input: AddProjectInput): Promise<ProjectIdentity>;
   addShortcut(input: AddShortcutInput): Promise<ShortcutIdentity>;
+  addRecipeShortcut(input: RecipeShortcutInput): Promise<ShortcutIdentity>;
+  updateRecipeShortcut(input: RecipeShortcutInput): Promise<ShortcutIdentity>;
   syncCatalog(catalog: string, onActivity?: CatalogSyncActivitySink): Promise<void>;
 }
 ```
@@ -120,7 +122,7 @@ not an invented partial-health state or silent empty success.
 - `reloadInventory()` (local reread only; no fetch, pull, or synchronization)
 - `openProjectFolder(id)` (qualified identity to adapter; controlled result state)
 - `selectCatalog(name)` (session context only; no persistent default change or sync)
-- `addCatalog`, `addProject`, `addShortcut`, `syncCatalog` (centralized operation state)
+- `addCatalog`, `addProject`, Legacy `addShortcut`, Recipe create/update, `syncCatalog` (centralized operation state)
 - `selectBottomView(view)` (presentation-only Command/Activity choice)
 - `submitCommand(input)` (registered Loadbot read-only command over current application state)
 - `changeSampleInput(id, value)` / `useSamplePath(id)`

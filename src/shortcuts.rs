@@ -269,6 +269,7 @@ path = "audit.sh"
 description = "Run the audit"
 runner = "bash"
 future = "kept"
+recipe_hint = { version = 1, arguments = ["--check"] }
 "#,
         )
         .unwrap();
@@ -284,6 +285,22 @@ future = "kept"
         assert_eq!(
             loaded.shortcuts["audit"].extra["future"].as_str(),
             Some("kept")
+        );
+        assert_eq!(
+            loaded.shortcuts["audit"].extra["recipe_hint"]
+                .get("arguments")
+                .and_then(toml::Value::as_array)
+                .and_then(|arguments| arguments.first())
+                .and_then(toml::Value::as_str),
+            Some("--check")
+        );
+
+        let new = Shortcut::new("personal".into(), "demo".into(), "new.sh".into()).unwrap();
+        save(&path, "new", new).unwrap();
+        let after_save = load(&path).unwrap();
+        assert_eq!(
+            after_save.shortcuts["audit"].extra["recipe_hint"],
+            loaded.shortcuts["audit"].extra["recipe_hint"]
         );
     }
 }

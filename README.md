@@ -732,6 +732,10 @@ Supported runner values are `direct`, `bash`, `sh`, `python`, and `powershell`. 
 
 Paths are portable repository-relative strings separated by `/`. They must be nonempty, must not be absolute, and may not contain `.` or `..` components, empty components, backslashes, or colons. Loadbot also canonicalizes the selected target and rejects symlinks or other resolution that escapes the installed tool root. Shared commands run with the installed tool root as their working directory. Children explicitly inherit stdin, stdout, stderr, the environment, and the working terminal, so passphrase prompts, `sudo`, and ordinary script questions remain interactive. Loadbot does not install dependencies or execute arbitrary shell command strings.
 
+The audited, not-yet-implemented direction for reusable parameterized invocations is
+documented in [Recipe architecture](docs/recipe-architecture.md). Existing shortcuts
+remain authoritative and require no migration.
+
 Shared commands are read from each registered catalog clone. They become available after the catalog is cloned or after `loadbot catalog sync NAME` fast-forwards it; Loadbot does not create a separate local copy of command definitions. The corresponding tool repository must still be installed before a command can run.
 
 Bare `loadbot shortcut` requires an interactive terminal and opens:

@@ -42,6 +42,15 @@ it('keeps fixtures/hosts/transport out of views and capabilities out of UI primi
   expect(violations).toEqual([]);
 });
 
+it('keeps the Console frame decorative and its interior on a stable surface', () => {
+  const theme = readFileSync(join(root, 'ui/theme.css'), 'utf8');
+  const drawer = theme.match(/\.lb-drawer\s*\{([^}]*)\}/)?.[1] ?? '';
+  expect(drawer).toContain('border-image: var(--shared-terminal-panel) var(--shared-terminal-panel-slice) stretch;');
+  expect(drawer).not.toMatch(/border-image:[^;]*\bfill\b/);
+  expect(drawer).toContain('background-color: var(--lb-terminal-surface)');
+  expect(drawer).toContain('background-clip: padding-box');
+});
+
 it('pins native/default and fixture entry points to distinct compositions', () => {
   const packageJson = JSON.parse(readFileSync(join(guiRoot, 'package.json'), 'utf8'));
   const tauri = JSON.parse(readFileSync(join(guiRoot, 'src-tauri/tauri.conf.json'), 'utf8'));

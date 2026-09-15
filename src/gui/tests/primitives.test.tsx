@@ -15,7 +15,9 @@ it('renders application-neutral controls without Loadbot data or an adapter', as
   </ApplicationFrame>);
   expect(screen.getByRole('region', { name: 'Example utility' })).toBeInTheDocument();
   expect(screen.getByLabelText('Destination')).toHaveValue('archive/');
+  const drawer = screen.getByRole('region', { name: 'Information' });
   expect(screen.getByText('Parent-provided content')).toBeVisible();
+  expect((drawer.closest('.lb-theme') as HTMLElement).style.getPropertyValue('--lb-terminal-surface')).toBe('#ecd4af');
   expect(screen.queryByText(/fixture|terminal|project|shortcut/i)).not.toBeInTheDocument();
   await user.click(screen.getByRole('button', { name: 'Select destination' }));
   expect(choose).toHaveBeenCalledOnce();

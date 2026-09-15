@@ -14,10 +14,10 @@ export interface LoadbotShortcut {
   readonly source: 'catalog' | 'personal';
 }
 
-/** The only backend capability currently consumed. Selection is application state.
+/** Backend capabilities are semantic and qualified; native paths never cross this seam.
  * Each read returns a complete, caller-owned inventory snapshot, or rejects.
- * No mutation/execution/path-opening capability is exposed in this pass.
  */
 export interface LoadbotAdapter {
   readInventory(): Promise<readonly LoadbotProject[]>;
+  openProjectFolder(project: Pick<LoadbotProject, 'catalog' | 'tool'>): Promise<void>;
 }

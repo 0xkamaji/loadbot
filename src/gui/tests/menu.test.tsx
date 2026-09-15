@@ -18,10 +18,12 @@ describe('injected menu outside Tauri', () => {
     await user.click(screen.getByRole('checkbox'));
     expect(screen.getByRole('status')).toHaveTextContent('Sample form ready');
     expect(screen.getByRole('button', { name: 'RUN SHORTCUT' })).toBeDisabled();
+    expect(screen.getByRole('region', { name: 'Terminal placeholder' })).toBeVisible();
+    await user.click(screen.getByRole('button', { name: 'Terminal' }));
+    expect(screen.queryByRole('region', { name: 'Terminal placeholder' })).not.toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Terminal' }));
     expect(screen.getByRole('region', { name: 'Terminal placeholder' })).toBeVisible();
     expect(screen.getByRole('region', { name: 'Terminal placeholder' })).not.toContainElement(screen.getByLabelText('Input folder *'));
-    await user.click(screen.getByRole('button', { name: 'Terminal' }));
     expect(screen.getByLabelText('Input folder *')).toHaveValue('samples/');
     expect(screen.getByRole('checkbox')).toBeChecked();
     await user.click(shortcutRows().getByRole('button', { name: 'Export strings' }));
@@ -58,7 +60,10 @@ describe('injected menu outside Tauri', () => {
   });
 
   it('renders a supplied adapter in an ordinary parent and delegates close to that parent', async () => {
-    const adapter: LoadbotAdapter = { readInventory: vi.fn(async () => [{ catalog: 'test', tool: 'injected', entries: [] }]) };
+    const adapter: LoadbotAdapter = {
+      readInventory: vi.fn(async () => [{ catalog: 'test', tool: 'injected', entries: [] }]),
+      openProjectFolder: vi.fn(async () => {}),
+    };
     const close = vi.fn();
     const user = userEvent.setup();
     render(<div style={{ width: 700, height: 500 }}><LoadbotMenu adapter={adapter} mode="fixture" host={{ onClose: close }} /></div>);
@@ -73,15 +78,32 @@ describe('injected menu outside Tauri', () => {
 
   it('ignores stale adapter responses and displays empty/error results honestly', async () => {
     let resolve!: (projects: readonly LoadbotProject[]) => void;
-    const slow: LoadbotAdapter = { readInventory: () => new Promise((done) => { resolve = done; }) };
-    const empty: LoadbotAdapter = { readInventory: async () => [] };
+    const unavailable = vi.fn(async () => { throw new Error('unavailable'); });
+    const slow: LoadbotAdapter = { readInventory: () => new Promise((done) => { resolve = done; }), openProjectFolder: unavailable };
+    const empty: LoadbotAdapter = { readInventory: async () => [], openProjectFolder: unavailable };
     const view = render(<LoadbotMenu adapter={slow} mode="fixture" />);
     await act(async () => {});
     view.rerender(<LoadbotMenu adapter={empty} mode="fixture" />);
     await screen.findByText('No fixture projects available.');
     await act(async () => resolve([{ catalog: 'old', tool: 'stale', entries: [] }]));
     expect(screen.queryByRole('button', { name: 'stale old' })).not.toBeInTheDocument();
-    view.rerender(<LoadbotMenu adapter={{ readInventory: async () => { throw new Error('Fixture read failed'); } }} mode="fixture" />);
+    view.rerender(<LoadbotMenu adapter={{ readInventory: async () => { throw new Error('Fixture read failed'); }, openProjectFolder: unavailable }} mode="fixture" />);
     expect(await screen.findByText('Fixture unavailable: Fixture read failed')).toBeInTheDocument();
+  });
+
+  it('opens the row-specific qualified project without changing selection and displays failures', async () => {
+    const user = userEvent.setup();
+    const projects: readonly LoadbotProject[] = [
+      { catalog: 'first', tool: 'duplicate', entries: [] },
+      { catalog: 'second', tool: 'duplicate', entries: [] },
+    ];
+    const open = vi.fn().mockRejectedValue(new Error('Project directory is missing'));
+    const adapter: LoadbotAdapter = { readInventory: async () => projects, openProjectFolder: open };
+    render(<LoadbotMenu adapter={adapter} />);
+    const first = await projectRows().findByRole('button', { name: 'duplicate first' });
+    await user.click(screen.getByRole('button', { name: 'Open project folder: duplicate (second)' }));
+    expect(first).toHaveAttribute('aria-pressed', 'true');
+    expect(open).toHaveBeenCalledWith({ catalog: 'second', tool: 'duplicate' });
+    expect(await screen.findByText('Project directory is missing')).toBeInTheDocument();
   });
 });

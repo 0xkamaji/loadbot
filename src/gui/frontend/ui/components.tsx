@@ -1,4 +1,4 @@
-import { useId, useRef, type ButtonHTMLAttributes, type HTMLAttributes, type InputHTMLAttributes, type KeyboardEvent, type ReactNode } from 'react';
+import { forwardRef, useId, useRef, type ButtonHTMLAttributes, type HTMLAttributes, type InputHTMLAttributes, type KeyboardEvent, type ReactNode } from 'react';
 import { asset, themeStyle } from './theme';
 import './theme.css';
 
@@ -10,9 +10,9 @@ export function ApplicationFrame({ label, children }: { label: string; children:
   return <section className="lb-theme lb-window" style={themeStyle} aria-label={label}>{children}</section>;
 }
 
-export function Panel({ className = '', ...props }: HTMLAttributes<HTMLElement>) {
-  return <section className={`lb-panel ${className}`} {...props} />;
-}
+export const Panel = forwardRef<HTMLElement, HTMLAttributes<HTMLElement>>(function Panel({ className = '', ...props }, ref) {
+  return <section ref={ref} className={`lb-panel ${className}`} {...props} />;
+});
 
 export type IconName = 'close' | 'folder' | 'arrow-right' | 'terminal' | 'check' | 'chevron-down';
 export function Icon({ name, inverse = false }: { name: IconName; inverse?: boolean }) {
@@ -23,12 +23,12 @@ export function Button({ className = '', children, ...props }: ButtonHTMLAttribu
   return <button type="button" className={`lb-button ${className}`} {...props}>{children}</button>;
 }
 
-export function IconButton({ icon, label, ...props }: Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'children'> & { icon: IconName; label: string }) {
-  return <Button {...props} className="lb-icon-button" aria-label={label} title={label}><Icon name={icon} /></Button>;
+export function IconButton({ icon, label, className = '', title = label, ...props }: Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'children'> & { icon: IconName; label: string }) {
+  return <Button {...props} className={`lb-icon-button ${className}`} aria-label={label} title={title}><Icon name={icon} /></Button>;
 }
 
-export function MenuRow({ selected, icon, children, ...props }: ButtonHTMLAttributes<HTMLButtonElement> & { selected: boolean; icon: IconName }) {
-  return <button type="button" className="lb-menu-row" aria-pressed={selected} {...props}>
+export function MenuRow({ selected, icon, children, className = '', ...props }: ButtonHTMLAttributes<HTMLButtonElement> & { selected: boolean; icon: IconName }) {
+  return <button type="button" className={`lb-menu-row ${className}`} aria-pressed={selected} data-menu-item {...props}>
     <Icon name={icon} inverse={selected} /><span>{children}</span>
   </button>;
 }
@@ -38,7 +38,7 @@ export function MenuRow({ selected, icon, children, ...props }: ButtonHTMLAttrib
 export function MenuList({ label, children }: { label: string; children: ReactNode }) {
   const ref = useRef<HTMLDivElement>(null);
   function navigate(event: KeyboardEvent<HTMLDivElement>) {
-    const buttons = Array.from(ref.current?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)') ?? []);
+    const buttons = Array.from(ref.current?.querySelectorAll<HTMLButtonElement>('button[data-menu-item]:not(:disabled)') ?? []);
     const index = buttons.indexOf(event.target as HTMLButtonElement);
     if (index < 0) return;
     let next: number;

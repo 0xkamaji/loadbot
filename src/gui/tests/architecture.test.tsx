@@ -59,6 +59,8 @@ it('pins native/default and fixture entry points to distinct compositions', () =
   const realComposition = readFileSync(join(root, 'hosts/realComposition.ts'), 'utf8');
   const fixtureEntry = readFileSync(join(root, 'hosts/fixture.tsx'), 'utf8');
   const fixtureComposition = readFileSync(join(root, 'hosts/fixtureComposition.ts'), 'utf8');
+  const tauriAdapter = readFileSync(join(root, 'hosts/tauriInventoryAdapter.ts'), 'utf8');
+  const tauriMain = readFileSync(join(guiRoot, 'src-tauri/src/main.rs'), 'utf8');
 
   for (const html of [desktopHtml, defaultHtml]) {
     expect(html).toContain('/frontend/hosts/standalone.tsx');
@@ -68,6 +70,10 @@ it('pins native/default and fixture entry points to distinct compositions', () =
   expect(standalone).not.toMatch(/fixtureComposition|fixtureMenuDependencies/);
   expect(realComposition).toContain("from './tauriInventoryAdapter'");
   expect(realComposition).not.toMatch(/from ['"].*fixture/);
+  expect(tauriAdapter).toContain("invoke('open_loadbot_project', { catalog: project.catalog, tool: project.tool })");
+  expect(tauriAdapter).not.toMatch(/explorer|xdg-open|filesystem|fixture/i);
+  expect(tauriMain).toContain('launcher::resolve_project_directory');
+  expect(tauriMain).toContain('open_loadbot_project');
 
   expect(fixtureHtml).toContain('/frontend/hosts/fixture.tsx');
   expect(fixtureEntry).toContain("from './fixtureComposition'");

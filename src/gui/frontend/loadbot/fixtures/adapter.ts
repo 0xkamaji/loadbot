@@ -43,4 +43,5 @@ const projects: readonly LoadbotProject[] = [
 
 export const fixtureAdapter: LoadbotAdapter = {
   async readInventory() { return structuredClone(projects); },
+  async openProjectFolder() { throw new Error('Folder opening is unavailable in fixture preview.'); },
 };

@@ -6,10 +6,13 @@ test('normal entry uses the real read composition and preserves qualified record
   // catalog/shortcut fixtures. This does not claim to launch or exercise native IPC.
   await page.addInitScript((data) => {
     Object.defineProperty(window, 'isTauri', { value: true });
+    Object.defineProperty(window, '__loadbotInvocations', { value: [], writable: true });
     Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {
-      invoke: async (command: string, args: Record<string, unknown>) => {
-        if (command !== 'read_loadbot_inventory' || Object.keys(args).length !== 0) throw new Error('Unexpected command');
-        return data;
+      invoke: async (command: string, args: Record<string, unknown> = {}) => {
+        (window as unknown as { __loadbotInvocations: unknown[] }).__loadbotInvocations.push({ command, args });
+        if (command === 'read_loadbot_inventory' && Object.keys(args).length === 0) return data;
+        if (command === 'open_loadbot_project' && Object.keys(args).length === 2) return undefined;
+        throw new Error('Unexpected command');
       },
     } });
   }, inventory);
@@ -21,15 +24,38 @@ test('normal entry uses the real read composition and preserves qualified record
   await expect(page.getByText('LOCAL INVENTORY')).toBeVisible();
   await expect(page.getByText(/FIXTURE PREVIEW|Sample form ready/)).toHaveCount(0);
   await expect(page.getByRole('textbox')).toHaveCount(0);
-  for (const name of ['+ Add project', 'Refresh catalog', 'RUN SHORTCUT', 'Open project folder']) {
-    await expect(page.getByRole('button', { name, exact: true })).toBeDisabled();
-  }
+  await expect(page.getByRole('button', { name: 'Catalog context: alpha' })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'RELOAD LOCAL' })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'RUN SHORTCUT' })).toHaveCount(0);
   await page.getByRole('button', { name: 'inspect [personal]' }).click();
-  await expect(page.getByText('Personal · Runner not specified · recipes/inspect file.py')).toBeVisible();
+  await expect(page.getByRole('definition').filter({ hasText: 'recipes/inspect file.py' })).toBeVisible();
+  await page.getByRole('button', { name: 'RELOAD LOCAL' }).click();
+  await expect(page.getByRole('button', { name: 'inspect [personal]' })).toHaveAttribute('aria-pressed', 'true');
+  await page.getByRole('button', { name: 'Open project folder: demo (alpha)' }).click();
+  expect(await page.evaluate(() => (window as unknown as { __loadbotInvocations: Array<{ command: string; args: unknown }> }).__loadbotInvocations)).toContainEqual({
+    command: 'open_loadbot_project', args: { catalog: 'alpha', tool: 'demo' },
+  });
   await page.getByRole('button', { name: 'demo beta' }).click();
-  await expect(page.getByText('Shared · powershell · scripts/inspect.ps1')).toBeVisible();
+  await expect(page.getByRole('definition').filter({ hasText: 'scripts/inspect.ps1' })).toBeVisible();
   await page.evaluate(() => document.fonts.ready);
   await page.screenshot({ path: testInfo.outputPath('local-read-projection.png') });
+});
+
+test('native folder failures remain controlled real errors without fixture fallback', async ({ page }) => {
+  await page.addInitScript((data) => {
+    Object.defineProperty(window, 'isTauri', { value: true });
+    Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {
+      invoke: async (command: string) => {
+        if (command === 'read_loadbot_inventory') return data;
+        if (command === 'open_loadbot_project') throw { message: 'resolved project directory is unavailable' };
+        throw new Error('Unexpected command');
+      },
+    } });
+  }, inventory);
+  await page.goto('/desktop.html');
+  await page.getByRole('button', { name: 'Open project folder: demo (alpha)' }).click();
+  await expect(page.getByText('resolved project directory is unavailable')).toBeVisible();
+  await expect(page.getByText('FIXTURE PREVIEW')).toHaveCount(0);
 });
 
 for (const scenario of ['empty', 'error'] as const) {

@@ -5,8 +5,20 @@ import { Button, Checkbox, InputControl, PathSelector, StatusDisplay } from '../
 /** Chooses widgets and wording. Application state supplies values and validation. */
 export function ShortcutDetails({ state, actions, mode }: { state: LoadbotState; actions: LoadbotActions; mode: 'local' | 'fixture' }) {
   const statusId = useId();
-  const { shortcut, fields, values, missingInputIds } = state;
+  const { project, shortcut, fields, values, missingInputIds } = state;
   if (!shortcut) return <div className="lb-details"><p>Select a shortcut to see its details.</p></div>;
+  if (mode === 'local') return <div className="lb-details">
+    <h3>{shortcut.name}</h3>
+    {shortcut.description && <p>{shortcut.description}</p>}
+    <dl className="lb-facts">
+      <dt>Project</dt><dd>{project?.tool}</dd>
+      <dt>Catalog</dt><dd>{project?.catalog}</dd>
+      <dt>Source</dt><dd>{shortcut.source === 'catalog' ? 'Shared catalog command' : 'Personal shortcut'}</dd>
+      <dt>Runner</dt><dd>{shortcut.runner ?? 'Not specified'}</dd>
+      <dt>Target</dt><dd title={shortcut.path}>{shortcut.path}</dd>
+    </dl>
+    <p className="lb-note">Read-only inventory. Execution is not connected.</p>
+  </div>;
   const missing = fields.filter((field) => missingInputIds.includes(field.id));
   return <div className="lb-details">
     <h3>{shortcut.name}</h3>
@@ -28,11 +40,11 @@ export function ShortcutDetails({ state, actions, mode }: { state: LoadbotState;
             : <InputControl key={field.id} label={field.label} value={String(values[field.id] ?? '')} required={field.required} placeholder={field.placeholder}
               aria-invalid={missingInputIds.includes(field.id) ? true : undefined} aria-describedby={statusId}
               onChange={(event) => actions.changeSampleInput(field.id, event.target.value)} />)}
-        {!fields.length && <p className="lb-note">{mode === 'fixture' ? 'No sample inputs for this shortcut.' : 'Inventory only; shortcut inputs are not exposed.'}</p>}
+        {!fields.length && <p className="lb-note">No sample inputs for this shortcut.</p>}
       </div>
       <div className="lb-run">
         <Button disabled aria-describedby={statusId}>RUN SHORTCUT</Button>
-        <StatusDisplay id={statusId}>{mode === 'local' ? 'Execution is not connected.' : missing.length
+        <StatusDisplay id={statusId}>{missing.length
           ? `Input required: ${missing.map((field) => field.label.toLowerCase()).join(', ')}. Execution is not connected.`
           : 'Sample form ready. Execution is not connected.'}</StatusDisplay>
       </div>

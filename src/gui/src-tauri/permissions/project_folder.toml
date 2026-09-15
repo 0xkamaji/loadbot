@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "open-project-folder"
+description = "Open a project folder resolved by Loadbot from qualified catalog and tool identity."
+commands.allow = ["open_loadbot_project"]

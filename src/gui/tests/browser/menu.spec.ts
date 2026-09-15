@@ -26,7 +26,6 @@ test('approved skins, focus, scrolling, resizing, and drawer preserve a usable m
   await page.screenshot({ path: testInfo.outputPath('input-focus.png') });
   await page.getByRole('button', { name: 'Use sample input folder' }).click();
   await page.getByRole('checkbox').check();
-  await page.getByRole('button', { name: 'Terminal', exact: true }).click();
   await expect(page.getByRole('region', { name: 'Terminal placeholder' })).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath('drawer-1000x680.png') });
   await page.getByRole('button', { name: 'Terminal', exact: true }).click();
@@ -56,6 +55,35 @@ test('approved skins, focus, scrolling, resizing, and drawer preserve a usable m
     await page.getByRole('button', { name: 'Terminal', exact: true }).click();
   }
   expect(errors).toEqual([]);
+});
+
+test('three splitters drag, clamp, persist, and reset independently', async ({ page }) => {
+  await page.goto('/fixture.html');
+  const projects = page.getByRole('separator', { name: 'Resize projects pane' });
+  const shortcuts = page.getByRole('separator', { name: 'Resize shortcuts and selected shortcut' });
+  const terminal = page.getByRole('separator', { name: 'Resize terminal pane' });
+  await expect(projects).toHaveAttribute('aria-valuenow', '260');
+  await expect(shortcuts).toHaveAttribute('aria-valuenow', '210');
+  await expect(terminal).toHaveAttribute('aria-valuenow', '140');
+  const boundary = (await projects.boundingBox())!;
+  await page.mouse.move(boundary.x + 2, boundary.y + 4);
+  await page.mouse.down();
+  await page.mouse.move(boundary.x + 82, boundary.y + 4);
+  await page.mouse.up();
+  await expect(projects).toHaveAttribute('aria-valuenow', '340');
+  await shortcuts.focus();
+  await page.keyboard.press('ArrowDown');
+  await expect(shortcuts).toHaveAttribute('aria-valuenow', '222');
+  await terminal.focus();
+  await page.keyboard.press('ArrowUp');
+  await expect(terminal).toHaveAttribute('aria-valuenow', '152');
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem('loadbot.workspace.panes.v1')!))).toEqual({
+    version: 1, projects: 340, shortcuts: 222, terminal: 152,
+  });
+  await page.reload();
+  await expect(projects).toHaveAttribute('aria-valuenow', '340');
+  await projects.dblclick();
+  await expect(projects).toHaveAttribute('aria-valuenow', '260');
 });
 
 test('development overlay owns bounds, close, and keyboard focus without Tauri', async ({ page }, testInfo) => {

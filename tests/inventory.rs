@@ -196,6 +196,50 @@ runner = "powershell"
 }
 
 #[test]
+fn pre_gui_management_installation_is_shared_by_catalog_and_inventory_queries() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = paths(root.path());
+    // This is the CLI-supported configuration/catalog format that predates the
+    // Phase 4B GUI operations. Do not use catalog_add/tool_add to construct it.
+    catalog(
+        &paths,
+        "existing",
+        r#"version = 1
+[tools.known-project]
+type = "git"
+url = "https://example.invalid/known-project.git"
+[tools.known-project.commands.known-shortcut]
+path = "scripts/known.sh"
+description = "Existing shortcut"
+runner = "sh"
+"#,
+    );
+    let mut local = config::load(&paths.config()).unwrap();
+    local.default_catalog = Some("existing".into());
+    config::save(&paths.config(), &local).unwrap();
+
+    let before = snapshot(root.path());
+    let mut policy = Unattended;
+    let mut context = OperationContext::new(&mut policy);
+    let catalogs = operations::catalog_list(&paths, &mut context).unwrap();
+    let inventory = launcher::read_project_inventory(&paths, &mut context).unwrap();
+
+    assert_eq!(catalogs.len(), 1);
+    assert_eq!(catalogs[0].name, "existing");
+    assert!(catalogs[0].default);
+    assert_eq!(catalogs[0].state, operations::CatalogState::Installed);
+    assert_eq!(inventory.len(), 1);
+    assert_eq!(inventory[0].catalog, "existing");
+    assert_eq!(inventory[0].tool, "known-project");
+    assert_eq!(inventory[0].entries[0].name, "known-shortcut");
+    assert_eq!(
+        snapshot(root.path()),
+        before,
+        "startup queries must not migrate or rewrite existing state"
+    );
+}
+
+#[test]
 fn shared_shortcut_add_validates_project_target_duplicates_and_persists_atomically() {
     let root = tempfile::tempdir().unwrap();
     let paths = paths(root.path());

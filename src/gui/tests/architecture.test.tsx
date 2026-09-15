@@ -62,6 +62,9 @@ it('pins native/default and fixture entry points to distinct compositions', () =
   const tauriAdapter = readFileSync(join(root, 'hosts/tauriInventoryAdapter.ts'), 'utf8');
   const tauriLayoutStore = readFileSync(join(root, 'hosts/tauriWorkspaceLayoutStore.ts'), 'utf8');
   const tauriMain = readFileSync(join(guiRoot, 'src-tauri/src/main.rs'), 'utf8');
+  const tauriBuild = readFileSync(join(guiRoot, 'src-tauri/build.rs'), 'utf8');
+  const nativeCapability = JSON.parse(readFileSync(join(guiRoot, 'src-tauri/capabilities/main.json'), 'utf8'));
+  const managementPermission = readFileSync(join(guiRoot, 'src-tauri/permissions/management.toml'), 'utf8');
 
   for (const html of [desktopHtml, defaultHtml]) {
     expect(html).toContain('/frontend/hosts/standalone.tsx');
@@ -76,7 +79,10 @@ it('pins native/default and fixture entry points to distinct compositions', () =
   for (const command of ['read_loadbot_catalogs', 'add_loadbot_catalog', 'add_loadbot_project', 'add_loadbot_shortcut', 'sync_loadbot_catalog']) {
     expect(tauriAdapter).toContain(command);
     expect(tauriMain).toContain(command);
+    expect(tauriBuild).toContain(`"${command}"`);
+    expect(managementPermission).toContain(`"${command}"`);
   }
+  expect(nativeCapability.permissions).toContain('manage-loadbot');
   expect(tauriMain).toContain('operations::catalog_add');
   expect(tauriMain).toContain('operations::tool_add');
   expect(tauriMain).toContain('operations::shortcut_add');

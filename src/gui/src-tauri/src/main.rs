@@ -48,28 +48,12 @@ struct CatalogIdentity {
 
 #[tauri::command]
 async fn read_loadbot_inventory() -> Result<Vec<Project>, DesktopError> {
-    // Paths and the synchronous, non-Send operation context are created on the worker.
-    // No caller-supplied path, shell string, or mutation/execution command is accepted.
-    tauri::async_runtime::spawn_blocking(move || {
-        let result = (|| -> anyhow::Result<Vec<Project>> {
-            let paths = Paths::discover()?;
-            let mut policy = Unattended;
-            let mut context = OperationContext::new(&mut policy);
-            context.process.terminal = false;
-            context
-                .run(|context| launcher::read_project_inventory(&paths, context))
-                .result
-        })();
-        result.map_err(|error| DesktopError {
-            kind: "operation",
-            message: format!("{error:#}"),
-        })
+    // Inventory and catalog context deliberately share the same path discovery
+    // helper, so the installed GUI resolves exactly the state used by the CLI.
+    run_loadbot_worker("inventory query", move |paths, context| {
+        launcher::read_project_inventory(paths, context)
     })
     .await
-    .map_err(|error| DesktopError {
-        kind: "worker",
-        message: format!("inventory worker failed: {error}"),
-    })?
 }
 
 #[tauri::command]

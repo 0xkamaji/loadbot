@@ -2,7 +2,12 @@ fn main() {
     let mut attributes =
         tauri_build::Attributes::new().app_manifest(tauri_build::AppManifest::new().commands(&[
             "read_loadbot_inventory",
+            "read_loadbot_catalogs",
             "open_loadbot_project",
+            "add_loadbot_catalog",
+            "add_loadbot_project",
+            "add_loadbot_shortcut",
+            "sync_loadbot_catalog",
             "read_loadbot_workspace_layout",
             "write_loadbot_workspace_layout",
         ]));

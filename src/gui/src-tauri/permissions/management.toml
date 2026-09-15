@@ -1,0 +1,10 @@
+[[permission]]
+identifier = "manage-loadbot"
+description = "Read configured catalogs and perform explicit catalog, project, and shortcut management operations."
+commands.allow = [
+  "read_loadbot_catalogs",
+  "add_loadbot_catalog",
+  "add_loadbot_project",
+  "add_loadbot_shortcut",
+  "sync_loadbot_catalog",
+]

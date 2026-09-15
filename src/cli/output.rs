@@ -100,6 +100,11 @@ impl Renderer {
                 println!("pushed initial catalog '{name}' to origin")
             }
             Notice::InitialCatalogNotPushed => println!("initial catalog commit was not pushed"),
+            // These typed stages are useful to live GUI consumers. Keep the CLI's
+            // established concise final sync output unchanged.
+            Notice::CatalogSyncStarted { .. }
+            | Notice::CatalogSyncRepositoryChecked { .. }
+            | Notice::CatalogSyncUpdateStarted { .. } => {}
             Notice::CatalogCurrent { name, new_commit } => {
                 println!("catalog '{name}' is already current at {new_commit}")
             }

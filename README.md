@@ -80,7 +80,9 @@ In the GUI, the compact header control switches session catalog context without
 changing Loadbot's configured default. `RELOAD LOCAL` only rereads local state;
 `SYNC CATALOG` is the separate explicit Git synchronization action. Project,
 shortcut, and catalog mutations use the same Rust validation and persistence
-operations as the CLI. See [Phase 4B real management](docs/gui-management.md).
+operations as the CLI. The resizable bottom workspace can show a bounded,
+session-only `ACTIVITY` feed for these operations; `TERMINAL` remains unconnected.
+See [Phase 4B real management](docs/gui-management.md).
 
 Loadbot requires Git and a Rust toolchain with Cargo 1.85 or newer because the crate uses Rust edition 2024. Cargo downloads the crate dependencies declared by `Cargo.toml` and `Cargo.lock`; the setup scripts do not install individual Rust crates.
 

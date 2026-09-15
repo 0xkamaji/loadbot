@@ -57,11 +57,11 @@ Native window ownership / browser dialog lifecycle remain outside the menu.
 | --- | --- |
 | `loadbot/contract.ts` | Semantic read and management capabilities plus inventory/catalog/input/result records. No React, host, fixture, filesystem, Rust, or control types. |
 | `loadbot/identity.ts` | Catalog-qualified project and source-qualified shortcut identity. No absolute installation paths. |
-| `loadbot/application/controller.ts` | Qualified session selection, authoritative reload, folder state, centralized mutation state, duplicate-submit prevention, sample values, drawer state, subscriptions and read lifetime. Pure TypeScript; no DOM or React runtime. |
+| `loadbot/application/controller.ts` | Qualified session selection, authoritative reload, folder state, centralized mutation state, bounded session activity, duplicate-submit prevention, sample values, drawer state, subscriptions and read lifetime. Pure TypeScript; no DOM or React runtime. |
 | `loadbot/application/sampleForms.ts` | Optional local demonstration fields/defaults and validation helpers. Separate from the backend contract. |
 | `loadbot/application/useLoadbotApplication.ts` | Thin React binding using `useSyncExternalStore`; owns subscription/effect cleanup. |
 | `loadbot/LoadbotMenu.tsx` | Public composition component accepting an adapter, host-selected workspace-layout store, optional sample forms, and optional shell callbacks. |
-| `loadbot/view/LoadbotMenuView.tsx`, `ManagementDialogs.tsx`, `ShortcutDetails.tsx`, `menu.css`, `workspaceLayout.ts` | Quiet catalog context/menu, compact forms, project navigation/folder affordances, shortcut list/details, local reload, pane preferences, fixture sample widgets, mascot, and non-executing terminal. Receives state/actions, not an adapter. |
+| `loadbot/view/LoadbotMenuView.tsx`, `ActivityFeed.tsx`, `ManagementDialogs.tsx`, `ShortcutDetails.tsx`, `menu.css`, `workspaceLayout.ts` | Quiet catalog context/menu, compact forms, project navigation/folder affordances, shortcut list/details, local reload, pane preferences, bounded activity presentation, fixture sample widgets, mascot, and non-executing terminal. Receives state/actions, not an adapter. |
 | `loadbot/fixtures/adapter.ts` | Fictional inventory behind `LoadbotAdapter`; each read returns an independent snapshot. |
 | `loadbot/fixtures/sampleForms.ts` | Separate UI-demo configuration keyed by qualified selection identity. Never sent to a backend. |
 | `ui/components.tsx`, `ui/Splitter.tsx` | Application frame, panel, button/icon button, menu row/list, splitter, input/path-selector, checkbox, status and drawer primitives. Generic labels, values, content and callbacks; no Loadbot data imports. |
@@ -83,7 +83,7 @@ interface LoadbotAdapter {
   addCatalog(input: AddCatalogInput): Promise<CatalogIdentity>;
   addProject(input: AddProjectInput): Promise<ProjectIdentity>;
   addShortcut(input: AddShortcutInput): Promise<ShortcutIdentity>;
-  syncCatalog(catalog: string): Promise<void>;
+  syncCatalog(catalog: string, onActivity?: CatalogSyncActivitySink): Promise<void>;
 }
 ```
 
@@ -115,6 +115,7 @@ not an invented partial-health state or silent empty success.
 - `openProjectFolder(id)` (qualified identity to adapter; controlled result state)
 - `selectCatalog(name)` (session context only; no persistent default change or sync)
 - `addCatalog`, `addProject`, `addShortcut`, `syncCatalog` (centralized operation state)
+- `selectBottomView(view)` (presentation-only Terminal/Activity choice)
 - `changeSampleInput(id, value)` / `useSamplePath(id)`
 - `toggleDrawer()`
 

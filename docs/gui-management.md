@@ -64,6 +64,15 @@ explicit commit/push step fails; the GUI never guesses or rolls that state back.
 Sync/local reload preserve still-valid project and shortcut selections in the same
 catalog. Switching catalogs deliberately clears cross-catalog selection.
 
+The resizable bottom workspace has `TERMINAL` and `ACTIVITY` views. Terminal remains
+an explicitly unconnected placeholder. Activity is a session-only, controller-owned
+feed capped at the newest 250 semantic entries. Explicit reload, folder opening, and
+management actions record start/completion/failure; management mutations also record
+their authoritative reread. Catalog sync streams typed core notices for validation,
+repository verification, update start, and current/updated completion through a
+Tauri channel. No CLI text, subprocess output, or Git command line is parsed, and no
+activity log is persisted.
+
 ## Phase boundary
 
 Fixtures remain isolated behind `LoadbotAdapter`; their management calls return a

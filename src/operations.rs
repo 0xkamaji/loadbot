@@ -524,7 +524,16 @@ pub fn catalog_sync(
     let _repository_lease = context.lease(&paths.catalog(name))?;
     let local = config::load(&paths.config())?;
     let source = configured_catalog(&local, name)?;
+    context.record(Notice::CatalogSyncStarted {
+        name: name.to_owned(),
+    });
     let destination = checked_catalog_repository(paths, name, source)?;
+    context.record(Notice::CatalogSyncRepositoryChecked {
+        name: name.to_owned(),
+    });
+    context.record(Notice::CatalogSyncUpdateStarted {
+        name: name.to_owned(),
+    });
     let (old_commit, new_commit) = git::update(&destination, None, context)
         .with_context(|| format!("refusing to sync catalog '{name}'"))?;
     if old_commit == new_commit {
@@ -2360,9 +2369,24 @@ mod tests {
 
         let outcome = catalog_sync(&paths, "personal", &mut context).unwrap();
         assert!(paths.catalog("personal").join("new.txt").is_file());
+        assert!(
+            matches!(outcome.notices.first(), Some(Notice::CatalogSyncStarted { name }) if name == "personal")
+        );
+        assert!(outcome.notices.iter().any(
+            |notice| matches!(notice, Notice::CatalogSyncRepositoryChecked { name } if name == "personal")
+        ));
+        assert!(outcome.notices.iter().any(
+            |notice| matches!(notice, Notice::CatalogSyncUpdateStarted { name } if name == "personal")
+        ));
         assert!(outcome.notices.iter().any(
             |notice| matches!(notice, Notice::CatalogSynced { name, .. } if name == "personal")
         ));
+        let catalog = catalog_list(&paths, &mut context).unwrap().remove(0);
+        assert_eq!(catalog.state, CatalogState::Installed);
+        assert!(
+            catalog.source.writable,
+            "sync must not change management eligibility"
+        );
     }
 
     #[test]

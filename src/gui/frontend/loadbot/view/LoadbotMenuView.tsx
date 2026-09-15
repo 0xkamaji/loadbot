@@ -6,6 +6,7 @@ import { clampSplit, Splitter } from '../../ui/Splitter';
 import mascot from '../../../loadbot-gui-assets/assets/branding/loadbot-header.png';
 import { ShortcutDetails } from './ShortcutDetails';
 import { ManagementDialogs, type ManagementDialog } from './ManagementDialogs';
+import { BottomWorkspace } from './ActivityFeed';
 import { decodePaneSizes, defaultPaneSizes, encodePaneSizes, type PaneSizes, type WorkspaceLayoutStore } from './workspaceLayout';
 import './menu.css';
 
@@ -104,6 +105,7 @@ export function LoadbotMenuView({ state, actions, host, mode, workspaceLayoutSto
           {!catalogs.length && <StatusDisplay>No catalogs configured.</StatusDisplay>}
           {mode === 'local' && <div className="lb-catalog-actions">
             <Button disabled={!currentCatalog || currentCatalog.state !== 'installed' || busy}
+              title="Sync catalog with its configured Git remote"
               onClick={() => { setCatalogMenuOpen(false); void actions.syncCatalog(); }}>SYNC CATALOG</Button>
             <Button disabled={busy} onClick={() => { setCatalogMenuOpen(false); actions.clearManagementStatus(); setManagementDialog('add-catalog'); }}>+ ADD CATALOG</Button>
           </div>}
@@ -171,10 +173,8 @@ export function LoadbotMenuView({ state, actions, host, mode, workspaceLayoutSto
       {drawerOpen && <Splitter orientation="horizontal" direction={-1} label="Resize terminal pane" value={paneSizes.terminal} limits={terminalLimits}
         onChange={(value) => previewPane('terminal', value)} onCommit={persistPreferences}
         onReset={() => resetPane('terminal')} />}
-      <BottomDrawer open={drawerOpen} id={drawerId} label="Terminal placeholder">
-        <h2>TERMINAL / NOT CONNECTED</h2>
-        <p>Workspace reserved for a future terminal capability.</p>
-        <p>No shell session, command input, execution, or output is connected.</p>
+      <BottomDrawer open={drawerOpen} id={drawerId} label="Bottom workspace">
+        <BottomWorkspace state={state} actions={actions} />
       </BottomDrawer>
     </div>
     <footer className="lb-toolbar">

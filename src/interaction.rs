@@ -206,6 +206,15 @@ pub enum Notice {
         name: String,
     },
     InitialCatalogNotPushed,
+    CatalogSyncStarted {
+        name: String,
+    },
+    CatalogSyncRepositoryChecked {
+        name: String,
+    },
+    CatalogSyncUpdateStarted {
+        name: String,
+    },
     CatalogCurrent {
         name: String,
         new_commit: String,

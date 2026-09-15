@@ -9,7 +9,10 @@ import { LoadbotMenu } from '../frontend/loadbot/LoadbotMenu';
 import { createLoadbotApplication } from '../frontend/loadbot/application/controller';
 import { projectKey, shortcutKey } from '../frontend/loadbot/identity';
 
-const tauri = vi.hoisted(() => ({ invoke: vi.fn(), isTauri: vi.fn(() => true) }));
+const tauri = vi.hoisted(() => ({
+  invoke: vi.fn(), isTauri: vi.fn(() => true),
+  Channel: class MockChannel<T> { onmessage: (message: T) => void = () => {}; },
+}));
 vi.mock('@tauri-apps/api/core', () => tauri);
 const management = (names: readonly string[] = ['personal']): ManagementBridge => ({
   readCatalogs: async () => names.map((name, index) => ({ name, url: 'test', writable: true, state: 'installed', default: index === 0 })),
@@ -109,7 +112,11 @@ describe('one platform-neutral real read adapter', () => {
       if (command === 'add_loadbot_catalog') return { catalog: input?.name };
       if (command === 'add_loadbot_project') return { catalog: input?.catalog, tool: input?.name };
       if (command === 'add_loadbot_shortcut') return { catalog: input?.catalog, tool: input?.tool, name: input?.name, path: input?.path };
-      if (command === 'sync_loadbot_catalog') return undefined;
+      if (command === 'sync_loadbot_catalog') {
+        const channel = input?.onActivity as InstanceType<typeof tauri.Channel>;
+        channel.onmessage({ stage: 'repository-checked', catalog: input?.catalog } as never);
+        return undefined;
+      }
       return [];
     });
     const adapter = createTauriLoadbotAdapter();
@@ -117,12 +124,14 @@ describe('one platform-neutral real read adapter', () => {
     await adapter.addCatalog({ name: 'other', url: 'other-repo', writable: false });
     await adapter.addProject({ catalog: 'personal', name: 'demo', url: 'tool-repo', commit: false, push: false });
     await adapter.addShortcut({ catalog: 'personal', tool: 'demo', name: 'inspect', path: 'scripts/inspect.py', runner: 'python' });
-    await adapter.syncCatalog('personal');
+    const activity = vi.fn();
+    await adapter.syncCatalog('personal', activity);
+    expect(activity).toHaveBeenCalledWith({ stage: 'repository-checked', catalog: 'personal', detail: undefined });
     expect(tauri.invoke.mock.calls.slice(1)).toEqual([
       ['add_loadbot_catalog', { name: 'other', url: 'other-repo', writable: false }],
       ['add_loadbot_project', { catalog: 'personal', name: 'demo', url: 'tool-repo', commit: false, push: false }],
       ['add_loadbot_shortcut', { catalog: 'personal', tool: 'demo', name: 'inspect', path: 'scripts/inspect.py', runner: 'python' }],
-      ['sync_loadbot_catalog', { catalog: 'personal' }],
+      ['sync_loadbot_catalog', { catalog: 'personal', onActivity: expect.any(tauri.Channel) }],
     ]);
     expect(JSON.stringify(tauri.invoke.mock.calls)).not.toMatch(/shell|powershell\.exe|xdg-open/);
   });

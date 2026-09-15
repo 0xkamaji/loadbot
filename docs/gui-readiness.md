@@ -115,7 +115,8 @@ CLI tools default to inherited stdin/stdout/stderr. Git's captured CLI execution
 can still use its terminal for credentials. GUI streaming uses null stdin and
 separate stdout/stderr pipes; it is not a terminal. Interactive editors, prompts,
 and full-screen terminal tools still need inherited execution in a real terminal
-or a future terminal/PTY adapter. `terminal = false` disables Loadbot's terminal
+or an external terminal/PTY owner such as a future Rot application. Loadbot's GUI
+does not provide that general-purpose facility. `terminal = false` disables Loadbot's terminal
 handoff, not every child program's ability to open a terminal independently.
 
 The backend drains both pipes concurrently and manages cancellation/cleanup.

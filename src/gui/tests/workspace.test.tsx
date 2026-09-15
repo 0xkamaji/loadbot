@@ -28,7 +28,7 @@ describe('workspace pane dimensions', () => {
     render(<LoadbotMenu adapter={fixtureAdapter} mode="fixture" workspaceLayoutStore={store} />);
     const projects = await screen.findByRole('separator', { name: 'Resize projects pane' });
     const shortcuts = screen.getByRole('separator', { name: 'Resize shortcuts and selected shortcut' });
-    const terminal = screen.getByRole('separator', { name: 'Resize terminal pane' });
+    const terminal = screen.getByRole('separator', { name: 'Resize console pane' });
     await vi.waitFor(() => expect(projects).toHaveAttribute('aria-valuenow', '320'));
     expect(shortcuts).toHaveAttribute('aria-valuenow', '240');
     expect(terminal).toHaveAttribute('aria-valuenow', '180');
@@ -67,7 +67,7 @@ describe('workspace pane dimensions', () => {
     render(<LoadbotMenu adapter={fixtureAdapter} mode="fixture" workspaceLayoutStore={store} />);
     await vi.waitFor(() => expect(screen.getByRole('separator', { name: 'Resize projects pane' })).toHaveAttribute('aria-valuenow', '532'));
     expect(screen.getByRole('separator', { name: 'Resize shortcuts and selected shortcut' })).toHaveAttribute('aria-valuenow', '292');
-    expect(screen.getByRole('separator', { name: 'Resize terminal pane' })).toHaveAttribute('aria-valuenow', '322');
+    expect(screen.getByRole('separator', { name: 'Resize console pane' })).toHaveAttribute('aria-valuenow', '322');
     expect(write).not.toHaveBeenCalled();
   });
 
@@ -82,17 +82,17 @@ describe('workspace pane dimensions', () => {
     expect(projects).toHaveAttribute('aria-valuenow', '272');
   });
 
-  it('switches Terminal and Activity without changing pane dimensions or persisted layout', async () => {
+  it('switches Command and Activity without changing pane dimensions or persisted layout', async () => {
     const write = vi.fn<WorkspaceLayoutStore['write']>(async () => {});
     const store: WorkspaceLayoutStore = { read: async () => undefined, write };
     render(<LoadbotMenu adapter={fixtureAdapter} mode="fixture" workspaceLayoutStore={store} />);
-    const terminalSize = await screen.findByRole('separator', { name: 'Resize terminal pane' });
+    const terminalSize = await screen.findByRole('separator', { name: 'Resize console pane' });
     const before = terminalSize.getAttribute('aria-valuenow');
     fireEvent.click(screen.getByRole('tab', { name: 'ACTIVITY' }));
     expect(screen.getByRole('tabpanel', { name: 'Activity' })).toHaveTextContent('No activity yet.');
     expect(terminalSize).toHaveAttribute('aria-valuenow', before);
-    fireEvent.click(screen.getByRole('tab', { name: 'TERMINAL' }));
-    expect(screen.getByRole('tabpanel', { name: 'Terminal' })).toHaveTextContent('NOT CONNECTED');
+    fireEvent.click(screen.getByRole('tab', { name: 'COMMAND' }));
+    expect(screen.getByRole('tabpanel', { name: 'Command' })).toHaveTextContent('Loadbot command console');
     expect(terminalSize).toHaveAttribute('aria-valuenow', before);
     expect(write).not.toHaveBeenCalled();
   });

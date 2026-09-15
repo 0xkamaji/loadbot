@@ -3,6 +3,7 @@ import type {
   LoadbotProject, LoadbotShortcut,
 } from '../contract';
 import { projectKey, selectionKey, shortcutKey } from '../identity';
+import { executeLoadbotCommand, type CommandResult } from './command';
 import { initialValues, missingInputs, noSampleForms, type SampleField, type SampleForms, type SampleValues } from './sampleForms';
 
 export type InventoryState =
@@ -34,6 +35,16 @@ export interface ActivityEntry {
   readonly detail?: string;
 }
 export const ACTIVITY_HISTORY_LIMIT = 250;
+export const COMMAND_HISTORY_LIMIT = 100;
+export interface CommandEntry {
+  readonly id: number;
+  readonly input: string;
+  readonly result: CommandResult;
+}
+export interface CommandState {
+  readonly entries: readonly CommandEntry[];
+  readonly history: readonly string[];
+}
 
 export interface LoadbotState {
   readonly inventory: InventoryState;
@@ -45,7 +56,8 @@ export interface LoadbotState {
   readonly values: SampleValues;
   readonly missingInputIds: readonly string[];
   readonly drawerOpen: boolean;
-  readonly bottomView: 'terminal' | 'activity';
+  readonly bottomView: 'command' | 'activity';
+  readonly command: CommandState;
   readonly activity: readonly ActivityEntry[];
   readonly management: ManagementState;
   readonly projectFolder: {
@@ -66,7 +78,8 @@ export interface LoadbotActions {
   addShortcut(input: Omit<AddShortcutInput, 'catalog' | 'tool'>): Promise<boolean>;
   syncCatalog(): Promise<boolean>;
   clearManagementStatus(): void;
-  selectBottomView(view: 'terminal' | 'activity'): void;
+  selectBottomView(view: 'command' | 'activity'): void;
+  submitCommand(input: string): boolean;
   changeSampleInput(id: string, value: string | boolean): void;
   useSamplePath(id: string): void;
   toggleDrawer(): void;
@@ -80,13 +93,15 @@ interface ReadPreference { catalog?: string; projectId?: string; shortcutId?: st
 export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: SampleForms = noSampleForms) {
   let state: LoadbotState = {
     inventory: { status: 'loading' }, catalogState: { status: 'loading' }, fields: [], values: {},
-    missingInputIds: [], drawerOpen: true, bottomView: 'terminal', activity: [], management: { status: 'idle' },
+    missingInputIds: [], drawerOpen: true, bottomView: 'command', command: { entries: [], history: [] },
+    activity: [], management: { status: 'idle' },
     projectFolder: { status: 'idle' },
   };
   const listeners = new Set<() => void>();
   let generation = 0;
   let folderGeneration = 0;
   let activityId = 0;
+  let commandId = 0;
   const publish = (next: LoadbotState) => {
     state = next;
     listeners.forEach((listener) => listener());
@@ -281,6 +296,25 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
     },
     clearManagementStatus() { if (state.management.status !== 'submitting') publish({ ...state, management: { status: 'idle' } }); },
     selectBottomView(view) { publish({ ...state, bottomView: view }); },
+    submitCommand(input) {
+      const submitted = input.trim();
+      if (!submitted) return false;
+      const projects = state.inventory.status === 'ready' ? state.inventory.projects : [];
+      const result = executeLoadbotCommand(submitted, {
+        inventoryStatus: state.inventory.status,
+        projects,
+        currentCatalog: state.currentCatalog,
+        selectedProject: state.project,
+      });
+      publish({
+        ...state,
+        command: {
+          entries: [...state.command.entries, { id: ++commandId, input: submitted, result }].slice(-COMMAND_HISTORY_LIMIT),
+          history: [...state.command.history, submitted].slice(-COMMAND_HISTORY_LIMIT),
+        },
+      });
+      return true;
+    },
     changeSampleInput,
     useSamplePath(id) {
       const field = state.fields.find((item) => item.id === id);

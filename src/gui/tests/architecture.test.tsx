@@ -29,7 +29,7 @@ it('keeps fixtures/hosts/transport out of views and capabilities out of UI primi
       if (source.startsWith('loadbot/application/') && /^(ui\/|loadbot\/view\/)/.test(target)) violations.push(message);
       if (source.startsWith('loadbot/view/') && target.includes('useLoadbotApplication')) violations.push(message);
       if (!source.startsWith('hosts/') && /(@tauri-apps|^node:)/.test(target)) violations.push(message);
-      const headless = /^(loadbot\/(contract|identity)|loadbot\/application\/(controller|sampleForms)|loadbot\/fixtures\/adapter)/.test(source);
+      const headless = /^(loadbot\/(contract|identity)|loadbot\/application\/(command|controller|sampleForms)|loadbot\/fixtures\/adapter)/.test(source);
       if (headless && /^(react|ui\/|loadbot\/view\/)/.test(target)) violations.push(message);
     }
     function visit(node: ts.Node) {
@@ -61,6 +61,7 @@ it('pins native/default and fixture entry points to distinct compositions', () =
   const fixtureComposition = readFileSync(join(root, 'hosts/fixtureComposition.ts'), 'utf8');
   const tauriAdapter = readFileSync(join(root, 'hosts/tauriInventoryAdapter.ts'), 'utf8');
   const tauriLayoutStore = readFileSync(join(root, 'hosts/tauriWorkspaceLayoutStore.ts'), 'utf8');
+  const command = readFileSync(join(root, 'loadbot/application/command.ts'), 'utf8');
   const tauriMain = readFileSync(join(guiRoot, 'src-tauri/src/main.rs'), 'utf8');
   const tauriBuild = readFileSync(join(guiRoot, 'src-tauri/build.rs'), 'utf8');
   const nativeCapability = JSON.parse(readFileSync(join(guiRoot, 'src-tauri/capabilities/main.json'), 'utf8'));
@@ -96,6 +97,8 @@ it('pins native/default and fixture entry points to distinct compositions', () =
   expect(tauriLayoutStore).toContain("invoke<unknown>('read_loadbot_workspace_layout')");
   expect(tauriLayoutStore).toContain("invoke('write_loadbot_workspace_layout', { contents })");
   expect(tauriMain).toContain('app.path().app_local_data_dir()');
+  expect(command).not.toMatch(/@tauri-apps|child_process|Command::new|\.spawn\(|powershell|cmd\.exe|\b(?:bash|sh)\b/);
+  expect(command).not.toMatch(/cli\/|CLI output|invoke\(/);
 
   expect(fixtureHtml).toContain('/frontend/hosts/fixture.tsx');
   expect(fixtureEntry).toContain("from './fixtureComposition'");

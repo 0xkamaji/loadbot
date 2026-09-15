@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from 'vitest';
-import { createLoadbotApplication } from '../frontend/loadbot/application/controller';
+import { COMMAND_HISTORY_LIMIT, createLoadbotApplication } from '../frontend/loadbot/application/controller';
 import { fixtureAdapter } from '../frontend/loadbot/fixtures/adapter';
 import { fixtureSampleForms } from '../frontend/loadbot/fixtures/sampleForms';
 import { projectKey, shortcutKey } from '../frontend/loadbot/identity';
@@ -43,6 +43,33 @@ describe('headless capability and application boundary', () => {
     expect(application.getSnapshot().shortcut?.source).toBe('personal');
     expect(injected.readInventory).toHaveBeenCalledOnce();
     stop();
+  });
+
+  it('owns bounded command history over semantic inventory without producing Activity or adapter side effects', async () => {
+    const readInventory = vi.fn(() => fixtureAdapter.readInventory());
+    const injected = adapter(readInventory);
+    const application = createLoadbotApplication(injected);
+    application.start();
+    await vi.waitFor(() => expect(application.getSnapshot().inventory.status).toBe('ready'));
+    const activity = application.getSnapshot().activity;
+
+    expect(application.actions.submitCommand('   ')).toBe(false);
+    expect(application.actions.submitCommand('projects')).toBe(true);
+    expect(application.getSnapshot().command.entries[0]).toMatchObject({
+      input: 'projects', result: { kind: 'projects', catalog: 'personal' },
+    });
+    expect(application.getSnapshot().activity).toBe(activity);
+    expect(readInventory).toHaveBeenCalledOnce();
+    expect(injected.addProject).not.toHaveBeenCalled();
+    expect(injected.syncCatalog).not.toHaveBeenCalled();
+
+    for (let index = 0; index < COMMAND_HISTORY_LIMIT + 4; index++) {
+      application.actions.submitCommand(`unknown-${index}`);
+    }
+    expect(application.getSnapshot().command.entries).toHaveLength(COMMAND_HISTORY_LIMIT);
+    expect(application.getSnapshot().command.history).toHaveLength(COMMAND_HISTORY_LIMIT);
+    expect(application.getSnapshot().command.history[0]).toBe('unknown-4');
+    expect(application.getSnapshot().activity).toBe(activity);
   });
 
   it('starts from a pre-management configured catalog without registration or migration', async () => {

@@ -23,7 +23,12 @@ split persistence. It does not add management mutation or execution.
 
 The [Phase 4B management pass](gui-management.md) extends those seams with
 backend-authoritative catalog/project/shortcut mutations and explicit catalog
-synchronization. Execution and terminal capability remain absent.
+synchronization. Execution and general-purpose terminal capability remain absent.
+
+The [Loadbot Console](gui-console.md) adds a deterministic, Loadbot-specific Command
+view beside Activity. Its initial read-only commands query the controller's existing
+semantic inventory snapshot. It does not invoke the CLI, parse CLI output, spawn a
+shell, or add a Tauri/backend capability.
 
 ## Before and after
 
@@ -57,11 +62,12 @@ Native window ownership / browser dialog lifecycle remain outside the menu.
 | --- | --- |
 | `loadbot/contract.ts` | Semantic read and management capabilities plus inventory/catalog/input/result records. No React, host, fixture, filesystem, Rust, or control types. |
 | `loadbot/identity.ts` | Catalog-qualified project and source-qualified shortcut identity. No absolute installation paths. |
-| `loadbot/application/controller.ts` | Qualified session selection, authoritative reload, folder state, centralized mutation state, bounded session activity, duplicate-submit prevention, sample values, drawer state, subscriptions and read lifetime. Pure TypeScript; no DOM or React runtime. |
+| `loadbot/application/controller.ts` | Qualified session selection, authoritative reload, folder state, centralized mutation state, bounded session activity and Command history, duplicate-submit prevention, sample values, drawer state, subscriptions and read lifetime. Pure TypeScript; no DOM or React runtime. |
+| `loadbot/application/command.ts` | Small explicit read-only Loadbot command registry, conservative tokenizer, qualified identity resolution, and structured results over application inventory. No React, host, CLI, Tauri, shell, or process dependency. |
 | `loadbot/application/sampleForms.ts` | Optional local demonstration fields/defaults and validation helpers. Separate from the backend contract. |
 | `loadbot/application/useLoadbotApplication.ts` | Thin React binding using `useSyncExternalStore`; owns subscription/effect cleanup. |
 | `loadbot/LoadbotMenu.tsx` | Public composition component accepting an adapter, host-selected workspace-layout store, optional sample forms, and optional shell callbacks. |
-| `loadbot/view/LoadbotMenuView.tsx`, `ActivityFeed.tsx`, `ManagementDialogs.tsx`, `ShortcutDetails.tsx`, `menu.css`, `workspaceLayout.ts` | Quiet catalog context/menu, compact forms, project navigation/folder affordances, shortcut list/details, local reload, pane preferences, bounded activity presentation, fixture sample widgets, mascot, and non-executing terminal. Receives state/actions, not an adapter. |
+| `loadbot/view/LoadbotMenuView.tsx`, `CommandPane.tsx`, `ActivityFeed.tsx`, `ManagementDialogs.tsx`, `ShortcutDetails.tsx`, `menu.css`, `workspaceLayout.ts` | Quiet catalog context/menu, compact forms, project navigation/folder affordances, shortcut list/details, local reload, pane preferences, Command/Activity presentation, fixture sample widgets, and mascot. Receives state/actions, not an adapter. |
 | `loadbot/fixtures/adapter.ts` | Fictional inventory behind `LoadbotAdapter`; each read returns an independent snapshot. |
 | `loadbot/fixtures/sampleForms.ts` | Separate UI-demo configuration keyed by qualified selection identity. Never sent to a backend. |
 | `ui/components.tsx`, `ui/Splitter.tsx` | Application frame, panel, button/icon button, menu row/list, splitter, input/path-selector, checkbox, status and drawer primitives. Generic labels, values, content and callbacks; no Loadbot data imports. |
@@ -115,7 +121,8 @@ not an invented partial-health state or silent empty success.
 - `openProjectFolder(id)` (qualified identity to adapter; controlled result state)
 - `selectCatalog(name)` (session context only; no persistent default change or sync)
 - `addCatalog`, `addProject`, `addShortcut`, `syncCatalog` (centralized operation state)
-- `selectBottomView(view)` (presentation-only Terminal/Activity choice)
+- `selectBottomView(view)` (presentation-only Command/Activity choice)
+- `submitCommand(input)` (registered Loadbot read-only command over current application state)
 - `changeSampleInput(id, value)` / `useSamplePath(id)`
 - `toggleDrawer()`
 
@@ -145,6 +152,13 @@ Required-input state is a list of field IDs, not user-facing success text. The
 view chooses wording and widgets (for example, a semantic boolean sample value
 is presented as a checkbox). Input readiness never implies execution success.
 Backend failures are distinct from empty successful inventory snapshots.
+
+Command transcript and recall history are controller-owned, session-only state, each
+capped at 100 submitted commands. Command results are structured application values,
+not ANSI or CLI-formatted output. Read-only commands do not create Activity entries:
+Command records what the user asked, while Activity records real operational work.
+Future mutating commands must call the same controller semantic actions as buttons;
+they must not gain a parallel adapter or persistence route.
 
 ### Sample forms are not a Loadbot input schema
 
@@ -218,8 +232,9 @@ to Rust, which reuses existing installation validation before choosing the OS fi
 manager. Catalog summaries expose configured source/access/default and inspected
 installed/missing/mismatch state. Local presentation omits sample forms and does not
 claim launchability. The controller's `start()` remains a local initial read, not
-catalog synchronization. See the [management guide](gui-management.md). Execution,
-output, and terminal integration remain a separate future review.
+catalog synchronization. See the [management guide](gui-management.md). The Console
+is documented separately; shortcut execution, process output, and PTY integration
+remain absent by design.
 
 ## Historical verification of the structural pass
 

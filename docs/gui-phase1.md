@@ -108,8 +108,9 @@ and `references/02-interface-kit.png` beneath `src/gui/loadbot-gui-assets/`:
 2. Select actual local projects and shortcuts; verify catalog/source qualification,
    descriptions and relative paths. Run must remain disabled, with no sample
    inputs injected into the native local-data view.
-3. Toggle Terminal twice and check retained selection. The drawer must say it is
-   not connected and offer no shell input.
+3. Toggle Console twice and check retained selection. The current drawer has
+   `COMMAND` and `ACTIVITY` tabs; Command accepts only registered Loadbot commands,
+   never shell input. See [Loadbot Console](gui-console.md).
 4. Use Tab/Shift+Tab, arrow keys, Home/End, Enter/Space; check focus versus selection.
    Scroll the long project/shortcut labels and resize down to 420 × 480. Run and
    the toolbar must remain reachable by scrolling.
@@ -182,8 +183,9 @@ There are no Tauri frontend imports anywhere in the reusable menu.
   Opening/closing the drawer leaves selection, values, and checkbox state intact.
 - Add project, Refresh catalog, Open project folder, and Run are disabled with
   nearby explanations. No sample operation is presented as a successful mutation.
-- The beige drawer is labeled **TERMINAL / NOT CONNECTED**. It contains explanatory
-  text only, without a shell prompt, input field, or simulated output.
+- The beige drawer from this historical phase is now the **Console**, with a narrow
+  Loadbot-specific **COMMAND** view and structured **ACTIVITY**. It remains without
+  a shell, PTY, arbitrary process input, or simulated execution output.
 - Tab/Shift+Tab move among enabled controls. Arrow Up/Down and Home/End move focus
   within a list; Enter/Space activate a focused row. Focus and hover do not change
   selection. Selected skins stay selected on hover. Lists scroll independently;

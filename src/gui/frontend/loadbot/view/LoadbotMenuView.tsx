@@ -29,7 +29,7 @@ export function LoadbotMenuView({ state, actions, host, mode, workspaceLayoutSto
   const preferenceGeneration = useRef(0);
   const workspaceRef = useRef<HTMLDivElement>(null);
   const rightRef = useRef<HTMLElement>(null);
-  const mainTerminalRef = useRef<HTMLDivElement>(null);
+  const mainConsoleRef = useRef<HTMLDivElement>(null);
   const projectLimits = () => {
     const total = workspaceRef.current?.clientWidth || 800;
     const min = Math.min(180, Math.max(120, total - 260));
@@ -39,14 +39,14 @@ export function LoadbotMenuView({ state, actions, host, mode, workspaceLayoutSto
     const total = rightRef.current?.clientHeight || 450;
     return { min: 110, max: Math.max(110, Math.min(640, total - 158)) };
   };
-  const terminalLimits = () => {
-    const total = mainTerminalRef.current?.clientHeight || 580;
+  const consoleLimits = () => {
+    const total = mainConsoleRef.current?.clientHeight || 580;
     return { min: 88, max: Math.max(88, Math.min(440, total - 258)) };
   };
   const clampToLayout = (sizes: PaneSizes): PaneSizes => ({
     projects: clampSplit(sizes.projects, projectLimits()),
     shortcuts: clampSplit(sizes.shortcuts, shortcutLimits()),
-    terminal: clampSplit(sizes.terminal, terminalLimits()),
+    terminal: clampSplit(sizes.terminal, consoleLimits()),
   });
   const previewPane = (name: keyof PaneSizes, value: number) => {
     preferenceGeneration.current++;
@@ -81,7 +81,7 @@ export function LoadbotMenuView({ state, actions, host, mode, workspaceLayoutSto
     clampToWindow();
     window.addEventListener('resize', clampToWindow);
     const observer = typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(clampToWindow);
-    for (const element of [workspaceRef.current, rightRef.current, mainTerminalRef.current]) {
+    for (const element of [workspaceRef.current, rightRef.current, mainConsoleRef.current]) {
       if (element) observer?.observe(element);
     }
     return () => { window.removeEventListener('resize', clampToWindow); observer?.disconnect(); };
@@ -116,7 +116,7 @@ export function LoadbotMenuView({ state, actions, host, mode, workspaceLayoutSto
       </Button>
       {host?.onClose && <IconButton icon="close" label="Close Loadbot menu" onClick={host.onClose} />}
     </header>
-    <div className={`lb-main-terminal ${drawerOpen ? '' : 'lb-terminal-closed'}`} ref={mainTerminalRef}
+    <div className={`lb-main-console ${drawerOpen ? '' : 'lb-console-closed'}`} ref={mainConsoleRef}
       style={drawerOpen ? { gridTemplateRows: `minmax(0, 1fr) 8px ${paneSizes.terminal}px` } : undefined}>
       <div className="lb-workspace" ref={workspaceRef} style={{ gridTemplateColumns: `${paneSizes.projects}px 8px minmax(0, 1fr)` }}>
         <Panel className="lb-sidebar" aria-label="Projects panel">
@@ -170,7 +170,7 @@ export function LoadbotMenuView({ state, actions, host, mode, workspaceLayoutSto
           </section>
         </Panel>
       </div>
-      {drawerOpen && <Splitter orientation="horizontal" direction={-1} label="Resize terminal pane" value={paneSizes.terminal} limits={terminalLimits}
+      {drawerOpen && <Splitter orientation="horizontal" direction={-1} label="Resize console pane" value={paneSizes.terminal} limits={consoleLimits}
         onChange={(value) => previewPane('terminal', value)} onCommit={persistPreferences}
         onReset={() => resetPane('terminal')} />}
       <BottomDrawer open={drawerOpen} id={drawerId} label="Bottom workspace">

@@ -8,6 +8,8 @@ native GUI launch. The following sections are a **historical record** of the ear
 verification environment/publication state, not instructions to resume an old branch.
 For the structural pass starting from `5503ae9ce0cbbd65d54f9b3bf0ae6c6b44e0549f`
 and its fresh check results, see [GUI architecture](gui-architecture.md).
+The subsequent [real read-only inventory phase](gui-read-only.md) supersedes the
+fixture-only runtime limitations below and records Windows/WSL/Linux status separately.
 
 ## Historical follow-up status — 2026-09-14
 

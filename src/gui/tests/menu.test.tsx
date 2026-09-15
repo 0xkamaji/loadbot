@@ -61,7 +61,7 @@ describe('injected menu outside Tauri', () => {
     const adapter: LoadbotAdapter = { readInventory: vi.fn(async () => [{ catalog: 'test', tool: 'injected', entries: [] }]) };
     const close = vi.fn();
     const user = userEvent.setup();
-    render(<div style={{ width: 700, height: 500 }}><LoadbotMenu adapter={adapter} host={{ onClose: close }} /></div>);
+    render(<div style={{ width: 700, height: 500 }}><LoadbotMenu adapter={adapter} mode="fixture" host={{ onClose: close }} /></div>);
     expect(await screen.findByRole('button', { name: 'injected test' })).toBeInTheDocument();
     expect(screen.getByText('No shortcuts in this fixture project.')).toBeInTheDocument();
     await user.keyboard('{Escape}');
@@ -75,13 +75,13 @@ describe('injected menu outside Tauri', () => {
     let resolve!: (projects: readonly LoadbotProject[]) => void;
     const slow: LoadbotAdapter = { readInventory: () => new Promise((done) => { resolve = done; }) };
     const empty: LoadbotAdapter = { readInventory: async () => [] };
-    const view = render(<LoadbotMenu adapter={slow} />);
+    const view = render(<LoadbotMenu adapter={slow} mode="fixture" />);
     await act(async () => {});
-    view.rerender(<LoadbotMenu adapter={empty} />);
+    view.rerender(<LoadbotMenu adapter={empty} mode="fixture" />);
     await screen.findByText('No fixture projects available.');
     await act(async () => resolve([{ catalog: 'old', tool: 'stale', entries: [] }]));
     expect(screen.queryByRole('button', { name: 'stale old' })).not.toBeInTheDocument();
-    view.rerender(<LoadbotMenu adapter={{ readInventory: async () => { throw new Error('Fixture read failed'); } }} />);
+    view.rerender(<LoadbotMenu adapter={{ readInventory: async () => { throw new Error('Fixture read failed'); } }} mode="fixture" />);
     expect(await screen.findByText('Fixture unavailable: Fixture read failed')).toBeInTheDocument();
   });
 });

@@ -3,7 +3,7 @@ import { expect, test } from '@playwright/test';
 test('approved skins, focus, scrolling, resizing, and drawer preserve a usable menu', async ({ page }, testInfo) => {
   const errors: string[] = [];
   page.on('pageerror', (error) => errors.push(error.message));
-  await page.goto('/');
+  await page.goto('/fixture.html');
   await expect(page.getByRole('heading', { name: 'Malware triage' })).toBeVisible();
   await page.evaluate(() => document.fonts.ready);
   await page.screenshot({ path: testInfo.outputPath('main-1000x680.png') });

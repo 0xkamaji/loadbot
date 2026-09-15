@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "read-local-inventory"
+description = "Read local Loadbot inventory through the existing library. No mutations or execution."
+commands.allow = ["read_loadbot_inventory"]

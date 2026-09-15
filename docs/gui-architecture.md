@@ -2,17 +2,19 @@
 
 ## Baseline and scope
 
-This structural pass started on clean, fetched, up-to-date `main` at
+The structural pass started on clean, fetched, up-to-date `main` at
 `5503ae9ce0cbbd65d54f9b3bf0ae6c6b44e0549f`. This is the authoritative consolidated
 baseline, including the successfully launched native Phase 1 shell (reported by
 the maintainer), GUI verification cleanup, PowerShell empty-PATH fix/regression
 coverage, and Windows Vite/Tauri watcher exclusion. Do not restart from an older
 `fix/*` branch.
 
-The UI is still a fixture preview. This pass changes responsibility boundaries,
-not artwork, layout, backend behavior, or capabilities. It adds no framework,
-package dependency, live data adapter, executable operation, terminal, Rot plugin
-system, transport protocol, or model service.
+The subsequent [real read-only data phase](gui-read-only.md) started from clean
+`main` at `6cbc60964b394b9ce7e514509635e87776c81410`, after the maintainer launched
+the refactored native Windows shell successfully. The normal standalone entry
+now uses the existing Rust inventory through one platform-neutral Tauri query.
+Fixtures remain explicit development/test composition. No mutation, execution,
+terminal, Rot integration, or model service is connected.
 
 ## Before and after
 
@@ -26,9 +28,9 @@ One stylesheet mixed skins and application composition.
 Now the dependency direction is:
 
 ```text
-Loadbot core (unchanged, not connected)
-           ↓ future implementation
-LoadbotAdapter contract ← fixture adapter
+Loadbot core: launcher::read_project_inventory
+           ↓ read_loadbot_inventory (thin Tauri worker query)
+LoadbotAdapter contract ← real adapter OR explicit fixture adapter
            ↓
 headless Loadbot application state/actions ← injected sample-form configuration
            ↓ React binding
@@ -55,9 +57,11 @@ Native window ownership / browser dialog lifecycle remain outside the menu.
 | `loadbot/fixtures/sampleForms.ts` | Separate UI-demo configuration keyed by qualified selection identity. Never sent to a backend. |
 | `ui/components.tsx` | Application frame, panel, button/icon button, menu row/list, input/path-selector, checkbox, status and drawer primitives. Generic labels, values, content and callbacks; no Loadbot data imports. |
 | `ui/theme.ts`, `ui/theme.css` | Approved PNG asset mapping, nine-slice tokens, colors, font, spacing, control states and shared shell skins. |
-| `hosts/fixtureComposition.ts` | The current composition root choosing the fixture adapter and sample forms. |
+| `hosts/tauriInventoryAdapter.ts` | One Windows/Linux real read adapter: invokes the native query, checks the structured projection, and normalizes errors, not paths. |
+| `hosts/realComposition.ts` | Normal standalone composition: real adapter, local/read-only presentation, no sample forms. |
+| `hosts/fixtureComposition.ts` | Explicit development/test composition choosing the fixture adapter and sample forms. |
 | `hosts/standalone.tsx`, `embed.tsx`, `host.css` | Viewport or parent-overlay ownership, mount/unmount, parent Close/Escape/focus behavior. The browser overlay is still dev-only. |
-| `../src-tauri/` | Existing native Tauri window/lifecycle and independent Cargo workspace; no backend commands registered. |
+| `../src-tauri/` | Native lifecycle and independent workspace; the sole `read_loadbot_inventory` command delegates to the library, with a read-only main-window capability. |
 
 ## Consumed capability contract
 
@@ -77,12 +81,16 @@ Records retain catalog/tool, name, repository-relative path, optional descriptio
 optional runner identifier, and catalog/personal source. These are Loadbot domain
 concepts, not executable strings or Rust implementation handles. The adapter
 returns caller-owned snapshots and rejects on failure. Callers treat returned
-records and application snapshots as readonly. No serialized IPC wire format,
-capability discovery, or protocol version is claimed by this TypeScript port.
+records and application snapshots as readonly. The Tauri bridge serializes this
+minimal projection; it adds no capability-discovery system or versioned helper
+protocol to the TypeScript port.
 
 The old fixture-only `mode` discriminator is removed from the backend interface;
-being a fixture is a composition choice. The current Loadbot view deliberately
-retains its fixture banner and messages until the read-only-data phase is reviewed.
+being a fixture is a composition choice. Presentation receives a separate
+`local`/`fixture` mode, defaulting to local. Only explicit fixture composition
+retains fixture labels and sample forms. See [read semantics and failures](gui-read-only.md#observational-startup-and-failures)
+for the complete-snapshot policy: a skipped catalog is an explicit read failure,
+not an invented partial-health state or silent empty success.
 
 `LoadbotActions` contains only working local transitions:
 
@@ -136,7 +144,7 @@ framework/package. A second design system could instead consume the headless
 application and semantic contract without importing this UI directory.
 
 Projects, catalogs, shortcuts, logical identities, selection rules, demo forms,
-runner/source wording, the fixture banner, and Loadbot's two-column layout remain
+runner/source wording, source labeling, and Loadbot's two-column layout remain
 explicitly Loadbot-specific. DOM focus and arrow-key behavior stay in the list
 primitive; native/window focus and Close stay in the host. Loading/empty/error
 messages remain Loadbot presentation over a generic status primitive; no unnecessary
@@ -179,24 +187,22 @@ path. Subscription infrastructure here is for application/UI state; it is not a
 model API or an excuse to run a model inside state transitions. No events such as
 `shortcut_completed` are emitted now because execution does not exist here.
 
-## Review before the next read-only-data phase
+## Read-only implementation and next review
 
-1. Keep the read adapter thin over existing backend inventory/query contracts;
-   do not parse CLI text or move repository validation into the view. Preserve
-   qualified identities and source collisions. Inventory is not launchability.
-2. Agree on read-only catalog/status projections and partial-read notices before
-   adding those consumed queries. This minimal inventory-only port cannot yet
-   represent catalog health or installation status; do not infer either from rows.
-3. Explicitly replace fixture labeling/provenance and omit demo form configuration
-   when supplying real data. Sample values must never become arguments or persisted
-   preferences. Mutation/execution/folder-opening controls remain unavailable.
-4. Decide reread/refresh selection preservation and stale-data policy. Current
-   `start()` is initial-load lifecycle, not an implemented user refresh operation.
-5. Native visual revalidation of this refactor remains required on a supported
-   desktop. A successful baseline launch or browser comparison is not a native
-   check of the changed frontend.
+The real adapter now uses the original semantic inventory and qualified identities.
+Path/configuration discovery stays in Rust's `Paths`; no frontend OS checks or
+native-path reconstruction were added. The inventory-only port deliberately does
+not expose catalog health or installation status. Local presentation omits sample
+forms and does not claim launchability. The controller's `start()` remains a local
+initial read, not catalog synchronization.
 
-## Verification of this structural pass
+Review explicit mutations/actions as the next phase, including report/decision
+semantics and platform-owned folder opening. Execution/output/terminal integration
+remains separately reviewable. No next-phase actions are implemented. See the
+[read-only guide](gui-read-only.md) for current Windows/Linux verification status
+and launch instructions; the structural results below are historical.
+
+## Historical verification of the structural pass
 
 - Root and independent-desktop `cargo fmt ... --all -- --check`: passed.
 - `cargo clippy --locked --all-targets --all-features -- -D warnings`: passed.

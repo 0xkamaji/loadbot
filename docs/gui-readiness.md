@@ -3,8 +3,10 @@
 Loadbot exposes a synchronous Rust library. A Tauri-based GUI can call this
 library directly on a worker thread, constructing its `OperationContext` there.
 The [Phase 1 standalone GUI](gui-phase1.md) now lives in `src/gui/`, with a separate
-Tauri 2 host and an injected fixture adapter. The call flow below describes the
-existing backend contracts for future connections; the GUI does not call them yet.
+Tauri 2 host and an injected adapter. The normal native composition now uses
+`launcher::read_project_inventory` through an argument-free Tauri query; explicit
+fixture composition remains for development. See [real read-only inventory](gui-read-only.md).
+The broader mutation/execution call flow below remains for future connections.
 The [structural GUI architecture](gui-architecture.md) now separates a semantic
 `LoadbotAdapter`, deterministic application state, Loadbot presentation, and local
 UI primitives. Sample form definitions are not part of the inventory contract.

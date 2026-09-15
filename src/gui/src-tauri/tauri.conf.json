@@ -12,7 +12,7 @@
   "app": {
     "windows": [{
       "label": "main",
-      "title": "Loadbot — fixture preview",
+      "title": "Loadbot — local inventory",
       "width": 1000,
       "height": 680,
       "minWidth": 420,
@@ -21,6 +21,7 @@
       "decorations": true
     }],
     "security": {
+      "capabilities": ["main-inventory"],
       "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost",
       "devCsp": "default-src 'self'; script-src 'self' 'unsafe-inline'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:1420 ws://127.0.0.1:1420"
     }

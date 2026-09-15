@@ -21,6 +21,10 @@ The [Phase 4A workspace pass](gui-workspace.md) starts from clean `main` at
 local inventory reload, a qualified project-folder capability, and presentation-only
 split persistence. It does not add management mutation or execution.
 
+The [Phase 4B management pass](gui-management.md) extends those seams with
+backend-authoritative catalog/project/shortcut mutations and explicit catalog
+synchronization. Execution and terminal capability remain absent.
+
 ## Before and after
 
 Previously, `frontend/menu/LoadbotMenu.tsx` combined asynchronous adapter reads,
@@ -33,7 +37,7 @@ One stylesheet mixed skins and application composition.
 Now the dependency direction is:
 
 ```text
-Loadbot core: launcher::{read_project_inventory, resolve_project_directory}
+Loadbot core: launcher reads + operations::{catalog_add, catalog_sync, tool_add, shortcut_add}
            ↓ thin Tauri worker commands
 LoadbotAdapter contract ← real adapter OR explicit fixture adapter
            ↓
@@ -51,30 +55,35 @@ Native window ownership / browser dialog lifecycle remain outside the menu.
 
 | Module | Responsibility |
 | --- | --- |
-| `loadbot/contract.ts` | `LoadbotAdapter`, `LoadbotProject`, `LoadbotShortcut`: consumed read capability and semantic inventory data. No React, host, fixture, filesystem, Rust, or control types. |
+| `loadbot/contract.ts` | Semantic read and management capabilities plus inventory/catalog/input/result records. No React, host, fixture, filesystem, Rust, or control types. |
 | `loadbot/identity.ts` | Catalog-qualified project and source-qualified shortcut identity. No absolute installation paths. |
-| `loadbot/application/controller.ts` | `createLoadbotApplication`, `LoadbotState`, `LoadbotActions`: loading/error/ready state, qualified local selection, local reload, qualified folder-open state, sample values/validation, drawer state, subscriptions and read lifetime. Pure TypeScript; no DOM or React runtime. |
+| `loadbot/application/controller.ts` | Qualified session selection, authoritative reload, folder state, centralized mutation state, duplicate-submit prevention, sample values, drawer state, subscriptions and read lifetime. Pure TypeScript; no DOM or React runtime. |
 | `loadbot/application/sampleForms.ts` | Optional local demonstration fields/defaults and validation helpers. Separate from the backend contract. |
 | `loadbot/application/useLoadbotApplication.ts` | Thin React binding using `useSyncExternalStore`; owns subscription/effect cleanup. |
 | `loadbot/LoadbotMenu.tsx` | Public composition component accepting an adapter, host-selected workspace-layout store, optional sample forms, and optional shell callbacks. |
-| `loadbot/view/LoadbotMenuView.tsx`, `ShortcutDetails.tsx`, `menu.css`, `workspaceLayout.ts` | Loadbot presentation: quiet catalog context, project navigation/folder affordances, shortcut list/details, local reload, GUI-local pane preferences, fixture sample widgets, mascot, and non-executing terminal workspace. Receives state/actions, not an adapter. |
+| `loadbot/view/LoadbotMenuView.tsx`, `ManagementDialogs.tsx`, `ShortcutDetails.tsx`, `menu.css`, `workspaceLayout.ts` | Quiet catalog context/menu, compact forms, project navigation/folder affordances, shortcut list/details, local reload, pane preferences, fixture sample widgets, mascot, and non-executing terminal. Receives state/actions, not an adapter. |
 | `loadbot/fixtures/adapter.ts` | Fictional inventory behind `LoadbotAdapter`; each read returns an independent snapshot. |
 | `loadbot/fixtures/sampleForms.ts` | Separate UI-demo configuration keyed by qualified selection identity. Never sent to a backend. |
 | `ui/components.tsx`, `ui/Splitter.tsx` | Application frame, panel, button/icon button, menu row/list, splitter, input/path-selector, checkbox, status and drawer primitives. Generic labels, values, content and callbacks; no Loadbot data imports. |
 | `ui/theme.ts`, `ui/theme.css` | Approved PNG asset mapping, nine-slice tokens, colors, font, spacing, control states and shared shell skins. |
-| `hosts/tauriInventoryAdapter.ts` | One Windows/Linux real adapter: invokes inventory read and qualified folder-open commands, checks the structured projection, and normalizes errors, not paths. |
+| `hosts/tauriInventoryAdapter.ts` | One Windows/Linux real adapter: invokes typed read/folder/management commands, validates structured results, and normalizes errors, not paths. |
 | `hosts/tauriWorkspaceLayoutStore.ts` | Native host implementation for the opaque GUI-local layout document. Pane names, validation, defaults, and clamping stay in presentation code. |
-| `hosts/realComposition.ts` | Normal standalone composition: real adapter, native layout store, local/read-only presentation, no sample forms. |
+| `hosts/realComposition.ts` | Normal standalone composition: real adapter, native layout store, local management presentation, no sample forms. |
 | `hosts/fixtureComposition.ts` | Explicit development/test composition choosing the fixture adapter and sample forms. |
 | `hosts/standalone.tsx`, `embed.tsx`, `host.css` | Viewport or parent-overlay ownership, mount/unmount, parent Close/Escape/focus behavior. The browser overlay is still dev-only. |
-| `../src-tauri/` | Native lifecycle and independent workspace; inventory read delegates to the library, folder opening resolves catalog/tool identity in Rust, and one fixed app-local file persists an opaque layout document. |
+| `../src-tauri/` | Thin native workers over shared Loadbot operations, qualified folder opening, and one fixed app-local opaque layout document. |
 
 ## Consumed capability contract
 
 ```ts
 interface LoadbotAdapter {
   readInventory(): Promise<readonly LoadbotProject[]>;
+  readCatalogs(): Promise<readonly LoadbotCatalog[]>;
   openProjectFolder(project: { catalog: string; tool: string }): Promise<void>;
+  addCatalog(input: AddCatalogInput): Promise<CatalogIdentity>;
+  addProject(input: AddProjectInput): Promise<ProjectIdentity>;
+  addShortcut(input: AddShortcutInput): Promise<ShortcutIdentity>;
+  syncCatalog(catalog: string): Promise<void>;
 }
 ```
 
@@ -99,18 +108,19 @@ retains fixture labels and sample forms. See [read semantics and failures](gui-r
 for the complete-snapshot policy: a skipped catalog is an explicit read failure,
 not an invented partial-health state or silent empty success.
 
-`LoadbotActions` contains only working local transitions:
+`LoadbotActions` contains working local and management transitions:
 
 - `selectProject(id)` / `selectShortcut(id)`
 - `reloadInventory()` (local reread only; no fetch, pull, or synchronization)
 - `openProjectFolder(id)` (qualified identity to adapter; controlled result state)
+- `selectCatalog(name)` (session context only; no persistent default change or sync)
+- `addCatalog`, `addProject`, `addShortcut`, `syncCatalog` (centralized operation state)
 - `changeSampleInput(id, value)` / `useSamplePath(id)`
 - `toggleDrawer()`
 
-Only reload and folder-open call the adapter. `start()` belongs to controller
-lifecycle and reads inventory; neither initial read nor reload is Git catalog
-synchronization. Add/edit/delete, catalog management, Run, and terminal execution
-remain absent and have no pretend adapter methods.
+`start()` and local reload read inventory plus configured catalog context; neither is
+Git synchronization. Confirmed mutations reread both and reconcile selection. Edit,
+delete, Run, and terminal execution remain absent and have no adapter methods.
 
 ## Application state and lifetime
 
@@ -198,22 +208,17 @@ path. Subscription infrastructure here is for application/UI state; it is not a
 model API or an excuse to run a model inside state transitions. No events such as
 `shortcut_completed` are emitted now because execution does not exist here.
 
-## Read-only implementation and next review
+## Management implementation and next review
 
-The real adapter uses the original semantic inventory and qualified identities.
+The real adapter uses semantic inventory, management operations, and qualified identities.
 Path/configuration discovery stays in Rust's `Paths`; no frontend OS checks or
 native-path reconstruction were added. Folder opening returns catalog/tool identity
 to Rust, which reuses existing installation validation before choosing the OS file
-manager. The inventory projection deliberately does
-not expose catalog health or installation status. Local presentation omits sample
-forms and does not claim launchability. The controller's `start()` remains a local
-initial read, not catalog synchronization.
-
-Review explicit management mutations as the next phase, including report/decision
-semantics. Execution/output/terminal integration remains separately reviewable.
-No management or execution actions are implemented. See the
-[read-only guide](gui-read-only.md) for current Windows/Linux verification status
-and launch instructions; the structural results below are historical.
+manager. Catalog summaries expose configured source/access/default and inspected
+installed/missing/mismatch state. Local presentation omits sample forms and does not
+claim launchability. The controller's `start()` remains a local initial read, not
+catalog synchronization. See the [management guide](gui-management.md). Execution,
+output, and terminal integration remain a separate future review.
 
 ## Historical verification of the structural pass
 

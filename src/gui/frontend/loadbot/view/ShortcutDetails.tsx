@@ -17,7 +17,7 @@ export function ShortcutDetails({ state, actions, mode }: { state: LoadbotState;
       <dt>Runner</dt><dd>{shortcut.runner ?? 'Not specified'}</dd>
       <dt>Target</dt><dd title={shortcut.path}>{shortcut.path}</dd>
     </dl>
-    <p className="lb-note">Read-only inventory. Execution is not connected.</p>
+    <p className="lb-note">Inventory details. Execution is not connected.</p>
   </div>;
   const missing = fields.filter((field) => missingInputIds.includes(field.id));
   return <div className="lb-details">

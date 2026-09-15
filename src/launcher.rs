@@ -434,6 +434,9 @@ pub fn project_inventory(
             tool: tool.name.clone(),
             catalog: tool.catalog.clone(),
         };
+        // Configured projects remain navigable before they gain their first command
+        // or personal shortcut. This keeps the inventory authoritative after add.
+        projects.entry(key.clone()).or_default();
         for (name, command) in &tool.definition.commands {
             projects.entry(key.clone()).or_default().push(ProjectEntry {
                 name: name.clone(),

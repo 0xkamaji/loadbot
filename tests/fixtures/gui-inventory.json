@@ -13,5 +13,10 @@
     "entries": [
       {"name": "inspect", "path": "scripts/inspect.ps1", "runner": "powershell", "source": "catalog"}
     ]
+  },
+  {
+    "catalog": "alpha",
+    "tool": "no-commands",
+    "entries": []
   }
 ]

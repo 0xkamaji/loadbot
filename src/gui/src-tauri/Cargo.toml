@@ -2,7 +2,7 @@
 name = "loadbot-desktop"
 version = "0.1.0"
 edition = "2024"
-description = "Standalone read-only Loadbot inventory"
+description = "Standalone Loadbot workspace"
 license = "MIT"
 
 # An independent workspace/lockfile keeps Tauri out of the CLI dependency graph.

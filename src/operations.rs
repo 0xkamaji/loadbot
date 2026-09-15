@@ -4,11 +4,12 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
-use crate::catalog::{self, CatalogFile, ResolvedTool, ToolConfig};
+use crate::catalog::{self, CatalogFile, ResolvedTool, Runner, ToolConfig};
 use crate::config::{self, CatalogSource, LocalConfig};
 use crate::git;
 use crate::interaction::{Interaction, MutationOutcome, Notice, OperationContext};
 use crate::paths::{self, Paths};
+use crate::shortcuts::{self, Shortcut};
 
 #[derive(Debug, Clone)]
 pub struct CatalogSummary {
@@ -49,6 +50,49 @@ pub struct ToolStatus {
     pub path: PathBuf,
     pub installed: bool,
     pub repository: Option<git::RepositoryStatus>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ShortcutIdentity {
+    pub name: String,
+    pub catalog: String,
+    pub tool: String,
+    pub path: String,
+}
+
+/// Add one personal shortcut through the same qualified project and path checks used
+/// by the launcher. The caller supplies semantic fields, never a native absolute path.
+#[allow(clippy::too_many_arguments)]
+pub fn shortcut_add(
+    paths: &Paths,
+    catalog_name: &str,
+    tool_name: &str,
+    name: &str,
+    path: &str,
+    description: Option<String>,
+    runner: Option<Runner>,
+    context: &mut OperationContext<'_>,
+) -> Result<ShortcutIdentity> {
+    let _process_scope = crate::process::scope(&context.process);
+    context.process.cancellation.check()?;
+    paths::validate_name(name).context("invalid shortcut name")?;
+    let root = installed_tool_path(paths, tool_name, catalog_name, context)?;
+    let relative = shortcuts::relative_path(path)?;
+    crate::launcher::safe_target(&root, &relative)?;
+    let mut shortcut = Shortcut::new(
+        catalog_name.to_owned(),
+        tool_name.to_owned(),
+        shortcuts::portable_path(&relative)?,
+    )?;
+    shortcut.description = description.filter(|value| !value.trim().is_empty());
+    shortcut.runner = runner;
+    shortcuts::save(&paths.shortcuts()?, name, shortcut.clone())?;
+    Ok(ShortcutIdentity {
+        name: name.to_owned(),
+        catalog: shortcut.catalog,
+        tool: shortcut.tool,
+        path: shortcut.path,
+    })
 }
 
 pub fn catalog_add(
@@ -2291,6 +2335,34 @@ mod tests {
             .is_empty()
         );
         assert_eq!(fs::read(paths.config()).unwrap(), config_before);
+    }
+
+    #[test]
+    fn catalog_sync_updates_only_the_requested_isolated_catalog() {
+        let temporary = TempDir::new().unwrap();
+        let paths = Paths::with_root(temporary.path().join("loadbot"));
+        let remote = valid_catalog_remote(temporary.path(), "sync-catalog");
+        let mut policy = crate::interaction::Unattended;
+        let mut context = OperationContext::new(&mut policy);
+        catalog_add(
+            &paths,
+            "personal",
+            remote.display().to_string(),
+            true,
+            &mut context,
+        )
+        .unwrap();
+        let source = temporary.path().join("sync-catalog-source");
+        fs::write(source.join("new.txt"), "new catalog data\n").unwrap();
+        git(["add", "new.txt"], Some(&source));
+        git(["commit", "-m", "catalog update"], Some(&source));
+        git(["push", "origin", "main"], Some(&source));
+
+        let outcome = catalog_sync(&paths, "personal", &mut context).unwrap();
+        assert!(paths.catalog("personal").join("new.txt").is_file());
+        assert!(outcome.notices.iter().any(
+            |notice| matches!(notice, Notice::CatalogSynced { name, .. } if name == "personal")
+        ));
     }
 
     #[test]

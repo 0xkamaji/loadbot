@@ -2,8 +2,10 @@
 
 use anyhow::Context;
 use loadbot::{
+    catalog::Runner,
     interaction::{OperationContext, Unattended},
     launcher::{self, Project},
+    operations::{self, CatalogState, ShortcutIdentity},
     paths::Paths,
 };
 use std::fs;
@@ -19,7 +21,29 @@ const MAX_WORKSPACE_LAYOUT_BYTES: usize = 4096;
 
 #[derive(Debug, serde::Serialize)]
 struct DesktopError {
+    kind: &'static str,
     message: String,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CatalogContext {
+    name: String,
+    url: String,
+    writable: bool,
+    state: &'static str,
+    default: bool,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct ProjectIdentity {
+    catalog: String,
+    tool: String,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct CatalogIdentity {
+    catalog: String,
 }
 
 #[tauri::command]
@@ -37,11 +61,13 @@ async fn read_loadbot_inventory() -> Result<Vec<Project>, DesktopError> {
                 .result
         })();
         result.map_err(|error| DesktopError {
+            kind: "operation",
             message: format!("{error:#}"),
         })
     })
     .await
     .map_err(|error| DesktopError {
+        kind: "worker",
         message: format!("inventory worker failed: {error}"),
     })?
 }
@@ -59,12 +85,128 @@ async fn open_loadbot_project(catalog: String, tool: String) -> Result<(), Deskt
             open_directory(&directory)
         })();
         result.map_err(|error| DesktopError {
+            kind: "operation",
             message: format!("{error:#}"),
         })
     })
     .await
     .map_err(|error| DesktopError {
+        kind: "worker",
         message: format!("project-folder worker failed: {error}"),
+    })?
+}
+
+#[tauri::command]
+async fn read_loadbot_catalogs() -> Result<Vec<CatalogContext>, DesktopError> {
+    run_loadbot_worker("catalog query", move |paths, context| {
+        Ok(operations::catalog_list(paths, context)?
+            .into_iter()
+            .map(|catalog| CatalogContext {
+                name: catalog.name,
+                url: catalog.source.url,
+                writable: catalog.source.writable,
+                state: match catalog.state {
+                    CatalogState::Missing => "missing",
+                    CatalogState::Installed => "installed",
+                    CatalogState::Mismatch => "mismatch",
+                },
+                default: catalog.default,
+            })
+            .collect())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn add_loadbot_catalog(
+    name: String,
+    url: String,
+    writable: bool,
+) -> Result<CatalogIdentity, DesktopError> {
+    run_loadbot_worker("catalog add", move |paths, context| {
+        operations::catalog_add(paths, &name, url, writable, context)?;
+        Ok(CatalogIdentity { catalog: name })
+    })
+    .await
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn add_loadbot_project(
+    catalog: String,
+    name: String,
+    url: String,
+    revision: Option<String>,
+    commit: bool,
+    push: bool,
+) -> Result<ProjectIdentity, DesktopError> {
+    let identity = ProjectIdentity {
+        catalog: catalog.clone(),
+        tool: name.clone(),
+    };
+    run_loadbot_worker("project add", move |paths, context| {
+        operations::tool_add(paths, &catalog, &name, url, revision, commit, push, context)?;
+        Ok(identity)
+    })
+    .await
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn add_loadbot_shortcut(
+    catalog: String,
+    tool: String,
+    name: String,
+    path: String,
+    description: Option<String>,
+    runner: Option<Runner>,
+) -> Result<ShortcutIdentity, DesktopError> {
+    run_loadbot_worker("shortcut add", move |paths, context| {
+        operations::shortcut_add(
+            paths,
+            &catalog,
+            &tool,
+            &name,
+            &path,
+            description,
+            runner,
+            context,
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+async fn sync_loadbot_catalog(catalog: String) -> Result<(), DesktopError> {
+    run_loadbot_worker("catalog sync", move |paths, context| {
+        operations::catalog_sync(paths, &catalog, context)?;
+        Ok(())
+    })
+    .await
+}
+
+async fn run_loadbot_worker<T, F>(label: &'static str, operation: F) -> Result<T, DesktopError>
+where
+    T: Send + 'static,
+    F: FnOnce(&Paths, &mut OperationContext<'_>) -> anyhow::Result<T> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(move || {
+        let result = (|| -> anyhow::Result<T> {
+            let paths = Paths::discover()?;
+            let mut policy = Unattended;
+            let mut context = OperationContext::new(&mut policy);
+            context.process.terminal = false;
+            context.run(|context| operation(&paths, context)).result
+        })();
+        result.map_err(|error| DesktopError {
+            kind: "operation",
+            message: format!("{error:#}"),
+        })
+    })
+    .await
+    .map_err(|error| DesktopError {
+        kind: "worker",
+        message: format!("{label} worker failed: {error}"),
     })?
 }
 
@@ -86,6 +228,7 @@ fn write_loadbot_workspace_layout(
 
 fn desktop_error(error: anyhow::Error) -> DesktopError {
     DesktopError {
+        kind: "storage",
         message: format!("{error:#}"),
     }
 }
@@ -159,7 +302,12 @@ fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             read_loadbot_inventory,
+            read_loadbot_catalogs,
             open_loadbot_project,
+            add_loadbot_catalog,
+            add_loadbot_project,
+            add_loadbot_shortcut,
+            sync_loadbot_catalog,
             read_loadbot_workspace_layout,
             write_loadbot_workspace_layout
         ])

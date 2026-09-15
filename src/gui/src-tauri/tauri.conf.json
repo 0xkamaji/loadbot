@@ -13,7 +13,7 @@
     "windows": [{
       "label": "main",
       "url": "desktop.html",
-      "title": "Loadbot — local inventory",
+      "title": "Loadbot — workspace",
       "width": 1000,
       "height": 680,
       "minWidth": 420,

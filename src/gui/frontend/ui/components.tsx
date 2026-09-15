@@ -1,4 +1,4 @@
-import { forwardRef, useId, useRef, type ButtonHTMLAttributes, type HTMLAttributes, type InputHTMLAttributes, type KeyboardEvent, type ReactNode } from 'react';
+import { forwardRef, useId, useRef, type ButtonHTMLAttributes, type HTMLAttributes, type InputHTMLAttributes, type KeyboardEvent, type ReactNode, type SelectHTMLAttributes, type TextareaHTMLAttributes } from 'react';
 import { asset, themeStyle } from './theme';
 import './theme.css';
 
@@ -62,6 +62,30 @@ export function InputControl({ label, id, ...props }: InputHTMLAttributes<HTMLIn
     <span>{label}{props.required && <span aria-hidden="true"> *</span>}</span>
     <span className="lb-input-frame"><input className="lb-input" id={inputId} {...props} /></span>
   </label>;
+}
+
+export function SelectControl({ label, id, children, ...props }: SelectHTMLAttributes<HTMLSelectElement> & { label: string }) {
+  const generatedId = useId();
+  const inputId = id ?? generatedId;
+  return <label className="lb-field" htmlFor={inputId}>
+    <span>{label}{props.required && <span aria-hidden="true"> *</span>}</span>
+    <span className="lb-input-frame"><select className="lb-input" id={inputId} {...props}>{children}</select></span>
+  </label>;
+}
+
+export function TextareaControl({ label, id, ...props }: TextareaHTMLAttributes<HTMLTextAreaElement> & { label: string }) {
+  const generatedId = useId();
+  const inputId = id ?? generatedId;
+  return <label className="lb-field" htmlFor={inputId}>
+    <span>{label}{props.required && <span aria-hidden="true"> *</span>}</span>
+    <span className="lb-input-frame"><textarea className="lb-input lb-textarea" id={inputId} {...props} /></span>
+  </label>;
+}
+
+export function Dialog({ label, children, onClose }: { label: string; children: ReactNode; onClose(): void }) {
+  return <div className="lb-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+    <section className="lb-dialog lb-panel" role="dialog" aria-modal="true" aria-label={label}>{children}</section>
+  </div>;
 }
 
 export function PathSelector({ action, ...input }: InputHTMLAttributes<HTMLInputElement> & {

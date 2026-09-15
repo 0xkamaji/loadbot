@@ -43,5 +43,15 @@ const projects: readonly LoadbotProject[] = [
 
 export const fixtureAdapter: LoadbotAdapter = {
   async readInventory() { return structuredClone(projects); },
+  async readCatalogs() {
+    return [
+      { name: 'personal', url: 'fixture://personal', writable: true, state: 'installed', default: true },
+      { name: 'community', url: 'fixture://community', writable: false, state: 'installed', default: false },
+    ];
+  },
   async openProjectFolder() { throw new Error('Folder opening is unavailable in fixture preview.'); },
+  async addCatalog() { throw new Error('Management is unavailable in fixture preview.'); },
+  async addProject() { throw new Error('Management is unavailable in fixture preview.'); },
+  async addShortcut() { throw new Error('Management is unavailable in fixture preview.'); },
+  async syncCatalog() { throw new Error('Management is unavailable in fixture preview.'); },
 };

@@ -73,6 +73,14 @@ it('pins native/default and fixture entry points to distinct compositions', () =
   expect(realComposition).toContain("from './tauriWorkspaceLayoutStore'");
   expect(realComposition).not.toMatch(/from ['"].*fixture/);
   expect(tauriAdapter).toContain("invoke('open_loadbot_project', { catalog: project.catalog, tool: project.tool })");
+  for (const command of ['read_loadbot_catalogs', 'add_loadbot_catalog', 'add_loadbot_project', 'add_loadbot_shortcut', 'sync_loadbot_catalog']) {
+    expect(tauriAdapter).toContain(command);
+    expect(tauriMain).toContain(command);
+  }
+  expect(tauriMain).toContain('operations::catalog_add');
+  expect(tauriMain).toContain('operations::tool_add');
+  expect(tauriMain).toContain('operations::shortcut_add');
+  expect(tauriMain).toContain('operations::catalog_sync');
   expect(tauriAdapter).not.toMatch(/explorer|xdg-open|filesystem|fixture/i);
   expect(tauriMain).toContain('launcher::resolve_project_directory');
   expect(tauriMain).toContain('open_loadbot_project');

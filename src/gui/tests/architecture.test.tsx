@@ -6,6 +6,7 @@ import ts from 'typescript';
 import { expect, it } from 'vitest';
 
 const root = fileURLToPath(new URL('../frontend/', import.meta.url));
+const guiRoot = resolve(root, '..');
 function sourceFiles(directory: string): string[] {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
     const path = join(directory, entry.name);
@@ -39,4 +40,36 @@ it('keeps fixtures/hosts/transport out of views and capabilities out of UI primi
     visit(tree);
   }
   expect(violations).toEqual([]);
+});
+
+it('pins native/default and fixture entry points to distinct compositions', () => {
+  const packageJson = JSON.parse(readFileSync(join(guiRoot, 'package.json'), 'utf8'));
+  const tauri = JSON.parse(readFileSync(join(guiRoot, 'src-tauri/tauri.conf.json'), 'utf8'));
+  const nativeWindow = tauri.app.windows.find((window: { label?: string }) => window.label === 'main');
+
+  expect(packageJson.scripts.desktop).toBe('tauri dev');
+  expect(tauri.build.beforeDevCommand).toBe('npm run dev');
+  expect(new URL(tauri.build.devUrl).pathname).toBe('/');
+  expect(nativeWindow.url).toBe('desktop.html');
+
+  const desktopHtml = readFileSync(join(guiRoot, nativeWindow.url), 'utf8');
+  const defaultHtml = readFileSync(join(guiRoot, 'index.html'), 'utf8');
+  const fixtureHtml = readFileSync(join(guiRoot, 'fixture.html'), 'utf8');
+  const standalone = readFileSync(join(root, 'hosts/standalone.tsx'), 'utf8');
+  const realComposition = readFileSync(join(root, 'hosts/realComposition.ts'), 'utf8');
+  const fixtureEntry = readFileSync(join(root, 'hosts/fixture.tsx'), 'utf8');
+  const fixtureComposition = readFileSync(join(root, 'hosts/fixtureComposition.ts'), 'utf8');
+
+  for (const html of [desktopHtml, defaultHtml]) {
+    expect(html).toContain('/frontend/hosts/standalone.tsx');
+    expect(html).not.toMatch(/fixture/i);
+  }
+  expect(standalone).toContain("from './realComposition'");
+  expect(standalone).not.toMatch(/fixtureComposition|fixtureMenuDependencies/);
+  expect(realComposition).toContain("from './tauriInventoryAdapter'");
+  expect(realComposition).not.toMatch(/from ['"].*fixture/);
+
+  expect(fixtureHtml).toContain('/frontend/hosts/fixture.tsx');
+  expect(fixtureEntry).toContain("from './fixtureComposition'");
+  expect(fixtureComposition).toContain("from '../loadbot/fixtures/adapter'");
 });

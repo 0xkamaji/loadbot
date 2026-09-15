@@ -12,6 +12,7 @@
   "app": {
     "windows": [{
       "label": "main",
+      "url": "desktop.html",
       "title": "Loadbot — local inventory",
       "width": 1000,
       "height": 680,

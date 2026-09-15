@@ -12,6 +12,11 @@ Command is a deterministic interface to Loadbot. Activity is the structured reco
 of real Loadbot operations. They share the parchment workspace and its persisted
 pane size, but their state and purpose remain separate.
 
+The approved panel bitmap supplies only the Console's decorative nine-slice frame.
+Its textured center is not stretched across the resizable pane; a stable parchment
+surface supplies the interior. This avoids nearest-neighbor WebView repaint blocks
+at different Console heights while preserving the original corners and edges.
+
 ## Command boundary
 
 Command is not an operating-system terminal. Loadbot does not start PowerShell,

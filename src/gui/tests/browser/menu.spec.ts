@@ -55,6 +55,41 @@ test('console terminology and light-surface activity contrast remain clear', asy
   await expect(page.getByRole('tabpanel', { name: 'Activity' })).toBeVisible();
 });
 
+test('console keeps a flat interior and decorative frame across sizes', async ({ page }, testInfo) => {
+  await page.goto('/fixture.html');
+  const drawer = page.getByRole('region', { name: 'Bottom workspace' });
+  const splitter = page.getByRole('separator', { name: 'Resize console pane' });
+  const assertSeparatedFrame = async () => {
+    const style = await drawer.evaluate((element) => {
+      const computed = getComputedStyle(element);
+      return {
+        background: computed.backgroundColor,
+        backgroundClip: computed.backgroundClip,
+        borderImageSlice: computed.borderImageSlice,
+        borderImageSource: computed.borderImageSource,
+      };
+    });
+    expect(style.background).toBe('rgb(236, 212, 175)');
+    expect(style.backgroundClip).toBe('padding-box');
+    expect(style.borderImageSlice).not.toContain('fill');
+    expect(style.borderImageSource).toContain('panel');
+  };
+
+  await assertSeparatedFrame();
+  const boundary = (await splitter.boundingBox())!;
+  await page.mouse.move(boundary.x + 10, boundary.y + 4);
+  await page.mouse.down();
+  await page.mouse.move(boundary.x + 10, boundary.y - 110);
+  await page.mouse.up();
+  await expect(splitter).toHaveAttribute('aria-valuenow', '250');
+  await assertSeparatedFrame();
+  await page.screenshot({ path: testInfo.outputPath('console-flat-1000x680-height-250.png') });
+
+  await page.setViewportSize({ width: 722, height: 480 });
+  await assertSeparatedFrame();
+  await page.screenshot({ path: testInfo.outputPath('console-flat-722x480.png') });
+});
+
 test('approved skins, focus, scrolling, resizing, and drawer preserve a usable menu', async ({ page }, testInfo) => {
   const errors: string[] = [];
   page.on('pageerror', (error) => errors.push(error.message));

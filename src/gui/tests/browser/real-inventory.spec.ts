@@ -11,6 +11,8 @@ test('normal entry uses the real read composition and preserves qualified record
       invoke: async (command: string, args: Record<string, unknown> = {}) => {
         (window as unknown as { __loadbotInvocations: unknown[] }).__loadbotInvocations.push({ command, args });
         if (command === 'read_loadbot_inventory' && Object.keys(args).length === 0) return data;
+        if (command === 'read_loadbot_workspace_layout' && Object.keys(args).length === 0) return undefined;
+        if (command === 'write_loadbot_workspace_layout' && typeof args.contents === 'string') return undefined;
         if (command === 'open_loadbot_project' && Object.keys(args).length === 2) return undefined;
         throw new Error('Unexpected command');
       },
@@ -47,6 +49,7 @@ test('native folder failures remain controlled real errors without fixture fallb
     Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {
       invoke: async (command: string) => {
         if (command === 'read_loadbot_inventory') return data;
+        if (command === 'read_loadbot_workspace_layout') return undefined;
         if (command === 'open_loadbot_project') throw { message: 'resolved project directory is unavailable' };
         throw new Error('Unexpected command');
       },

@@ -5,17 +5,20 @@ import { ApplicationFrame, BottomDrawer, Button, Icon, IconButton, MenuList, Men
 import { clampSplit, Splitter } from '../../ui/Splitter';
 import mascot from '../../../loadbot-gui-assets/assets/branding/loadbot-header.png';
 import { ShortcutDetails } from './ShortcutDetails';
-import { defaultPaneSizes, persistPaneSizes, restorePaneSizes, type PaneSizes } from './workspaceLayout';
+import { decodePaneSizes, defaultPaneSizes, encodePaneSizes, type PaneSizes, type WorkspaceLayoutStore } from './workspaceLayout';
 import './menu.css';
 
 /** Pure Loadbot layout: no adapter, fixture, native API, or asynchronous work. */
-export function LoadbotMenuView({ state, actions, host, mode }: {
+export function LoadbotMenuView({ state, actions, host, mode, workspaceLayoutStore }: {
   state: LoadbotState; actions: LoadbotActions; host?: ShellCallbacks; mode: 'local' | 'fixture';
+  workspaceLayoutStore: WorkspaceLayoutStore;
 }) {
   const drawerId = useId();
   const { inventory, project, shortcut, drawerOpen } = state;
   const projects = inventory.status === 'ready' ? inventory.projects : [];
-  const [paneSizes, setPaneSizes] = useState(restorePaneSizes);
+  const [paneSizes, setPaneSizes] = useState(defaultPaneSizes);
+  const preferredPaneSizes = useRef<PaneSizes>(defaultPaneSizes);
+  const preferenceGeneration = useRef(0);
   const workspaceRef = useRef<HTMLDivElement>(null);
   const rightRef = useRef<HTMLElement>(null);
   const mainTerminalRef = useRef<HTMLDivElement>(null);
@@ -32,15 +35,38 @@ export function LoadbotMenuView({ state, actions, host, mode }: {
     const total = mainTerminalRef.current?.clientHeight || 580;
     return { min: 88, max: Math.max(88, Math.min(440, total - 258)) };
   };
-  const updatePane = (name: keyof PaneSizes, value: number) => setPaneSizes((current) => ({ ...current, [name]: value }));
-  useEffect(() => persistPaneSizes(paneSizes), [paneSizes]);
+  const clampToLayout = (sizes: PaneSizes): PaneSizes => ({
+    projects: clampSplit(sizes.projects, projectLimits()),
+    shortcuts: clampSplit(sizes.shortcuts, shortcutLimits()),
+    terminal: clampSplit(sizes.terminal, terminalLimits()),
+  });
+  const previewPane = (name: keyof PaneSizes, value: number) => {
+    preferenceGeneration.current++;
+    preferredPaneSizes.current = { ...preferredPaneSizes.current, [name]: value };
+    setPaneSizes((current) => ({ ...current, [name]: value }));
+  };
+  const persistPreferences = () => {
+    void workspaceLayoutStore.write(encodePaneSizes(preferredPaneSizes.current)).catch(() => {});
+  };
+  const resetPane = (name: keyof PaneSizes) => {
+    preferenceGeneration.current++;
+    preferredPaneSizes.current = { ...preferredPaneSizes.current, [name]: defaultPaneSizes[name] };
+    setPaneSizes(clampToLayout(preferredPaneSizes.current));
+    persistPreferences();
+  };
+  useEffect(() => {
+    let active = true;
+    const generation = preferenceGeneration.current;
+    workspaceLayoutStore.read().then((contents) => {
+      if (!active || generation !== preferenceGeneration.current) return;
+      preferredPaneSizes.current = decodePaneSizes(contents);
+      setPaneSizes(clampToLayout(preferredPaneSizes.current));
+    }).catch(() => {});
+    return () => { active = false; };
+  }, [workspaceLayoutStore]);
   useEffect(() => {
     const clampToWindow = () => setPaneSizes((current) => {
-      const next = {
-        projects: clampSplit(current.projects, projectLimits()),
-        shortcuts: clampSplit(current.shortcuts, shortcutLimits()),
-        terminal: clampSplit(current.terminal, terminalLimits()),
-      };
+      const next = clampToLayout(preferredPaneSizes.current);
       return next.projects === current.projects && next.shortcuts === current.shortcuts && next.terminal === current.terminal
         ? current : next;
     });
@@ -92,8 +118,8 @@ export function LoadbotMenuView({ state, actions, host, mode }: {
             ? 'Opening project folder…' : state.projectFolder.message}</StatusDisplay>}
         </Panel>
         <Splitter orientation="vertical" label="Resize projects pane" value={paneSizes.projects} limits={projectLimits}
-          onChange={(value) => updatePane('projects', value)} onCommit={(value) => updatePane('projects', value)}
-          onReset={() => updatePane('projects', clampSplit(defaultPaneSizes.projects, projectLimits()))} />
+          onChange={(value) => previewPane('projects', value)} onCommit={persistPreferences}
+          onReset={() => resetPane('projects')} />
         <Panel className="lb-shortcut-panel" aria-label="Shortcut workspace" ref={rightRef}
           style={{ gridTemplateRows: `${paneSizes.shortcuts}px 8px minmax(0, 1fr)` }}>
           <section className="lb-shortcut-list">
@@ -108,8 +134,8 @@ export function LoadbotMenuView({ state, actions, host, mode }: {
             </MenuList>
           </section>
           <Splitter orientation="horizontal" label="Resize shortcuts and selected shortcut" value={paneSizes.shortcuts} limits={shortcutLimits}
-            onChange={(value) => updatePane('shortcuts', value)} onCommit={(value) => updatePane('shortcuts', value)}
-            onReset={() => updatePane('shortcuts', clampSplit(defaultPaneSizes.shortcuts, shortcutLimits()))} />
+            onChange={(value) => previewPane('shortcuts', value)} onCommit={persistPreferences}
+            onReset={() => resetPane('shortcuts')} />
           <section className="lb-selected-shortcut" aria-label="Selected shortcut details">
             <h2>SELECTED SHORTCUT</h2>
             <ShortcutDetails key={project && shortcut ? selectionKey(project, shortcut) : 'empty'} state={state} actions={actions} mode={mode} />
@@ -117,8 +143,8 @@ export function LoadbotMenuView({ state, actions, host, mode }: {
         </Panel>
       </div>
       {drawerOpen && <Splitter orientation="horizontal" direction={-1} label="Resize terminal pane" value={paneSizes.terminal} limits={terminalLimits}
-        onChange={(value) => updatePane('terminal', value)} onCommit={(value) => updatePane('terminal', value)}
-        onReset={() => updatePane('terminal', clampSplit(defaultPaneSizes.terminal, terminalLimits()))} />}
+        onChange={(value) => previewPane('terminal', value)} onCommit={persistPreferences}
+        onReset={() => resetPane('terminal')} />}
       <BottomDrawer open={drawerOpen} id={drawerId} label="Terminal placeholder">
         <h2>TERMINAL / NOT CONNECTED</h2>
         <p>Workspace reserved for a future terminal capability.</p>

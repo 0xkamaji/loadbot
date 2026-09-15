@@ -7,6 +7,12 @@ export interface PaneSizes {
 export const defaultPaneSizes: PaneSizes = { projects: 260, shortcuts: 210, terminal: 140 };
 export const paneStorageKey = 'loadbot.workspace.panes.v1';
 
+/** Host-owned persistence for one opaque presentation document. */
+export interface WorkspaceLayoutStore {
+  read(): Promise<string | undefined>;
+  write(contents: string): Promise<void>;
+}
+
 const absoluteLimits: Record<keyof PaneSizes, readonly [number, number]> = {
   projects: [140, 560],
   shortcuts: [110, 640],
@@ -18,13 +24,23 @@ export function clampPaneSize(name: keyof PaneSizes, value: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
-function storage(): Storage | undefined {
+function browserStorage(): Storage | undefined {
   try { return window.localStorage; } catch { return undefined; }
 }
 
-export function restorePaneSizes(source: Pick<Storage, 'getItem'> | undefined = storage()): PaneSizes {
+/** Explicit fixture/browser hosts may retain their layout in the browser origin. */
+export const browserWorkspaceLayoutStore: WorkspaceLayoutStore = {
+  async read() {
+    try { return browserStorage()?.getItem(paneStorageKey) ?? undefined; } catch { return undefined; }
+  },
+  async write(contents) {
+    try { browserStorage()?.setItem(paneStorageKey, contents); } catch { /* preferences are best-effort */ }
+  },
+};
+
+export function decodePaneSizes(contents: string | undefined): PaneSizes {
   try {
-    const value = JSON.parse(source?.getItem(paneStorageKey) ?? 'null') as unknown;
+    const value = JSON.parse(contents ?? 'null') as unknown;
     if (!value || typeof value !== 'object' || Array.isArray(value)) return defaultPaneSizes;
     const record = value as Record<string, unknown>;
     if (record.version !== 1) return defaultPaneSizes;
@@ -39,6 +55,6 @@ export function restorePaneSizes(source: Pick<Storage, 'getItem'> | undefined = 
   }
 }
 
-export function persistPaneSizes(value: PaneSizes, target: Pick<Storage, 'setItem'> | undefined = storage()): void {
-  try { target?.setItem(paneStorageKey, JSON.stringify({ version: 1, ...value })); } catch { /* presentation preferences are best-effort */ }
+export function encodePaneSizes(value: PaneSizes): string {
+  return JSON.stringify({ version: 1, ...value });
 }

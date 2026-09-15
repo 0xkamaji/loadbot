@@ -19,7 +19,7 @@ export function Splitter({ orientation, label, value, limits, direction = 1, onC
   onCommit(value: number): void;
   onReset(): void;
 }) {
-  const drag = useRef<{ pointer: number; start: number; value: number; latest: number } | undefined>(undefined);
+  const drag = useRef<{ pointer: number; start: number; value: number; latest: number; moved: boolean } | undefined>(undefined);
   const currentLimits = limits();
   const minimum = Number.isFinite(currentLimits.min) ? currentLimits.min : 0;
   const maximum = Number.isFinite(currentLimits.max) ? Math.max(minimum, currentLimits.max) : minimum;
@@ -28,14 +28,16 @@ export function Splitter({ orientation, label, value, limits, direction = 1, onC
     const current = drag.current;
     if (!current || current.pointer !== event.pointerId) return;
     event.preventDefault();
-    current.latest = clampSplit(current.value + (coordinate(event) - current.start) * direction, limits());
+    const next = clampSplit(current.value + (coordinate(event) - current.start) * direction, limits());
+    current.moved ||= next !== current.latest;
+    current.latest = next;
     onChange(current.latest);
   }
   function finish(event: PointerEvent<HTMLDivElement>) {
     const current = drag.current;
     if (!current || current.pointer !== event.pointerId) return;
     drag.current = undefined;
-    onCommit(current.latest);
+    if (current.moved) onCommit(current.latest);
   }
   function keyboard(event: KeyboardEvent<HTMLDivElement>) {
     const axisKey = orientation === 'vertical'
@@ -62,7 +64,7 @@ export function Splitter({ orientation, label, value, limits, direction = 1, onC
       if (event.button !== 0) return;
       event.preventDefault();
       event.currentTarget.setPointerCapture?.(event.pointerId);
-      drag.current = { pointer: event.pointerId, start: coordinate(event), value, latest: value };
+      drag.current = { pointer: event.pointerId, start: coordinate(event), value, latest: value, moved: false };
     }}
     onPointerMove={move}
     onPointerUp={finish}

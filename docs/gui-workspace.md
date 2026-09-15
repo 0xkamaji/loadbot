@@ -23,11 +23,31 @@ Three small, keyboard-focusable separators resize:
 
 The separators support pointer drag, arrow keys, bounds derived from their current
 container, and double-click reset. Content scrolls inside its owning pane. Their
-pixel dimensions are best-effort presentation preferences stored under the versioned
-browser-local key `loadbot.workspace.panes.v1`. Missing, malformed, old, non-finite,
-or unavailable storage falls back to defaults; restored and window-resized values
-are clamped. This state never enters Loadbot configuration, catalogs, projects, or
-shortcuts.
+pixel dimensions are best-effort presentation preferences. The native composition
+stores one opaque `workspace-layout-v1.json` document in Tauri's application-local
+data directory; explicit browser/fixture composition retains the versioned
+`loadbot.workspace.panes.v1` browser key. Missing, malformed, old, non-finite, or
+unavailable storage falls back to defaults.
+
+The presentation layer owns validation and pane names; the native host only reads
+and atomically replaces the small opaque document. Writes occur at drag completion,
+keyboard adjustment, or double-click reset—not for every pointer movement or layout
+measurement. The preferred dimensions are retained separately from current-window
+clamps, so temporarily shrinking the outer window neither overwrites nor forgets
+the user's larger-window positions. This state never enters Loadbot configuration,
+catalogs, projects, or shortcuts.
+
+### Native persistence correction
+
+The initial Phase 4A implementation read and wrote `window.localStorage` directly
+from the view and saved after every rendered pane-size change. Native CachyOS
+acceptance showed that the installed WebKitGTK application's browser storage did
+not survive a complete process close/relaunch. Browser tests did not expose this
+because their HTTP test origin supplied ordinary persistent browser storage.
+Saving every state change also meant a startup or outer-window measurement clamp
+could replace the stored preference. Native composition now explicitly chooses
+the app-local Tauri store described above; fixture/browser composition remains
+independent, and measurement-only clamps are never persisted.
 
 `RELOAD LOCAL` starts the same complete local inventory read used at startup. It is
 not catalog refresh or remote synchronization. Catalog-qualified project and
@@ -62,10 +82,10 @@ identity. A missing, invalid, or mismatched project is a controlled adapter erro
 Fixture composition implements the same adapter seam with a controlled unavailable
 error and never opens a real directory.
 
-The native capability is narrowly limited to the main window's two commands:
-inventory read and qualified project-folder open. No general shell, filesystem,
-opener plugin, command bus, mutation, catalog synchronization, or execution
-capability was introduced.
+The native capability remains narrow: inventory read, qualified project-folder
+open, and read/write of the one fixed GUI-local layout document. No caller-supplied
+file location, general shell, filesystem/opener plugin, command bus, mutation,
+catalog synchronization, or execution capability was introduced.
 
 ## Phase boundary
 

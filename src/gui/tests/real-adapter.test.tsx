@@ -2,6 +2,7 @@ import { render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import serializedInventory from '../../../tests/fixtures/gui-inventory.json';
 import { createTauriLoadbotAdapter } from '../frontend/hosts/tauriInventoryAdapter';
+import { tauriWorkspaceLayoutStore } from '../frontend/hosts/tauriWorkspaceLayoutStore';
 import { realMenuDependencies } from '../frontend/hosts/realComposition';
 import { fixtureMenuDependencies } from '../frontend/hosts/fixtureComposition';
 import { LoadbotMenu } from '../frontend/loadbot/LoadbotMenu';
@@ -33,16 +34,29 @@ describe('one platform-neutral real read adapter', () => {
     }
   });
 
-  it('uses exactly the native read command with no arguments or sample forms', async () => {
-    tauri.invoke.mockResolvedValueOnce(serializedInventory);
+  it('uses the native inventory and layout composition with no sample forms', async () => {
+    tauri.invoke.mockClear();
+    tauri.invoke.mockImplementation(async (command: string) => command === 'read_loadbot_inventory' ? serializedInventory : undefined);
     render(<LoadbotMenu {...realMenuDependencies} sampleForms={fixtureMenuDependencies.sampleForms} />);
     expect(await screen.findByRole('button', { name: 'demo alpha' })).toBeInTheDocument();
     expect(tauri.invoke).toHaveBeenCalledWith('read_loadbot_inventory');
+    expect(tauri.invoke).toHaveBeenCalledWith('read_loadbot_workspace_layout');
     expect(realMenuDependencies).not.toHaveProperty('sampleForms');
     expect(screen.getByText('LOCAL INVENTORY')).toBeInTheDocument();
     expect(screen.queryByText(/fixture|sample form ready/i)).not.toBeInTheDocument();
     expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
     expect(screen.getByText(/Read-only inventory\. Execution is not connected\./)).toBeInTheDocument();
+  });
+
+  it('uses the native GUI-local layout document rather than browser storage', async () => {
+    tauri.invoke.mockClear();
+    tauri.invoke.mockResolvedValueOnce('{"version":1,"projects":321,"shortcuts":222,"terminal":123}');
+    await expect(tauriWorkspaceLayoutStore.read()).resolves.toContain('"projects":321');
+    await tauriWorkspaceLayoutStore.write('{"version":1}');
+    expect(tauri.invoke.mock.calls).toEqual([
+      ['read_loadbot_workspace_layout'],
+      ['write_loadbot_workspace_layout', { contents: '{"version":1}' }],
+    ]);
   });
 
   it('preserves empty versus failed reads through the unchanged controller and presentation', async () => {

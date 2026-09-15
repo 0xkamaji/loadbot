@@ -162,6 +162,150 @@ record_install_mode() {
     mv -f "$temporary" "$INSTALL_MODE_FILE"
 }
 
+installed_file_state() {
+    path=$1
+    if [ -L "$path" ]; then
+        printf 'unsafe'
+    elif [ ! -e "$path" ]; then
+        printf 'missing'
+    elif [ -f "$path" ] && [ -x "$path" ]; then
+        printf 'installed'
+    else
+        printf 'unsafe'
+    fi
+}
+
+managed_integration_state() {
+    path=$1
+    if [ -L "$path" ]; then
+        printf 'unsafe'
+    elif [ ! -e "$path" ]; then
+        printf 'missing'
+    elif [ ! -f "$path" ]; then
+        printf 'unsafe'
+    else
+        starts=$(grep -Fxc "$START_MARKER" "$path" || true)
+        ends=$(grep -Fxc "$END_MARKER" "$path" || true)
+        if [ "$starts" = 0 ] && [ "$ends" = 0 ]; then
+            printf 'missing'
+        elif [ "$starts" = 1 ] && [ "$ends" = 1 ]; then
+            printf 'configured'
+        else
+            printf 'unsafe'
+        fi
+    fi
+}
+
+path_has_install_bin() {
+    printf '%s' "${PATH:-}" | awk -v RS=: -v target="$INSTALL_BIN" '$0 == target { found = 1 } END { exit !found }'
+}
+
+select_legacy_repair_mode() {
+    heading=$1
+    [ -t 0 ] && [ -t 1 ] ||
+        fail "$heading; rerun interactively or use --cli, --gui, or --all to select the installation explicitly"
+    say ""
+    say "Which installation should Loadbot repair?"
+    say "  1. CLI only"
+    say "  2. GUI only"
+    say "  3. CLI + GUI"
+    say "  4. Cancel"
+    printf '> '
+    IFS= read -r selection || selection=4
+    case "$selection" in
+        1) MODE=cli ;;
+        2) MODE=gui ;;
+        3) MODE=all ;;
+        4) fail "setup cancelled; no changes were made" ;;
+        *) fail "invalid repair selection '$selection'" ;;
+    esac
+}
+
+resolve_legacy_repair_mode() {
+    cli_state=$(installed_file_state "$LOADBOT_BIN")
+    gui_state=$(installed_file_state "$INSTALL_BIN/loadbot-desktop")
+    integration_state=missing
+    completion_state=missing
+    completion_reference=false
+    if [ -n "$profile_path" ]; then
+        integration_state=$(managed_integration_state "$profile_path")
+        if [ "$integration_state" = configured ] && grep -F "loadbot.$shell_name" "$profile_path" >/dev/null 2>&1; then
+            completion_reference=true
+        fi
+        if [ -f "$COMPLETION_DIR/loadbot.$shell_name" ] && [ ! -L "$COMPLETION_DIR/loadbot.$shell_name" ]; then
+            completion_state=generated
+        elif [ -e "$COMPLETION_DIR/loadbot.$shell_name" ] || [ -L "$COMPLETION_DIR/loadbot.$shell_name" ]; then
+            completion_state=unsafe
+        fi
+    fi
+    if path_has_install_bin; then path_state=configured; else path_state=missing; fi
+    if has_command loadbot; then reachable_state=reachable; else reachable_state=not-reachable; fi
+
+    data_directory=${LOADBOT_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/loadbot}
+    config_directory=${LOADBOT_CONFIG_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/loadbot}
+    if [ -e "$data_directory" ]; then data_state=present; else data_state=missing; fi
+    if [ -e "$config_directory" ]; then config_state=present; else config_state=missing; fi
+
+    say "No Loadbot installation record was found."
+    say ""
+    say "Existing Loadbot state detected:"
+    printf '  CLI executable:       %s\n' "$cli_state"
+    printf '  GUI executable:       %s\n' "$gui_state"
+    printf '  PATH integration:     %s\n' "$path_state"
+    printf '  Managed shell block:  %s\n' "$integration_state"
+    printf '  Shell completion:     %s\n' "$completion_state"
+    printf '  loadbot on PATH:      %s\n' "$reachable_state"
+    printf '  Data directory:       %s\n' "$data_state"
+    printf '  Config directory:     %s\n' "$config_state"
+
+    inferred=
+    if [ "$cli_state" = installed ] && [ "$gui_state" = missing ]; then
+        inferred=cli
+    elif [ "$cli_state" = installed ] && [ "$gui_state" = installed ]; then
+        if [ "$integration_state" = configured ] && [ "$completion_state" = generated ] && [ "$completion_reference" = true ]; then
+            inferred=all
+        elif [ "$integration_state" = configured ] && [ "$completion_state" = missing ] && [ "$completion_reference" = false ]; then
+            inferred=gui
+        elif [ "$path_state" = configured ] && [ "$integration_state" = missing ] && [ "$completion_state" = missing ]; then
+            inferred=gui
+        fi
+    fi
+
+    meaningful=false
+    [ "$cli_state" != missing ] && meaningful=true
+    [ "$gui_state" != missing ] && meaningful=true
+    [ "$path_state" = configured ] && meaningful=true
+    [ "$integration_state" != missing ] && meaningful=true
+    [ "$completion_state" != missing ] && meaningful=true
+    [ "$reachable_state" = reachable ] && meaningful=true
+
+    if [ -n "$inferred" ]; then
+        case "$inferred" in
+            cli) inferred_label=CLI-only ;;
+            gui) inferred_label=GUI-only ;;
+            all) inferred_label='CLI + GUI' ;;
+        esac
+        say ""
+        say "This appears to be an installation created by an earlier Loadbot setup version."
+        if [ -t 0 ] && [ -t 1 ]; then
+            printf 'Adopt this as a %s installation and continue repair? [y/N] ' "$inferred_label"
+            IFS= read -r answer || answer=
+            case "$answer" in y|Y|yes|YES|Yes) ;; *) fail "setup cancelled; no changes were made" ;; esac
+        else
+            say "Adopting unambiguous legacy mode: $inferred."
+        fi
+        MODE=$inferred
+    elif [ "$meaningful" = false ]; then
+        say ""
+        say "No existing Loadbot installation was detected."
+        select_legacy_repair_mode "no existing Loadbot installation was detected"
+    else
+        say ""
+        say "Existing Loadbot files or integration were found, but the previous installation mode cannot be determined safely."
+        select_legacy_repair_mode "the legacy Loadbot installation mode is ambiguous"
+    fi
+}
+
 os_family() {
     [ -r /etc/os-release ] || return 0
     awk -F= '
@@ -459,20 +603,6 @@ if [ -z "$MODE" ]; then
 fi
 
 INSTALL_MODE_FILE=$INSTALL_ROOT/loadbot-install-mode
-IS_REPAIR=false
-if [ "$MODE" = repair ]; then
-    IS_REPAIR=true
-    [ -f "$INSTALL_MODE_FILE" ] || fail "no recorded Loadbot installation was found; choose CLI only, GUI only, or CLI + GUI"
-    MODE=$(sed -n '1p' "$INSTALL_MODE_FILE")
-    case "$MODE" in cli|gui|all) ;; *) fail "invalid installation record in $INSTALL_MODE_FILE" ;; esac
-    say "Repairing recorded $MODE installation."
-fi
-[ "$IS_REPAIR" = false ] || verify_configuration_directories
-WANT_GUI=false
-WANT_COMPLETION=false
-[ "$MODE" != gui ] && WANT_COMPLETION=true
-[ "$MODE" = gui ] || [ "$MODE" = all ] && WANT_GUI=true
-
 shell_name=
 profile_path=
 case ${SHELL:-} in
@@ -480,6 +610,26 @@ case ${SHELL:-} in
     */zsh) shell_name=zsh; profile_path=$HOME/.zshrc ;;
     */fish) shell_name=fish; profile_path=$HOME/.config/fish/config.fish ;;
 esac
+
+IS_REPAIR=false
+if [ "$MODE" = repair ]; then
+    IS_REPAIR=true
+    if [ -L "$INSTALL_MODE_FILE" ] || { [ -e "$INSTALL_MODE_FILE" ] && [ ! -f "$INSTALL_MODE_FILE" ]; }; then
+        fail "installation record is not a normal file: $INSTALL_MODE_FILE"
+    elif [ -f "$INSTALL_MODE_FILE" ]; then
+        MODE=$(sed -n '1p' "$INSTALL_MODE_FILE")
+        case "$MODE" in cli|gui|all) ;; *) fail "invalid installation record in $INSTALL_MODE_FILE" ;; esac
+        say "Repairing recorded $MODE installation."
+    else
+        resolve_legacy_repair_mode
+        say "Repairing $MODE installation."
+    fi
+fi
+[ "$IS_REPAIR" = false ] || verify_configuration_directories
+WANT_GUI=false
+WANT_COMPLETION=false
+[ "$MODE" != gui ] && WANT_COMPLETION=true
+[ "$MODE" = gui ] || [ "$MODE" = all ] && WANT_GUI=true
 
 profile_change=none
 profile_before=none

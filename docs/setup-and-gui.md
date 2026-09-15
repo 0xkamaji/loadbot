@@ -31,6 +31,14 @@ Loadbot configuration, catalogs, projects, shortcuts, and unrelated profile
 content. Setup never deletes previously installed component artifacts when a
 smaller mode is selected; repair follows the most recently recorded mode.
 
+Installations created before that record existed are detected from the expected
+CLI and desktop executables plus PATH, managed profile, and completion state.
+An unambiguous legacy mode can be adopted after confirmation (or automatically
+for explicit noninteractive repair). Ambiguous or genuinely fresh state requires
+an explicit CLI-only, GUI-only, or combined choice. Configuration directories are
+reported as context but never treated as installation evidence. The record is
+written atomically only after the selected repair completes successfully.
+
 ## Normal and development launch
 
 `loadbot gui` starts only the installed sibling `loadbot-desktop` executable. It

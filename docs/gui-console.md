@@ -53,6 +53,29 @@ or process capability is present. Future mutating commands must invoke the same
 semantic controller action as the equivalent GUI control rather than establishing a
 second implementation.
 
+## Interactive completion
+
+Tab completion is another read-only projection of the same registry and inventory,
+not shell completion. The registered command definitions provide their semantic
+argument candidates: command names come from the registry, project arguments use
+safe catalog-qualified identities when needed, and shortcut arguments use only the
+resolved project's shortcuts with source/path qualification for duplicates. Matching
+is deterministic, case-insensitive prefix matching; it never searches `PATH`, the
+filesystem, a shell, or the Loadbot CLI.
+
+A unique match replaces only the token at the caret immediately. Multiple matches
+open a bounded field beneath the input. Candidates retain registry/inventory order,
+flow left-to-right, and wrap with the Console width; only the candidate field scrolls
+vertically when the set is large. Semantic candidate identity remains selected when
+that layout reflows.
+
+Tab and Shift+Tab cycle the field, Left and Right cycle in the same direction, and Up
+or Down chooses the nearest candidate on the adjacent rendered row. Enter accepts a
+candidate without submitting the command. Escape closes the field and leaves the
+input exactly as edited; cycling never previews text into the input. Continued typing,
+Backspace, or Delete refilters an active session, and a newly unique result completes
+immediately. Completion does not enter command history or produce Activity events.
+
 ## Session state and Activity
 
 Submitted commands and structured results form an in-memory transcript. Up and Down

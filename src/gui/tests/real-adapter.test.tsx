@@ -53,7 +53,7 @@ describe('one platform-neutral real read adapter', () => {
     expect(realMenuDependencies).not.toHaveProperty('sampleForms');
     expect(screen.getByText('LOCAL INVENTORY')).toBeInTheDocument();
     expect(screen.queryByText(/fixture|sample form ready/i)).not.toBeInTheDocument();
-    expect(screen.getByRole('textbox', { name: 'Loadbot command' })).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Loadbot command' })).toBeInTheDocument();
     expect(screen.queryByLabelText('Input folder *')).not.toBeInTheDocument();
     expect(screen.getByText(/Inventory details\. Execution is not connected\./)).toBeInTheDocument();
   });
@@ -88,7 +88,7 @@ describe('one platform-neutral real read adapter', () => {
     render(<LoadbotMenu adapter={createTauriLoadbotAdapter(async () => data, undefined, management(['personal', 'community']))} sampleForms={fixtureMenuDependencies.sampleForms} />);
     await screen.findByRole('heading', { name: 'Malware triage' });
     expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
-    expect(screen.getByRole('textbox', { name: 'Loadbot command' })).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Loadbot command' })).toBeInTheDocument();
     expect(screen.queryByLabelText('Input folder *')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Use sample/ })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'RUN SHORTCUT' })).not.toBeInTheDocument();

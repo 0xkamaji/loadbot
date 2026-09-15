@@ -24,7 +24,7 @@ test('console terminology and light-surface activity contrast remain clear', asy
   await expect(consoleButton).toBeVisible();
   await expect(commandTab).toHaveAttribute('aria-selected', 'true');
   await expect(activityTab).toHaveAttribute('aria-selected', 'false');
-  await expect(page.getByRole('textbox', { name: 'Loadbot command' })).toBeVisible();
+  await expect(page.getByRole('combobox', { name: 'Loadbot command' })).toBeVisible();
   await expect(page.getByRole('tab', { name: 'TERMINAL' })).toHaveCount(0);
 
   const colors = await commandTab.evaluate((element) => {
@@ -88,6 +88,51 @@ test('console keeps a flat interior and decorative frame across sizes', async ({
   await page.setViewportSize({ width: 722, height: 480 });
   await assertSeparatedFrame();
   await page.screenshot({ path: testInfo.outputPath('console-flat-722x480.png') });
+});
+
+test('command completion wraps responsively and keeps semantic selection through reflow', async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 1200, height: 760 });
+  await page.goto('/fixture.html');
+  const input = page.getByRole('combobox', { name: 'Loadbot command' });
+  await input.fill('inspect r');
+  await input.press('Tab');
+  const field = page.getByRole('listbox', { name: 'Command completions' });
+  const candidates = field.getByRole('option');
+  await expect(candidates).toHaveCount(5);
+  await input.press('Tab');
+  const selectedLabel = await field.getByRole('option', { selected: true }).textContent();
+
+  const layout = async () => field.evaluate((element) => {
+    const items = [...element.querySelectorAll<HTMLElement>('[role="option"]')];
+    const rows = new Set(items.map((item) => Math.round(item.getBoundingClientRect().top)));
+    return {
+      rows: rows.size,
+      noHorizontalOverflow: element.scrollWidth <= element.clientWidth,
+      selected: element.querySelector<HTMLElement>('[aria-selected="true"]')?.textContent,
+    };
+  });
+  const wide = await layout();
+  expect(wide.noHorizontalOverflow).toBe(true);
+
+  await page.setViewportSize({ width: 722, height: 560 });
+  const narrow = await layout();
+  expect(narrow.rows).toBeGreaterThanOrEqual(wide.rows);
+  expect(narrow.noHorizontalOverflow).toBe(true);
+  expect(narrow.selected).toBe(selectedLabel);
+  await page.screenshot({ path: testInfo.outputPath('command-completion-wrapped-722.png') });
+
+  await input.press('Escape');
+  await input.fill('inspect community/research-tools-with-a-long-project-name ');
+  await input.press('Tab');
+  const largeField = page.getByRole('listbox', { name: 'Command completions' });
+  const bounds = await largeField.evaluate((element) => ({
+    clientHeight: element.clientHeight,
+    scrollHeight: element.scrollHeight,
+    noHorizontalOverflow: element.scrollWidth <= element.clientWidth,
+  }));
+  expect(bounds.clientHeight).toBeLessThanOrEqual(108);
+  expect(bounds.scrollHeight).toBeGreaterThan(bounds.clientHeight);
+  expect(bounds.noHorizontalOverflow).toBe(true);
 });
 
 test('approved skins, focus, scrolling, resizing, and drawer preserve a usable menu', async ({ page }, testInfo) => {

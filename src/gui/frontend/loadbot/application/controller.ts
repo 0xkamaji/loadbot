@@ -3,7 +3,7 @@ import type {
   LoadbotProject, LoadbotShortcut,
 } from '../contract';
 import { projectKey, selectionKey, shortcutKey } from '../identity';
-import { executeLoadbotCommand, type CommandResult } from './command';
+import { completeLoadbotCommand, executeLoadbotCommand, type CommandCompletion, type CommandResult } from './command';
 import { initialValues, missingInputs, noSampleForms, type SampleField, type SampleForms, type SampleValues } from './sampleForms';
 
 export type InventoryState =
@@ -79,6 +79,7 @@ export interface LoadbotActions {
   syncCatalog(): Promise<boolean>;
   clearManagementStatus(): void;
   selectBottomView(view: 'command' | 'activity'): void;
+  completeCommand(input: string, caret: number): CommandCompletion | undefined;
   submitCommand(input: string): boolean;
   changeSampleInput(id: string, value: string | boolean): void;
   useSamplePath(id: string): void;
@@ -296,6 +297,15 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
     },
     clearManagementStatus() { if (state.management.status !== 'submitting') publish({ ...state, management: { status: 'idle' } }); },
     selectBottomView(view) { publish({ ...state, bottomView: view }); },
+    completeCommand(input, caret) {
+      const projects = state.inventory.status === 'ready' ? state.inventory.projects : [];
+      return completeLoadbotCommand(input, caret, {
+        inventoryStatus: state.inventory.status,
+        projects,
+        currentCatalog: state.currentCatalog,
+        selectedProject: state.project,
+      });
+    },
     submitCommand(input) {
       const submitted = input.trim();
       if (!submitted) return false;

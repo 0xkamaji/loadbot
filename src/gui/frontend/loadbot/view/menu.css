@@ -101,6 +101,21 @@
   padding: 4px 2px; background: transparent; color: var(--lb-terminal-text); font: inherit; outline: 0;
 }
 .lb-command-form input:focus-visible { border-bottom-width: 2px; }
+.lb-command-completions {
+  display: flex; flex-flow: row wrap; align-content: flex-start; gap: 3px var(--lb-space-4);
+  flex: 0 1 auto; max-height: 108px; min-width: 0; margin: var(--lb-space-1) 0 0 18px;
+  padding: var(--lb-space-1) var(--lb-space-2) var(--lb-space-1) 0;
+  overflow-x: hidden; overflow-y: auto;
+}
+.lb-command-completions button {
+  flex: 0 1 auto; min-width: 0; max-width: 100%; border: 0; padding: 2px 5px;
+  background: transparent; color: var(--lb-terminal-text); font: inherit; font-size: 11px;
+  text-align: left; overflow-wrap: anywhere; cursor: pointer;
+}
+.lb-command-completions button[aria-selected='true'] {
+  background: var(--lb-terminal-accent); color: var(--lb-terminal-surface);
+}
+.lb-command-completions button:focus-visible { outline: 1px solid var(--lb-terminal-accent); outline-offset: 0; }
 .lb-activity ol { list-style: none; margin: var(--lb-space-2) 0 0; padding: 0; font-size: 11px; }
 .lb-activity li { display: grid; grid-template-columns: 68px minmax(0, 1fr); gap: var(--lb-space-2); padding: 3px 0; }
 .lb-activity time { color: var(--lb-terminal-muted); font-variant-numeric: tabular-nums; }

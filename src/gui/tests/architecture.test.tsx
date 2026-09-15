@@ -51,6 +51,16 @@ it('keeps the Console frame decorative and its interior on a stable surface', ()
   expect(drawer).toContain('background-clip: padding-box');
 });
 
+it('keeps command candidates horizontally wrapping and vertically bounded', () => {
+  const menu = readFileSync(join(root, 'loadbot/view/menu.css'), 'utf8');
+  const field = menu.match(/\.lb-command-completions\s*\{([^}]*)\}/)?.[1] ?? '';
+  expect(field).toContain('flex-flow: row wrap');
+  expect(field).toMatch(/max-height:\s*\d+px/);
+  expect(field).toContain('overflow-x: hidden');
+  expect(field).toContain('overflow-y: auto');
+  expect(field).not.toMatch(/grid-template-columns|white-space:\s*nowrap/);
+});
+
 it('pins native/default and fixture entry points to distinct compositions', () => {
   const packageJson = JSON.parse(readFileSync(join(guiRoot, 'package.json'), 'utf8'));
   const tauri = JSON.parse(readFileSync(join(guiRoot, 'src-tauri/tauri.conf.json'), 'utf8'));

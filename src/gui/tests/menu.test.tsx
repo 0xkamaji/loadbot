@@ -27,7 +27,7 @@ describe('injected menu outside Tauri', () => {
     expect(screen.getByRole('tab', { name: 'COMMAND' })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: 'ACTIVITY' })).toBeInTheDocument();
     expect(screen.queryByRole('tab', { name: 'TERMINAL' })).not.toBeInTheDocument();
-    expect(screen.getByRole('textbox', { name: 'Loadbot command' })).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Loadbot command' })).toBeInTheDocument();
     const consoleButton = screen.getByRole('button', { name: 'Console' });
     await user.click(consoleButton);
     expect(screen.queryByRole('region', { name: 'Bottom workspace' })).not.toBeInTheDocument();
@@ -58,7 +58,7 @@ describe('injected menu outside Tauri', () => {
     const user = userEvent.setup();
     render(<LoadbotMenu {...fixtureMenuDependencies} />);
     await screen.findByRole('button', { name: 're-toolkit personal' });
-    const input = screen.getByRole('textbox', { name: 'Loadbot command' });
+    const input = screen.getByRole('combobox', { name: 'Loadbot command' }) as HTMLInputElement;
     await user.type(input, 'projects{Enter}');
     expect(screen.getByRole('tabpanel', { name: 'Command' })).toHaveTextContent('rotbot');
     expect(screen.getByRole('tabpanel', { name: 'Command' })).toHaveTextContent('re-toolkit');
@@ -78,6 +78,101 @@ describe('injected menu outside Tauri', () => {
     await user.keyboard('{Enter}');
     await user.click(screen.getByRole('tab', { name: 'ACTIVITY' }));
     expect(screen.getByRole('tabpanel', { name: 'Activity' })).toHaveTextContent('No activity yet.');
+  });
+
+  it('completes registered commands and semantic identities without submitting or creating activity', async () => {
+    const user = userEvent.setup();
+    render(<LoadbotMenu {...fixtureMenuDependencies} />);
+    await screen.findByRole('button', { name: 're-toolkit personal' });
+    const input = screen.getByRole('combobox', { name: 'Loadbot command' }) as HTMLInputElement;
+
+    await user.type(input, 'sho{Tab}');
+    expect(input).toHaveValue('shortcuts');
+    expect(screen.queryByRole('listbox', { name: 'Command completions' })).not.toBeInTheDocument();
+    expect(screen.queryByText('Available commands:')).not.toBeInTheDocument();
+
+    await user.clear(input);
+    await user.type(input, 'wat{Tab}');
+    expect(input).toHaveValue('wat');
+    expect(screen.queryByRole('listbox', { name: 'Command completions' })).not.toBeInTheDocument();
+    input.setSelectionRange(2, 2);
+    await user.keyboard('{ArrowLeft}');
+    expect(input.selectionStart).toBe(1);
+    await user.keyboard('{ArrowRight}');
+    expect(input.selectionStart).toBe(2);
+
+    await user.clear(input);
+    await user.type(input, 'inspect r{Tab}');
+    const candidates = screen.getAllByRole('option');
+    expect(candidates.map((candidate) => candidate.textContent)).toEqual([
+      're-toolkit', 'radio', 'rotbot', 'community/research-tools-with-a-long-project-name', 'community/re-toolkit',
+    ]);
+    expect(candidates[0]).toHaveAttribute('aria-selected', 'true');
+    await user.keyboard('{Shift>}{Tab}{/Shift}');
+    expect(candidates.at(-1)).toHaveAttribute('aria-selected', 'true');
+    await user.keyboard('{Tab}');
+    expect(candidates[0]).toHaveAttribute('aria-selected', 'true');
+    await user.keyboard('{Tab}');
+    expect(candidates[1]).toHaveAttribute('aria-selected', 'true');
+    await user.keyboard('{Shift>}{Tab}{/Shift}');
+    expect(candidates[0]).toHaveAttribute('aria-selected', 'true');
+    await user.keyboard('{ArrowLeft}');
+    expect(candidates.at(-1)).toHaveAttribute('aria-selected', 'true');
+    await user.keyboard('{ArrowRight}');
+    expect(candidates[0]).toHaveAttribute('aria-selected', 'true');
+    await user.keyboard('{Escape}');
+    expect(input).toHaveValue('inspect r');
+    expect(screen.queryByRole('listbox', { name: 'Command completions' })).not.toBeInTheDocument();
+
+    await user.keyboard('{Tab}{Enter}');
+    expect(input).toHaveValue('inspect re-toolkit');
+    expect(screen.queryByText('Project', { selector: '.lb-command-output > p' })).not.toBeInTheDocument();
+    await user.keyboard('{Enter}');
+    expect(input).toHaveValue('');
+    expect(screen.getByText('Project', { selector: '.lb-command-output > p' })).toBeInTheDocument();
+
+    await user.type(input, 'inspect r{Tab}a');
+    expect(input).toHaveValue('inspect radio');
+    expect(screen.queryByRole('listbox', { name: 'Command completions' })).not.toBeInTheDocument();
+    await user.keyboard('{ArrowUp}');
+    expect(input).toHaveValue('inspect re-toolkit');
+
+    await user.clear(input);
+    await user.type(input, 'inspect r{Tab}');
+    input.setSelectionRange(8, 8);
+    await user.keyboard('{Delete}');
+    expect(input).toHaveValue('inspect ');
+    expect(screen.getByRole('listbox', { name: 'Command completions' })).toBeInTheDocument();
+    await user.type(input, 'r{Backspace}');
+    expect(input).toHaveValue('inspect ');
+
+    await user.click(screen.getByRole('tab', { name: 'ACTIVITY' }));
+    expect(screen.getByRole('tabpanel', { name: 'Activity' })).toHaveTextContent('No activity yet.');
+  });
+
+  it('uses rendered rows for vertical completion navigation and bounds the candidate field', async () => {
+    const user = userEvent.setup();
+    render(<LoadbotMenu {...fixtureMenuDependencies} />);
+    await screen.findByRole('button', { name: 're-toolkit personal' });
+    const input = screen.getByRole('combobox', { name: 'Loadbot command' });
+    await user.type(input, 'inspect r{Tab}');
+    const candidates = screen.getAllByRole('option');
+    const positions = [
+      [0, 0, 80], [100, 0, 180], [200, 0, 280], [0, 24, 80], [120, 24, 220],
+    ];
+    candidates.forEach((candidate, index) => vi.spyOn(candidate, 'getBoundingClientRect').mockReturnValue({
+      x: positions[index][0], y: positions[index][1], left: positions[index][0], top: positions[index][1],
+      right: positions[index][2], bottom: positions[index][1] + 18, width: positions[index][2] - positions[index][0],
+      height: 18, toJSON: () => ({}),
+    }));
+
+    await user.keyboard('{ArrowRight}{ArrowDown}');
+    expect(candidates[4]).toHaveAttribute('aria-selected', 'true');
+    await user.keyboard('{ArrowDown}');
+    expect(candidates[1]).toHaveAttribute('aria-selected', 'true');
+    const field = screen.getByRole('listbox', { name: 'Command completions' });
+    expect(field).toHaveClass('lb-command-completions');
+    expect(field).toBeInTheDocument();
   });
 
   it('keeps selection distinct from arrow-key focus and supports native activation', async () => {

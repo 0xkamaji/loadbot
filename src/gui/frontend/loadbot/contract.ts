@@ -73,6 +73,18 @@ export interface RecipeShortcutInput {
 export interface CatalogIdentity { readonly catalog: string }
 export interface ProjectIdentity { readonly catalog: string; readonly tool: string }
 export interface ShortcutIdentity extends ProjectIdentity { readonly name: string; readonly path?: string }
+export interface ShortcutHelpRequest extends ProjectIdentity {
+  readonly target: string;
+  readonly runner: LoadbotRunner;
+  readonly workingDirectory: LoadbotRecipe['working_directory'];
+}
+export interface ShortcutHelpResult {
+  readonly commandAttempted: readonly string[];
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly exitStatus?: number;
+  readonly detectedHelpFlag?: '--help' | '-h';
+}
 
 export type CatalogSyncStage = 'validating' | 'repository-checked' | 'updating-repository' | 'current' | 'updated';
 export interface CatalogSyncActivity {
@@ -96,6 +108,7 @@ export interface LoadbotAdapter {
   updateRecipeShortcut(input: RecipeShortcutInput): Promise<ShortcutIdentity>;
   chooseProjectFile(project: ProjectIdentity): Promise<string | undefined>;
   chooseProjectDirectory(project: ProjectIdentity): Promise<string | undefined>;
+  viewShortcutHelp(request: ShortcutHelpRequest): Promise<ShortcutHelpResult>;
   deleteShortcuts(shortcuts: readonly ShortcutIdentity[]): Promise<number>;
   syncCatalog(catalog: string, onActivity?: CatalogSyncActivitySink): Promise<void>;
 }

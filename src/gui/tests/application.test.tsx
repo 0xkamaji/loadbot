@@ -12,7 +12,7 @@ describe('headless capability and application boundary', () => {
     readCatalogs: async () => [{ name: 'personal', url: 'test', writable: true, state: 'installed', default: false }, { name: 'community', url: 'test', writable: false, state: 'installed', default: false }, { name: 'one', url: 'test', writable: true, state: 'installed', default: false }, { name: 'two', url: 'test', writable: true, state: 'installed', default: false }, { name: 'three', url: 'test', writable: true, state: 'installed', default: false }],
     openProjectFolder,
     addCatalog: vi.fn(), addProject: vi.fn(), addShortcut: vi.fn(), addRecipeShortcut: vi.fn(), updateRecipeShortcut: vi.fn(),
-    chooseProjectFile: vi.fn(), chooseProjectDirectory: vi.fn(), deleteShortcuts: vi.fn(), syncCatalog: vi.fn(),
+    chooseProjectFile: vi.fn(), chooseProjectDirectory: vi.fn(), viewShortcutHelp: vi.fn(), deleteShortcuts: vi.fn(), syncCatalog: vi.fn(),
   });
 
   it('returns independent serializable fixture snapshots without widget metadata', async () => {
@@ -239,7 +239,7 @@ describe('headless capability and application boundary', () => {
         ] } : item);
         return { catalog: input.catalog, tool: input.tool, name: input.name, path: input.path };
       }),
-      addRecipeShortcut: vi.fn(), updateRecipeShortcut: vi.fn(), chooseProjectFile: vi.fn(),
+      addRecipeShortcut: vi.fn(), updateRecipeShortcut: vi.fn(), chooseProjectFile: vi.fn(), viewShortcutHelp: vi.fn(),
       chooseProjectDirectory: vi.fn(), deleteShortcuts: vi.fn(),
       syncCatalog: vi.fn(async () => {}),
     };
@@ -438,6 +438,37 @@ describe('headless capability and application boundary', () => {
     application.actions.addRecipeParameter('file');
     expect(managed.chooseProjectFile).toHaveBeenCalledTimes(2);
     expect(application.getSnapshot().recipeEditor?.draft.arguments[0]?.value).toMatchObject({ type: 'input', kind: 'file' });
+    expect(application.getSnapshot().activity).toEqual([]);
+  });
+
+  it('owns help request state, prevents duplicate probes, and clears stale output when invocation changes', async () => {
+    let finish!: (value: Awaited<ReturnType<LoadbotAdapter['viewShortcutHelp']>>) => void;
+    const managed = adapter(async () => [{ catalog: 'one', tool: 'demo', entries: [] }]);
+    managed.viewShortcutHelp = vi.fn(() => new Promise<Awaited<ReturnType<LoadbotAdapter['viewShortcutHelp']>>>((resolve) => { finish = resolve; }));
+    const application = createLoadbotApplication(managed);
+    application.start();
+    await vi.waitFor(() => expect(application.getSnapshot().inventory.status).toBe('ready'));
+    application.actions.openRecipeCreator();
+
+    expect(await application.actions.viewRecipeHelp()).toBe(false);
+    expect(application.getSnapshot().recipeEditor?.help).toEqual({ status: 'error', message: 'Choose a target before viewing help.' });
+    application.actions.setRecipeTarget('scripts/tool.py');
+    expect(application.getSnapshot().recipeEditor?.help).toBeUndefined();
+    const first = application.actions.viewRecipeHelp();
+    expect(application.getSnapshot().recipeEditor?.help).toEqual({ status: 'loading' });
+    expect(await application.actions.viewRecipeHelp()).toBe(false);
+    expect(managed.viewShortcutHelp).toHaveBeenCalledOnce();
+    expect(managed.viewShortcutHelp).toHaveBeenCalledWith({
+      catalog: 'one', tool: 'demo', target: 'scripts/tool.py', runner: 'python',
+      workingDirectory: { type: 'project-root' },
+    });
+    finish({ commandAttempted: ['python', 'scripts/tool.py', '--help'], stdout: 'Usage\n', stderr: '', exitStatus: 0, detectedHelpFlag: '--help' });
+    expect(await first).toBe(true);
+    expect(application.getSnapshot().recipeEditor?.help).toMatchObject({ status: 'ready', result: { stdout: 'Usage\n' } });
+
+    application.actions.setRecipeRunner('bash');
+    expect(application.getSnapshot().recipeEditor?.help).toBeUndefined();
+    application.actions.dismissRecipeHelp();
     expect(application.getSnapshot().activity).toEqual([]);
   });
 

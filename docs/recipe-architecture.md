@@ -362,8 +362,10 @@ shared catalog commands remain inspectable and read-only rather than being rewri
 
 ## Future phases
 
-Process execution, detached application launch, output UI, Command mutations, help
-discovery, environment overrides and PTY support are not implemented. A later
+Process execution, detached application launch, output UI, Command mutations,
+help parsing/parameter suggestion, environment overrides and PTY support are not
+implemented. The GUI can display raw, bounded `--help`/`-h` output for a validated
+authoring target, but that probe is not Recipe execution or schema discovery. A later
 execution phase must consume `ResolvedInvocation`; it must not reinterpret a preview
 string as a command.
 

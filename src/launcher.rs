@@ -12,7 +12,8 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus};
+use std::process::{Command, ExitStatus, Output};
+use std::time::Duration;
 #[derive(Debug)]
 pub struct ChildExit {
     code: i32,
@@ -219,6 +220,122 @@ fn script_argument(
     let _ = (working_directory, interpreter);
     command.arg(target);
     Ok(())
+}
+
+const HELP_CAPTURE_LIMIT: usize = 256 * 1024;
+const HELP_TIMEOUT: Duration = Duration::from_secs(5);
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HelpResult {
+    pub command_attempted: Vec<String>,
+    pub stdout: String,
+    pub stderr: String,
+    pub exit_status: Option<i32>,
+    pub detected_help_flag: Option<String>,
+}
+
+/// Probe one validated project target without a shell or command-string parsing.
+/// Non-zero exits still count when the program returned useful help text.
+pub fn view_help(
+    target: &Path,
+    working_directory: &Path,
+    runner: Runner,
+    context: &mut OperationContext<'_>,
+) -> Result<HelpResult> {
+    view_help_with_timeout(target, working_directory, runner, HELP_TIMEOUT, context)
+}
+
+fn view_help_with_timeout(
+    target: &Path,
+    working_directory: &Path,
+    runner: Runner,
+    timeout: Duration,
+    context: &mut OperationContext<'_>,
+) -> Result<HelpResult> {
+    context.process.cancellation.check()?;
+    let mut last = None;
+    for flag in ["--help", "-h"] {
+        let (output, command_attempted) =
+            run_help_attempt(target, working_directory, runner, flag, timeout, context)?;
+        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        let useful = !stdout.trim().is_empty() || !stderr.trim().is_empty();
+        let result = HelpResult {
+            command_attempted,
+            stdout,
+            stderr,
+            exit_status: output.status.code(),
+            detected_help_flag: useful.then(|| flag.to_owned()),
+        };
+        if useful {
+            return Ok(result);
+        }
+        last = Some(result);
+    }
+    Ok(last.expect("the fixed help flag list is non-empty"))
+}
+
+fn run_help_attempt(
+    target: &Path,
+    working_directory: &Path,
+    runner: Runner,
+    flag: &str,
+    timeout: Duration,
+    context: &mut OperationContext<'_>,
+) -> Result<(Output, Vec<String>)> {
+    if runner == Runner::Direct {
+        let mut command = Command::new(target);
+        command.arg(flag).current_dir(working_directory);
+        let attempted = rendered_command(&command);
+        let output = crate::process::execute_with_timeout(
+            &mut command,
+            crate::process::Mode::Capture {
+                limit: HELP_CAPTURE_LIMIT,
+            },
+            &context.process,
+            timeout,
+        )
+        .with_context(|| format!("could not inspect help for {}", target.display()))?;
+        return Ok((output, attempted));
+    }
+
+    for executable in runner.executable_candidates() {
+        let mut command = Command::new(executable);
+        script_argument(&mut command, target, working_directory, executable)?;
+        command.arg(flag).current_dir(working_directory);
+        let attempted = rendered_command(&command);
+        match crate::process::execute_with_timeout(
+            &mut command,
+            crate::process::Mode::Capture {
+                limit: HELP_CAPTURE_LIMIT,
+            },
+            &context.process,
+            timeout,
+        ) {
+            Err(error)
+                if error
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) => {}
+            Ok(output) => return Ok((output, attempted)),
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("could not inspect help for {}", target.display()));
+            }
+        }
+    }
+    bail!(
+        "runner '{}' is not available in PATH for {}",
+        runner.as_str(),
+        target.display()
+    )
+}
+
+fn rendered_command(command: &Command) -> Vec<String> {
+    std::iter::once(command.get_program())
+        .chain(command.get_args())
+        .map(|value| value.to_string_lossy().into_owned())
+        .collect()
 }
 
 #[cfg(all(test, windows))]

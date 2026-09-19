@@ -5,7 +5,7 @@ use loadbot::{
     catalog::Runner,
     interaction::{Interaction, Notice, OperationContext, Unattended},
     launcher::{self, Project},
-    operations::{self, CatalogState, ShortcutIdentity},
+    operations::{self, CatalogState, ShortcutHelpRequest, ShortcutIdentity},
     paths::Paths,
     recipe::RecipeDefinition,
 };
@@ -323,6 +323,16 @@ async fn choose_loadbot_project_directory(
 }
 
 #[tauri::command]
+async fn view_loadbot_shortcut_help(
+    request: ShortcutHelpRequest,
+) -> Result<launcher::HelpResult, DesktopError> {
+    run_loadbot_worker("shortcut help", move |paths, context| {
+        operations::shortcut_help(paths, &request, context)
+    })
+    .await
+}
+
+#[tauri::command]
 async fn sync_loadbot_catalog(
     catalog: String,
     on_activity: Channel<BackendActivity>,
@@ -474,6 +484,7 @@ fn main() {
             delete_loadbot_shortcuts,
             choose_loadbot_project_file,
             choose_loadbot_project_directory,
+            view_loadbot_shortcut_help,
             sync_loadbot_catalog,
             read_loadbot_workspace_layout,
             write_loadbot_workspace_layout

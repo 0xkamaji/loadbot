@@ -71,6 +71,13 @@ export function createFixtureAdapter(): LoadbotAdapter {
   async updateRecipeShortcut() { throw new Error('Management is unavailable in fixture preview.'); },
   async chooseProjectFile() { return 'scripts/fixture-tool.py'; },
   async chooseProjectDirectory() { return 'scripts'; },
+  async viewShortcutHelp(request) {
+    return {
+      commandAttempted: [request.runner, request.target, '--help'],
+      stdout: `Usage: ${request.target} [options]\n\nFixture help output.`, stderr: '', exitStatus: 0,
+      detectedHelpFlag: '--help' as const,
+    };
+  },
   async deleteShortcuts(shortcuts) {
     const requested = shortcuts.map((identity) => {
       const project = inventory.find((item) => item.catalog === identity.catalog && item.tool === identity.tool);

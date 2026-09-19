@@ -17,7 +17,7 @@ vi.mock('@tauri-apps/api/core', () => tauri);
 const management = (names: readonly string[] = ['personal']): ManagementBridge => ({
   readCatalogs: async () => names.map((name, index) => ({ name, url: 'test', writable: true, state: 'installed', default: index === 0 })),
   addCatalog: vi.fn(), addProject: vi.fn(), addShortcut: vi.fn(), addRecipeShortcut: vi.fn(), updateRecipeShortcut: vi.fn(),
-  chooseProjectFile: vi.fn(), chooseProjectDirectory: vi.fn(), deleteShortcuts: vi.fn(), syncCatalog: vi.fn(),
+  chooseProjectFile: vi.fn(), chooseProjectDirectory: vi.fn(), viewShortcutHelp: vi.fn(), deleteShortcuts: vi.fn(), syncCatalog: vi.fn(),
 });
 
 describe('one platform-neutral real read adapter', () => {
@@ -140,6 +140,9 @@ describe('one platform-neutral real read adapter', () => {
       if (command === 'add_loadbot_recipe_shortcut' || command === 'update_loadbot_recipe_shortcut') return { catalog: input?.catalog, tool: input?.tool, name: input?.name, path: null };
       if (command === 'choose_loadbot_project_file') return 'scripts/tool.py';
       if (command === 'choose_loadbot_project_directory') return null;
+      if (command === 'view_loadbot_shortcut_help') return {
+        commandAttempted: ['python', 'scripts/tool.py', '--help'], stdout: 'Usage\n', stderr: '', exitStatus: 0, detectedHelpFlag: '--help',
+      };
       if (command === 'delete_loadbot_shortcuts') return (input?.identities as unknown[]).length;
       if (command === 'sync_loadbot_catalog') {
         const channel = input?.onActivity as InstanceType<typeof tauri.Channel>;
@@ -158,6 +161,10 @@ describe('one platform-neutral real read adapter', () => {
     await adapter.updateRecipeShortcut({ catalog: 'personal', tool: 'demo', name: 'build', description: 'Build it', recipe: { ...recipe, behavior: 'launch' } });
     await expect(adapter.chooseProjectFile({ catalog: 'personal', tool: 'demo' })).resolves.toBe('scripts/tool.py');
     await expect(adapter.chooseProjectDirectory({ catalog: 'personal', tool: 'demo' })).resolves.toBeUndefined();
+    const helpRequest = { catalog: 'personal', tool: 'demo', target: 'scripts/tool.py', runner: 'python' as const, workingDirectory: { type: 'project-root' as const } };
+    await expect(adapter.viewShortcutHelp(helpRequest)).resolves.toEqual({
+      commandAttempted: ['python', 'scripts/tool.py', '--help'], stdout: 'Usage\n', stderr: '', exitStatus: 0, detectedHelpFlag: '--help',
+    });
     await expect(adapter.deleteShortcuts([{ catalog: 'personal', tool: 'demo', name: 'build' }])).resolves.toBe(1);
     const activity = vi.fn();
     await adapter.syncCatalog('personal', activity);
@@ -170,6 +177,7 @@ describe('one platform-neutral real read adapter', () => {
       ['update_loadbot_recipe_shortcut', { catalog: 'personal', tool: 'demo', name: 'build', description: 'Build it', recipe: { ...recipe, behavior: 'launch' } }],
       ['choose_loadbot_project_file', { catalog: 'personal', tool: 'demo' }],
       ['choose_loadbot_project_directory', { catalog: 'personal', tool: 'demo' }],
+      ['view_loadbot_shortcut_help', { request: helpRequest }],
       ['delete_loadbot_shortcuts', { identities: [{ catalog: 'personal', tool: 'demo', name: 'build' }] }],
       ['sync_loadbot_catalog', { catalog: 'personal', onActivity: expect.any(tauri.Channel) }],
     ]);

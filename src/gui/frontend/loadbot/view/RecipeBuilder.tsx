@@ -32,6 +32,9 @@ export function RecipeBuilder({ state, actions, onClose, onDone }: {
           <option value="direct">Direct / Program</option><option value="python">Python</option>
           <option value="powershell">PowerShell</option><option value="bash">Bash</option><option value="sh">Shell</option>
         </SelectControl>
+        <div className="lb-help-action"><Button disabled={busy || editor.help?.status === 'loading'}
+          onClick={() => void actions.viewRecipeHelp()}>{editor.help?.status === 'loading' ? 'LOADING HELP…' : 'VIEW HELP'}</Button></div>
+        {editor.help && <HelpPanel help={editor.help} onDismiss={actions.dismissRecipeHelp} />}
         <TextareaControl label="Description (optional)" value={draft.description}
           onChange={(event) => actions.updateRecipeDetails({ description: event.target.value })} disabled={busy} />
 
@@ -75,6 +78,28 @@ export function RecipeBuilder({ state, actions, onClose, onDone }: {
         <Button type="submit" disabled={busy}>{busy ? 'SAVING…' : draft.mode === 'create' ? 'CREATE SHORTCUT' : 'SAVE SHORTCUT'}</Button></div>
     </form>
   </Dialog>;
+}
+
+function HelpPanel({ help, onDismiss }: {
+  help: NonNullable<LoadbotState['recipeEditor']>['help']; onDismiss(): void;
+}) {
+  if (!help) return null;
+  const empty = help.status === 'ready' && !help.result.stdout.trim() && !help.result.stderr.trim();
+  return <section className="lb-help-panel" aria-label="Target help">
+    <header><h3>HELP</h3><Button onClick={onDismiss}>HIDE</Button></header>
+    {help.status === 'loading' && <p>Requesting help from the selected target…</p>}
+    {help.status === 'error' && <p role="alert">{help.message}</p>}
+    {help.status === 'ready' && <>
+      <p className="lb-note">{help.result.detectedHelpFlag
+        ? `${help.result.detectedHelpFlag} · exit ${help.result.exitStatus ?? 'unknown'}`
+        : `No help output · exit ${help.result.exitStatus ?? 'unknown'}`}</p>
+      {empty && <p>No help output was returned for --help or -h.</p>}
+      {!empty && <div className="lb-help-output">
+        {!!help.result.stdout.trim() && <section><h4>STDOUT</h4><pre>{help.result.stdout}</pre></section>}
+        {!!help.result.stderr.trim() && <section><h4>STDERR</h4><pre>{help.result.stderr}</pre></section>}
+      </div>}
+    </>}
+  </section>;
 }
 
 function ParameterEditor({ argument, index, count, busy, actions }: {

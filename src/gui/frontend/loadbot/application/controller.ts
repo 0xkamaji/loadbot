@@ -1,7 +1,7 @@
 import type {
   AddCatalogInput, AddProjectInput, AddShortcutInput, CatalogSyncActivity, CatalogSyncStage, LoadbotAdapter, LoadbotCatalog,
   LoadbotProject, LoadbotShortcut,
-  LoadbotRecipe, LoadbotRecipeArgument, LoadbotRunner, ShortcutIdentity,
+  LoadbotRecipe, LoadbotRecipeArgument, LoadbotRunner, ShortcutHelpResult, ShortcutIdentity,
 } from '../contract';
 import { projectKey, selectionKey, shortcutKey } from '../identity';
 import { completeLoadbotCommand, executeLoadbotCommand, type CommandCompletion, type CommandResult } from './command';
@@ -51,6 +51,10 @@ export interface CommandState {
   readonly entries: readonly CommandEntry[];
   readonly history: readonly string[];
 }
+export type ShortcutHelpState =
+  | { readonly status: 'loading' }
+  | { readonly status: 'ready'; readonly result: ShortcutHelpResult }
+  | { readonly status: 'error'; readonly message: string };
 
 export interface LoadbotState {
   readonly inventory: InventoryState;
@@ -66,7 +70,7 @@ export interface LoadbotState {
   readonly command: CommandState;
   readonly activity: readonly ActivityEntry[];
   readonly management: ManagementState;
-  readonly recipeEditor?: { readonly draft: RecipeDraft; readonly errors: readonly string[] };
+  readonly recipeEditor?: { readonly draft: RecipeDraft; readonly errors: readonly string[]; readonly help?: ShortcutHelpState };
   readonly shortcutManagement: {
     readonly active: boolean;
     readonly selected: readonly string[];
@@ -102,6 +106,8 @@ export interface LoadbotActions {
   chooseRecipeTarget(): Promise<boolean>;
   chooseRecipeArgumentPath(key: number): Promise<boolean>;
   chooseRecipeWorkingDirectory(): Promise<boolean>;
+  viewRecipeHelp(): Promise<boolean>;
+  dismissRecipeHelp(): void;
   saveRecipe(): Promise<boolean>;
   enterShortcutManagement(): void;
   exitShortcutManagement(): void;
@@ -138,6 +144,7 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
   let activityId = 0;
   let commandId = 0;
   let recipeArgumentKey = 1000;
+  let recipeHelpGeneration = 0;
   const publish = (next: LoadbotState) => {
     state = next;
     listeners.forEach((listener) => listener());
@@ -325,48 +332,56 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
       });
     },
     openRecipeCreator() {
+      recipeHelpGeneration++;
       publish({ ...state, recipeEditor: { draft: newRecipeDraft(), errors: [] } });
     },
     openSelectedRecipeEditor() {
       const draft = state.shortcut && recipeDraftFromShortcut(state.shortcut);
       if (!draft) return false;
+      recipeHelpGeneration++;
       publish({ ...state, recipeEditor: { draft, errors: [] }, management: { status: 'idle' } });
       return true;
     },
     closeRecipeEditor() {
-      if (state.management.status !== 'submitting') publish({ ...state, recipeEditor: undefined });
+      if (state.management.status !== 'submitting') {
+        recipeHelpGeneration++;
+        publish({ ...state, recipeEditor: undefined });
+      }
     },
     updateRecipeDetails(values) {
       if (!state.recipeEditor) return;
-      publish({ ...state, recipeEditor: { draft: { ...state.recipeEditor.draft, ...values }, errors: [] } });
+      publish({ ...state, recipeEditor: { ...state.recipeEditor, draft: { ...state.recipeEditor.draft, ...values }, errors: [] } });
     },
     setRecipeTarget(target) {
       if (!state.recipeEditor) return;
+      recipeHelpGeneration++;
       publish({ ...state, recipeEditor: { draft: updateDraftTarget(state.recipeEditor.draft, target), errors: [] } });
     },
     setRecipeRunner(runner) {
       if (!state.recipeEditor) return;
+      recipeHelpGeneration++;
       publish({ ...state, recipeEditor: { draft: updateDraftRunner(state.recipeEditor.draft, runner), errors: [] } });
     },
     setRecipeWorkingDirectory(working_directory) {
       if (!state.recipeEditor) return;
+      recipeHelpGeneration++;
       publish({ ...state, recipeEditor: { draft: { ...state.recipeEditor.draft, workingDirectory: working_directory }, errors: [] } });
     },
     addRecipeParameter(kind) {
       if (!state.recipeEditor) return;
-      publish({ ...state, recipeEditor: { draft: addDraftArgument(state.recipeEditor.draft, kind, ++recipeArgumentKey), errors: [] } });
+      publish({ ...state, recipeEditor: { ...state.recipeEditor, draft: addDraftArgument(state.recipeEditor.draft, kind, ++recipeArgumentKey), errors: [] } });
     },
     updateRecipeParameter(key, value, idManuallyEdited) {
       if (!state.recipeEditor) return;
-      publish({ ...state, recipeEditor: { draft: updateDraftArgument(state.recipeEditor.draft, key, value, idManuallyEdited), errors: [] } });
+      publish({ ...state, recipeEditor: { ...state.recipeEditor, draft: updateDraftArgument(state.recipeEditor.draft, key, value, idManuallyEdited), errors: [] } });
     },
     removeRecipeParameter(key) {
       if (!state.recipeEditor) return;
-      publish({ ...state, recipeEditor: { draft: removeDraftArgument(state.recipeEditor.draft, key), errors: [] } });
+      publish({ ...state, recipeEditor: { ...state.recipeEditor, draft: removeDraftArgument(state.recipeEditor.draft, key), errors: [] } });
     },
     moveRecipeParameter(key, direction) {
       if (!state.recipeEditor) return;
-      publish({ ...state, recipeEditor: { draft: moveDraftArgument(state.recipeEditor.draft, key, direction), errors: [] } });
+      publish({ ...state, recipeEditor: { ...state.recipeEditor, draft: moveDraftArgument(state.recipeEditor.draft, key, direction), errors: [] } });
     },
     async chooseRecipeTarget() {
       const editor = state.recipeEditor;
@@ -410,6 +425,37 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
         publish({ ...state, recipeEditor: { ...editor, errors: [errorMessage(error, 'Could not choose a project folder.')] } });
         return false;
       }
+    },
+    async viewRecipeHelp() {
+      const editor = state.recipeEditor;
+      const project = state.project;
+      if (!editor || !project || editor.help?.status === 'loading') return false;
+      if (!editor.draft.target.trim()) {
+        publish({ ...state, recipeEditor: { ...editor, help: { status: 'error', message: 'Choose a target before viewing help.' } } });
+        return false;
+      }
+      const request = ++recipeHelpGeneration;
+      publish({ ...state, recipeEditor: { ...editor, help: { status: 'loading' } } });
+      try {
+        const result = await adapter.viewShortcutHelp({
+          catalog: project.catalog, tool: project.tool, target: editor.draft.target.trim(),
+          runner: editor.draft.runner, workingDirectory: editor.draft.workingDirectory,
+        });
+        if (request !== recipeHelpGeneration || !state.recipeEditor) return false;
+        publish({ ...state, recipeEditor: { ...state.recipeEditor, help: { status: 'ready', result } } });
+        return true;
+      } catch (error: unknown) {
+        if (request !== recipeHelpGeneration || !state.recipeEditor) return false;
+        publish({ ...state, recipeEditor: { ...state.recipeEditor, help: {
+          status: 'error', message: errorMessage(error, 'Could not view help for this target.'),
+        } } });
+        return false;
+      }
+    },
+    dismissRecipeHelp() {
+      if (!state.recipeEditor) return;
+      recipeHelpGeneration++;
+      publish({ ...state, recipeEditor: { ...state.recipeEditor, help: undefined } });
     },
     async saveRecipe() {
       const editor = state.recipeEditor;

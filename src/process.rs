@@ -74,6 +74,19 @@ impl std::fmt::Display for CleanupIncomplete {
 }
 impl std::error::Error for CleanupIncomplete {}
 
+#[derive(Debug)]
+pub struct TimedOut(pub Duration);
+impl std::fmt::Display for TimedOut {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "process did not finish within {} seconds",
+            self.0.as_secs()
+        )
+    }
+}
+impl std::error::Error for TimedOut {}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stream {
     Stdout,
@@ -146,6 +159,24 @@ pub enum Mode {
 }
 
 pub fn execute(command: &mut Command, mode: Mode, control: &Control) -> Result<Output> {
+    execute_bounded(command, mode, control, None)
+}
+
+pub fn execute_with_timeout(
+    command: &mut Command,
+    mode: Mode,
+    control: &Control,
+    timeout: Duration,
+) -> Result<Output> {
+    execute_bounded(command, mode, control, Some(timeout))
+}
+
+fn execute_bounded(
+    command: &mut Command,
+    mode: Mode,
+    control: &Control,
+    timeout: Option<Duration>,
+) -> Result<Output> {
     control.cancellation.check()?;
     control.emit(Event::Starting {
         program: command.get_program().to_owned(),
@@ -153,7 +184,7 @@ pub fn execute(command: &mut Command, mode: Mode, control: &Control) -> Result<O
         directory: command.get_current_dir().map(std::path::Path::to_owned),
     });
     control.cancellation.check()?;
-    let result = execute_inner(command, mode, control);
+    let result = execute_inner(command, mode, control, timeout);
     if let Err(error) = &result
         && error.downcast_ref::<Cancelled>().is_none()
     {
@@ -164,7 +195,12 @@ pub fn execute(command: &mut Command, mode: Mode, control: &Control) -> Result<O
     result
 }
 
-fn execute_inner(command: &mut Command, mode: Mode, control: &Control) -> Result<Output> {
+fn execute_inner(
+    command: &mut Command,
+    mode: Mode,
+    control: &Control,
+    timeout: Option<Duration>,
+) -> Result<Output> {
     let piped = !matches!(mode, Mode::Inherit);
     if piped {
         command
@@ -224,6 +260,8 @@ fn execute_inner(command: &mut Command, mode: Mode, control: &Control) -> Result
     let mut stopped = false;
     let mut cleanup_incomplete = false;
     let mut cleanup_started = None;
+    let started_at = std::time::Instant::now();
+    let mut timed_out = false;
     loop {
         if status.is_none() {
             status = child
@@ -234,6 +272,15 @@ fn execute_inner(command: &mut Command, mode: Mode, control: &Control) -> Result
             owner.terminate().context(CleanupIncomplete)?;
             stopped = true;
             cancelled = true;
+            cleanup_started = Some(std::time::Instant::now());
+        }
+        if !stopped
+            && status.is_none()
+            && timeout.is_some_and(|timeout| started_at.elapsed() >= timeout)
+        {
+            owner.terminate().context(CleanupIncomplete)?;
+            stopped = true;
+            timed_out = true;
             cleanup_started = Some(std::time::Instant::now());
         }
         if status.is_some() && !stopped {
@@ -294,6 +341,9 @@ fn execute_inner(command: &mut Command, mode: Mode, control: &Control) -> Result
     if cancelled {
         control.emit(Event::Cancelled { pid });
         return Err(Cancelled.into());
+    }
+    if timed_out {
+        return Err(TimedOut(timeout.expect("timeout exists after timeout branch")).into());
     }
     if overflow {
         anyhow::bail!(
@@ -536,3 +586,27 @@ mod platform {
 #[cfg(windows)]
 #[path = "process_windows.rs"]
 mod platform;
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bounded_capture_stops_a_hung_process() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "sleep 10"]);
+        let started = std::time::Instant::now();
+        let error = execute_with_timeout(
+            &mut command,
+            Mode::Capture { limit: 1024 },
+            &Control {
+                terminal: false,
+                ..Control::default()
+            },
+            Duration::from_millis(50),
+        )
+        .unwrap_err();
+        assert!(error.downcast_ref::<TimedOut>().is_some());
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+}

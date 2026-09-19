@@ -4,7 +4,7 @@ import type {
   CatalogSyncActivity, CatalogSyncActivitySink, LoadbotCatalog, LoadbotProject, LoadbotRecipe,
   LoadbotInterpreterRunner, LoadbotRecipeArgument, LoadbotRunner, LoadbotShortcut,
   ProjectIdentity, ShortcutIdentity,
-  RecipeShortcutInput,
+  RecipeShortcutInput, ShortcutHelpRequest, ShortcutHelpResult,
 } from '../loadbot/contract';
 
 /** One query seam for tests/host composition, not a generic RPC interface. */
@@ -19,6 +19,7 @@ export interface ManagementBridge {
   updateRecipeShortcut(input: RecipeShortcutInput): Promise<unknown>;
   chooseProjectFile(project: ProjectIdentity): Promise<unknown>;
   chooseProjectDirectory(project: ProjectIdentity): Promise<unknown>;
+  viewShortcutHelp(request: ShortcutHelpRequest): Promise<unknown>;
   deleteShortcuts(shortcuts: readonly ShortcutIdentity[]): Promise<unknown>;
   syncCatalog(catalog: string, onActivity?: CatalogSyncActivitySink): Promise<unknown>;
 }
@@ -73,6 +74,10 @@ const nativeManagementBridge: ManagementBridge = {
     requireTauri('Project folder selection');
     return invoke('choose_loadbot_project_directory', { catalog: project.catalog, tool: project.tool });
   },
+  async viewShortcutHelp(request) {
+    requireTauri('Shortcut help');
+    return invoke('view_loadbot_shortcut_help', { request });
+  },
   async deleteShortcuts(shortcuts) {
     requireTauri('Shortcut management');
     return invoke('delete_loadbot_shortcuts', { identities: shortcuts });
@@ -107,6 +112,19 @@ function number(value: unknown): number {
 function optionalPath(value: unknown): string | undefined {
   if (value == null) return undefined;
   return text(value);
+}
+function shortcutHelp(value: unknown): ShortcutHelpResult {
+  const item = record(value);
+  if (!Array.isArray(item.commandAttempted)) throw new Error('Invalid shortcut help command.');
+  const exitStatus = item.exitStatus == null ? undefined : number(item.exitStatus);
+  const detectedHelpFlag = optionalText(item.detectedHelpFlag);
+  if (detectedHelpFlag !== undefined && detectedHelpFlag !== '--help' && detectedHelpFlag !== '-h') {
+    throw new Error('Invalid shortcut help flag.');
+  }
+  return {
+    commandAttempted: item.commandAttempted.map(text), stdout: text(item.stdout), stderr: text(item.stderr),
+    exitStatus, detectedHelpFlag,
+  };
 }
 function recipeArgument(value: unknown): LoadbotRecipeArgument {
   const item = record(value);
@@ -274,6 +292,10 @@ export function createTauriLoadbotAdapter(
     async chooseProjectDirectory(project) {
       try { return optionalPath(await management.chooseProjectDirectory(project)); }
       catch (error: unknown) { throw nativeError(error, 'Could not choose a folder in the project.'); }
+    },
+    async viewShortcutHelp(request) {
+      try { return shortcutHelp(await management.viewShortcutHelp(request)); }
+      catch (error: unknown) { throw nativeError(error, 'Could not view help for this target.'); }
     },
     async deleteShortcuts(shortcuts) {
       try { return number(await management.deleteShortcuts(shortcuts)); }

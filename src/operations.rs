@@ -60,6 +60,66 @@ pub struct ShortcutIdentity {
     pub path: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShortcutHelpRequest {
+    pub catalog: String,
+    pub tool: String,
+    pub target: String,
+    pub runner: Runner,
+    pub working_directory: crate::recipe::WorkingDirectory,
+}
+
+/// Resolve and probe help for one project-owned target. This is deliberately a
+/// read-only discovery operation: it never persists a shortcut or parses output.
+pub fn shortcut_help(
+    paths: &Paths,
+    request: &ShortcutHelpRequest,
+    context: &mut OperationContext<'_>,
+) -> Result<crate::launcher::HelpResult> {
+    let _process_scope = crate::process::scope(&context.process);
+    context.process.cancellation.check()?;
+    let project_path = paths.tool(&request.catalog, &request.tool)?;
+    let _repository_lease = context.lease(&project_path)?;
+    let root = installed_tool_path(paths, &request.tool, &request.catalog, context)?;
+    let arguments = if request.runner == Runner::Direct {
+        Vec::new()
+    } else {
+        vec![crate::recipe::RecipeArgument::ProjectPath {
+            path: request.target.clone(),
+        }]
+    };
+    let recipe = crate::recipe::RecipeDefinition {
+        version: crate::recipe::RECIPE_VERSION,
+        behavior: crate::recipe::InvocationBehavior::Run,
+        program: if request.runner == Runner::Direct {
+            crate::recipe::RecipeProgram::ProjectFile {
+                path: request.target.clone(),
+            }
+        } else {
+            crate::recipe::RecipeProgram::Interpreter {
+                runner: request.runner,
+            }
+        },
+        working_directory: request.working_directory.clone(),
+        arguments,
+    };
+    let resolved =
+        crate::recipe::resolve_recipe(&root, &recipe, &crate::recipe::RuntimeInputs::new())?;
+    let target = match resolved.program {
+        crate::recipe::ResolvedProgram::ProjectFile(path) => path,
+        crate::recipe::ResolvedProgram::Interpreter { .. } => resolved
+            .argv
+            .first()
+            .map(PathBuf::from)
+            .context("resolved help invocation has no project target")?,
+        crate::recipe::ResolvedProgram::SearchPath { .. } => {
+            bail!("help discovery requires a project-owned target")
+        }
+    };
+    crate::launcher::view_help(&target, &resolved.cwd, request.runner, context)
+}
+
 /// Add one personal shortcut through the same qualified project and path checks used
 /// by the launcher. The caller supplies semantic fields, never a native absolute path.
 #[allow(clippy::too_many_arguments)]

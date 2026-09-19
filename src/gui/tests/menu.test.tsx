@@ -13,7 +13,7 @@ describe('injected menu outside Tauri', () => {
     readInventory: async () => projects,
     readCatalogs: async () => [...new Set(projects.map((item) => item.catalog))].map((name, index) => ({ name, url: 'fixture', writable: true, state: 'installed' as const, default: index === 0 })),
     openProjectFolder: open, addCatalog: vi.fn(), addProject: vi.fn(), addShortcut: vi.fn(), addRecipeShortcut: vi.fn(), updateRecipeShortcut: vi.fn(),
-    chooseProjectFile: vi.fn(), chooseProjectDirectory: vi.fn(), deleteShortcuts: vi.fn(), syncCatalog: vi.fn(),
+    chooseProjectFile: vi.fn(), chooseProjectDirectory: vi.fn(), viewShortcutHelp: vi.fn(), deleteShortcuts: vi.fn(), syncCatalog: vi.fn(),
   });
   it('changes project/shortcut, resets isolated forms, and preserves state through the drawer', async () => {
     const user = userEvent.setup();
@@ -370,6 +370,36 @@ describe('injected menu outside Tauri', () => {
     expect(updateRecipeShortcut).toHaveBeenCalledWith(expect.objectContaining({ recipe: expect.objectContaining({ behavior: 'run' }) }));
     expect(await screen.findByText('Run Recipe')).toBeInTheDocument();
     expect(screen.queryByText(/output/i)).not.toBeInTheDocument();
+  });
+
+  it('shows dismissible raw target help and clears it when the target changes', async () => {
+    const user = userEvent.setup();
+    const viewShortcutHelp = vi.fn(async () => ({
+      commandAttempted: ['python', 'scripts/tool.py', '--help'], stdout: 'Usage: tool [options]\n  --verbose\n',
+      stderr: 'Additional help from stderr\n', exitStatus: 2, detectedHelpFlag: '--help' as const,
+    }));
+    const managed = { ...adapter([{ catalog: 'personal', tool: 'demo', entries: [] }]), viewShortcutHelp };
+    render(<LoadbotMenu adapter={managed} />);
+    await projectRows().findByRole('button', { name: 'demo personal' });
+    await user.click(screen.getByRole('button', { name: '+ ADD SHORTCUT' }));
+    await user.type(screen.getByLabelText('Target *'), 'scripts/tool.py');
+    const preview = screen.getByRole('region', { name: 'Shortcut preview' }).textContent;
+
+    await user.click(screen.getByRole('button', { name: 'VIEW HELP' }));
+    const help = await screen.findByRole('region', { name: 'Target help' });
+    expect(help).toHaveTextContent('Usage: tool [options]');
+    expect(help).toHaveTextContent('Additional help from stderr');
+    expect(help).toHaveTextContent('--help · exit 2');
+    expect(screen.getByRole('region', { name: 'Shortcut preview' }).textContent).toBe(preview);
+    expect(viewShortcutHelp).toHaveBeenCalledWith(expect.objectContaining({ target: 'scripts/tool.py', runner: 'python' }));
+
+    await user.clear(screen.getByLabelText('Target *'));
+    await user.type(screen.getByLabelText('Target *'), 'scripts/other.py');
+    expect(screen.queryByRole('region', { name: 'Target help' })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'VIEW HELP' }));
+    await screen.findByRole('region', { name: 'Target help' });
+    await user.click(screen.getByRole('button', { name: 'HIDE' }));
+    expect(screen.queryByRole('region', { name: 'Target help' })).not.toBeInTheDocument();
   });
 
   it('browses portable author-time paths and manages only personal shortcuts with confirmation', async () => {

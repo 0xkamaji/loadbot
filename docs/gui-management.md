@@ -77,6 +77,14 @@ File, Directory, Flag, Flag + Value, and Fixed Argument. These map to `Input`,
 generated from their labels and remain under an Advanced disclosure; once edited
 explicitly, later label changes do not replace them.
 
+`VIEW HELP` is a deliberately narrow authoring aid. The controller sends the current
+qualified project, project-relative target, runner, and working directory through
+the semantic adapter. Rust resolves the same Recipe primitives used by authoring,
+then invokes the validated target with `--help`, falling back to `-h` only when the
+first attempt returns no output. Output capture is bounded and each attempt has a
+five-second timeout. The temporary panel shows raw stdout/stderr and exit status;
+it does not parse help, infer parameters, mutate configuration, or use a shell.
+
 Project-owned files and folders use the official native Tauri dialog plugin through
 semantic `chooseProjectFile` and `chooseProjectDirectory` adapter capabilities. The
 dialog starts in the installed project. Rust canonicalizes the result, rejects
@@ -119,4 +127,4 @@ can exercise project-path choices and personal deletion without touching real st
 Fixtures include Legacy, Run Recipe, and Launch Recipe inspection examples.
 Background sync, catalog initialization, project pulling, Recipe/shortcut execution,
 application launching, Output UI, PTY/system-terminal execution, Rot GUI integration,
-and model/personality behavior are not implemented.
+help-to-parameter inference, and model/personality behavior are not implemented.

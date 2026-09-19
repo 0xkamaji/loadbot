@@ -95,6 +95,34 @@ fn installed_tool(paths: &Paths, catalog: &str, tool: &str, url: &str) -> PathBu
     directory
 }
 
+#[cfg(unix)]
+fn help_fixture(script: &str) -> (tempfile::TempDir, Paths, PathBuf) {
+    let temporary = tempfile::tempdir().unwrap();
+    let paths = paths(temporary.path());
+    let url = "https://example.invalid/tool.git";
+    catalog(
+        &paths,
+        "alpha",
+        &format!("version = 1\n[tools.demo]\ntype = 'git'\nurl = '{url}'\n"),
+    );
+    let project = installed_tool(&paths, "alpha", "demo", url);
+    fs::create_dir_all(project.join("scripts with spaces")).unwrap();
+    fs::write(project.join("help-marker"), "present").unwrap();
+    fs::write(project.join("scripts with spaces/help tool.sh"), script).unwrap();
+    (temporary, paths, project)
+}
+
+#[cfg(unix)]
+fn help_request(target: &str) -> operations::ShortcutHelpRequest {
+    operations::ShortcutHelpRequest {
+        catalog: "alpha".into(),
+        tool: "demo".into(),
+        target: target.into(),
+        runner: Runner::Sh,
+        working_directory: WorkingDirectory::ProjectRoot,
+    }
+}
+
 fn observe(context: &mut OperationContext<'_>) -> Arc<Mutex<Vec<Vec<String>>>> {
     context.process.terminal = false;
     let commands = Arc::new(Mutex::new(Vec::new()));
@@ -712,6 +740,110 @@ fn project_picker_paths_are_portable_contained_and_type_checked() {
         .to_string()
         .contains("not a file")
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn shortcut_help_uses_help_flag_captures_stdout_and_preserves_spaced_arguments() {
+    let (_temporary, paths, _project) =
+        help_fixture("test -f help-marker || exit 7\nprintf 'Usage: help tool [options]\\n'\n");
+    let mut policy = Unattended;
+    let mut context = OperationContext::new(&mut policy);
+    context.process.terminal = false;
+    let result = operations::shortcut_help(
+        &paths,
+        &help_request("scripts with spaces/help tool.sh"),
+        &mut context,
+    )
+    .unwrap();
+
+    assert_eq!(result.detected_help_flag.as_deref(), Some("--help"));
+    assert_eq!(result.exit_status, Some(0));
+    assert_eq!(result.stdout, "Usage: help tool [options]\n");
+    assert!(result.stderr.is_empty());
+    assert_eq!(result.command_attempted.len(), 3);
+    assert_eq!(result.command_attempted[0], "sh");
+    assert!(result.command_attempted[1].contains("scripts with spaces/help tool.sh"));
+    assert_eq!(result.command_attempted[2], "--help");
+}
+
+#[cfg(unix)]
+#[test]
+fn shortcut_help_falls_back_to_short_flag_only_after_empty_long_help() {
+    let (_temporary, paths, _project) =
+        help_fixture("if [ \"$1\" = '-h' ]; then printf 'short help\\n'; else exit 2; fi\n");
+    let mut policy = Unattended;
+    let mut context = OperationContext::new(&mut policy);
+    context.process.terminal = false;
+    let result = operations::shortcut_help(
+        &paths,
+        &help_request("scripts with spaces/help tool.sh"),
+        &mut context,
+    )
+    .unwrap();
+
+    assert_eq!(result.detected_help_flag.as_deref(), Some("-h"));
+    assert_eq!(result.stdout, "short help\n");
+    assert_eq!(
+        result.command_attempted.last().map(String::as_str),
+        Some("-h")
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn shortcut_help_accepts_useful_stderr_from_a_nonzero_exit() {
+    let (_temporary, paths, _project) = help_fixture("printf 'usage from stderr\\n' >&2\nexit 9\n");
+    let mut policy = Unattended;
+    let mut context = OperationContext::new(&mut policy);
+    context.process.terminal = false;
+    let result = operations::shortcut_help(
+        &paths,
+        &help_request("scripts with spaces/help tool.sh"),
+        &mut context,
+    )
+    .unwrap();
+
+    assert_eq!(result.detected_help_flag.as_deref(), Some("--help"));
+    assert_eq!(result.exit_status, Some(9));
+    assert_eq!(result.stderr, "usage from stderr\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn shortcut_help_reports_empty_output_after_both_conservative_attempts() {
+    let (_temporary, paths, _project) = help_fixture("exit 4\n");
+    let mut policy = Unattended;
+    let mut context = OperationContext::new(&mut policy);
+    context.process.terminal = false;
+    let result = operations::shortcut_help(
+        &paths,
+        &help_request("scripts with spaces/help tool.sh"),
+        &mut context,
+    )
+    .unwrap();
+
+    assert_eq!(result.detected_help_flag, None);
+    assert_eq!(result.exit_status, Some(4));
+    assert!(result.stdout.is_empty());
+    assert!(result.stderr.is_empty());
+    assert_eq!(
+        result.command_attempted.last().map(String::as_str),
+        Some("-h")
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn shortcut_help_rejects_a_missing_project_target_without_spawning() {
+    let (_temporary, paths, _project) = help_fixture("exit 0\n");
+    let mut policy = Unattended;
+    let mut context = OperationContext::new(&mut policy);
+    context.process.terminal = false;
+    let error =
+        operations::shortcut_help(&paths, &help_request("scripts/missing.sh"), &mut context)
+            .unwrap_err();
+    assert!(error.to_string().contains("missing"));
 }
 
 #[test]

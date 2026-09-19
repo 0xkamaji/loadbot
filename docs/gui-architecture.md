@@ -91,6 +91,7 @@ interface LoadbotAdapter {
   addShortcut(input: AddShortcutInput): Promise<ShortcutIdentity>;
   addRecipeShortcut(input: RecipeShortcutInput): Promise<ShortcutIdentity>;
   updateRecipeShortcut(input: RecipeShortcutInput): Promise<ShortcutIdentity>;
+  viewShortcutHelp(input: ShortcutHelpRequest): Promise<ShortcutHelpResult>;
   syncCatalog(catalog: string, onActivity?: CatalogSyncActivitySink): Promise<void>;
 }
 ```

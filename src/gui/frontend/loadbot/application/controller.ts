@@ -20,13 +20,17 @@ export type CatalogState =
   | { readonly status: 'loading' }
   | { readonly status: 'ready'; readonly catalogs: readonly LoadbotCatalog[] }
   | { readonly status: 'error'; readonly message?: string };
-export type ManagementKind = 'add-catalog' | 'add-project' | 'add-shortcut' | 'update-shortcut' | 'delete-shortcut' | 'sync-catalog';
+export type ProjectFilter = 'installed' | 'all' | 'not-installed';
+export type ProjectLifecycleAction = 'remove' | 'reinstall';
+export type ManagementKind = 'add-catalog' | 'add-project' | 'add-shortcut' | 'update-shortcut' | 'delete-shortcut' | 'sync-catalog'
+  | 'pull-project' | 'update-project' | 'remove-project' | 'reinstall-project';
 export type ManagementState =
   | { readonly status: 'idle' }
   | { readonly status: 'submitting'; readonly kind: ManagementKind; readonly message: string }
   | { readonly status: 'success'; readonly kind: ManagementKind; readonly message: string }
   | { readonly status: 'error'; readonly kind: ManagementKind; readonly message: string };
-export type ActivityOperation = 'catalog-sync' | 'catalog-add' | 'project-add' | 'shortcut-add' | 'shortcut-update' | 'shortcut-delete' | 'local-reload' | 'project-folder-open';
+export type ActivityOperation = 'catalog-sync' | 'catalog-add' | 'project-add' | 'shortcut-add' | 'shortcut-update' | 'shortcut-delete' | 'local-reload'
+  | 'project-folder-open' | 'project-terminal-open' | 'project-pull' | 'project-update' | 'project-remove' | 'project-reinstall';
 export type ActivityStatus = 'in-progress' | 'info' | 'success' | 'error';
 export type ActivityStage = CatalogSyncStage | 'started' | 'authoritative-reload' | 'catalog-state' | 'completed' | 'failed';
 export interface ActivityEntry {
@@ -60,6 +64,7 @@ export interface LoadbotState {
   readonly inventory: InventoryState;
   readonly catalogState: CatalogState;
   readonly currentCatalog?: string;
+  readonly projectFilter: ProjectFilter;
   readonly project?: LoadbotProject;
   readonly shortcut?: LoadbotShortcut;
   readonly fields: readonly SampleField[];
@@ -81,14 +86,27 @@ export interface LoadbotState {
     readonly projectId?: string;
     readonly message?: string;
   };
+  readonly projectTerminal: {
+    readonly status: 'idle' | 'opening' | 'opened' | 'error';
+    readonly projectId?: string;
+    readonly message?: string;
+  };
+  readonly pendingProjectAction?: { readonly action: ProjectLifecycleAction; readonly project: LoadbotProject };
 }
 
 export interface LoadbotActions {
   selectCatalog(name: string): void;
   selectProject(id: string): void;
+  selectProjectFilter(filter: ProjectFilter): void;
   selectShortcut(id: string): void;
   reloadInventory(): void;
   openProjectFolder(id: string): void;
+  openProjectTerminal(id: string): void;
+  pullProject(): Promise<boolean>;
+  updateProject(): Promise<boolean>;
+  requestProjectAction(action: ProjectLifecycleAction): void;
+  cancelProjectAction(): void;
+  confirmProjectAction(): Promise<boolean>;
   addCatalog(input: AddCatalogInput): Promise<boolean>;
   addProject(input: Omit<AddProjectInput, 'catalog'>): Promise<boolean>;
   addShortcut(input: Omit<AddShortcutInput, 'catalog' | 'tool'>): Promise<boolean>;
@@ -126,21 +144,22 @@ export interface LoadbotActions {
   toggleDrawer(): void;
 }
 
-interface ReadPreference { catalog?: string; projectId?: string; shortcutId?: string; shortcutName?: string }
+interface ReadPreference { catalog?: string; projectId?: string; shortcutId?: string; shortcutName?: string; projectFilter?: ProjectFilter }
 
 /** Deterministic application state, independent of React, DOM, themes and hosts.
  * Backend-confirmed writes are always followed by an authoritative workspace read.
  */
 export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: SampleForms = noSampleForms) {
   let state: LoadbotState = {
-    inventory: { status: 'loading' }, catalogState: { status: 'loading' }, fields: [], values: {},
+    inventory: { status: 'loading' }, catalogState: { status: 'loading' }, projectFilter: 'installed', fields: [], values: {},
     missingInputIds: [], drawerOpen: true, bottomView: 'command', command: { entries: [], history: [] },
     activity: [], management: { status: 'idle' }, shortcutManagement: { active: false, selected: [] },
-    projectFolder: { status: 'idle' },
+    projectFolder: { status: 'idle' }, projectTerminal: { status: 'idle' },
   };
   const listeners = new Set<() => void>();
   let generation = 0;
   let folderGeneration = 0;
+  let terminalGeneration = 0;
   let activityId = 0;
   let commandId = 0;
   let recipeArgumentKey = 1000;
@@ -154,8 +173,9 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
     const values = initialValues(fields);
     return { project, shortcut, fields, values, missingInputIds: missingInputs(fields, values) };
   };
-  const projectsFor = (projects: readonly LoadbotProject[], catalog?: string) =>
-    catalog ? projects.filter((project) => project.catalog === catalog) : projects;
+  const projectsFor = (projects: readonly LoadbotProject[], catalog?: string, filter: ProjectFilter = state.projectFilter) =>
+    projects.filter((project) => (!catalog || project.catalog === catalog)
+      && (filter === 'all' || (filter === 'installed' ? project.installed !== false : project.installed === false)));
   const appendActivity = (entry: Omit<ActivityEntry, 'id' | 'timestamp'>, reveal = true) => {
     const activity = [...state.activity, { ...entry, id: ++activityId, timestamp: new Date().toISOString() }]
       .slice(-ACTIVITY_HISTORY_LIMIT);
@@ -175,8 +195,10 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
     const selectedProject = preferred.projectId ?? (state.project && projectKey(state.project));
     const selectedShortcut = preferred.shortcutId ?? (state.shortcut && shortcutKey(state.shortcut));
     const selectedCatalog = preferred.catalog ?? state.currentCatalog;
+    const projectFilter = preferred.projectFilter ?? state.projectFilter;
     folderGeneration++;
-    publish({ ...state, inventory: { status: 'loading' }, catalogState: { status: 'loading' }, ...selection(), projectFolder: { status: 'idle' } });
+    terminalGeneration++;
+    publish({ ...state, inventory: { status: 'loading' }, catalogState: { status: 'loading' }, projectFilter, ...selection(), projectFolder: { status: 'idle' }, projectTerminal: { status: 'idle' } });
     try {
       const [projects, catalogs] = await Promise.all([adapter.readInventory(), adapter.readCatalogs()]);
       if (request !== generation) return false;
@@ -184,7 +206,7 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
       const currentCatalog = selectedCatalog && (catalogNames.has(selectedCatalog) || projects.some((project) => project.catalog === selectedCatalog))
         ? selectedCatalog
         : catalogs.find((catalog) => catalog.default)?.name ?? projects[0]?.catalog ?? catalogs[0]?.name;
-      const visible = projectsFor(projects, currentCatalog);
+      const visible = projectsFor(projects, currentCatalog, projectFilter);
       const project = visible.find((item) => projectKey(item) === selectedProject) ?? visible[0];
       const shortcut = project?.entries.find((item) => shortcutKey(item) === selectedShortcut)
         ?? project?.entries.find((item) => item.source === 'personal' && item.name === preferred.shortcutName);
@@ -195,7 +217,7 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
       };
       publish({
         ...state, inventory: { status: 'ready', projects }, catalogState: { status: 'ready', catalogs }, currentCatalog,
-        ...selection(project, shortcut), shortcutManagement,
+        projectFilter, ...selection(project, shortcut), shortcutManagement,
       });
       return true;
     } catch (error: unknown) {
@@ -203,7 +225,7 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
         ...state,
         inventory: { status: 'error', message: error instanceof Error ? error.message : undefined },
         catalogState: { status: 'error', message: error instanceof Error ? error.message : undefined },
-        ...selection(), projectFolder: { status: 'idle' },
+        ...selection(), projectFolder: { status: 'idle' }, projectTerminal: { status: 'idle' },
       });
       return false;
     }
@@ -235,7 +257,7 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
         ...state,
         management: reloaded
           ? { status: 'success', kind, message: completed }
-          : { status: 'error', kind, message: `${completed} Local state could not be reread; use RELOAD LOCAL.` },
+          : { status: 'error', kind, message: `${completed} Local state could not be reread; use Reload.` },
       });
       appendActivity({
         operation: activityOperation, stage: reloaded ? 'completed' : 'failed', status: reloaded ? 'success' : 'error',
@@ -263,14 +285,25 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
       if (state.catalogState.status !== 'ready' || !state.catalogState.catalogs.some((item) => item.name === name)) return;
       const projects = state.inventory.status === 'ready' ? projectsFor(state.inventory.projects, name) : [];
       folderGeneration++;
-      publish({ ...state, currentCatalog: name, ...selection(projects[0]), projectFolder: { status: 'idle' }, shortcutManagement: { active: false, selected: [] } });
+      terminalGeneration++;
+      publish({ ...state, currentCatalog: name, ...selection(projects[0]), projectFolder: { status: 'idle' }, projectTerminal: { status: 'idle' }, shortcutManagement: { active: false, selected: [] } });
+    },
+    selectProjectFilter(filter) {
+      if (filter === state.projectFilter) return;
+      const projects = state.inventory.status === 'ready' ? projectsFor(state.inventory.projects, state.currentCatalog, filter) : [];
+      const selectedId = state.project && projectKey(state.project);
+      const current = selectedId ? projects.find((project) => projectKey(project) === selectedId) : undefined;
+      folderGeneration++;
+      terminalGeneration++;
+      publish({ ...state, projectFilter: filter, ...selection(current ?? projects[0]), projectFolder: { status: 'idle' }, projectTerminal: { status: 'idle' }, shortcutManagement: { active: false, selected: [] } });
     },
     selectProject(id) {
       if (state.inventory.status !== 'ready') return;
       const project = projectsFor(state.inventory.projects, state.currentCatalog).find((item) => projectKey(item) === id);
       if (!project || project === state.project) return;
       folderGeneration++;
-      publish({ ...state, ...selection(project), projectFolder: { status: 'idle' }, shortcutManagement: { active: state.shortcutManagement.active, selected: [] } });
+      terminalGeneration++;
+      publish({ ...state, ...selection(project), projectFolder: { status: 'idle' }, projectTerminal: { status: 'idle' }, shortcutManagement: { active: state.shortcutManagement.active, selected: [] } });
     },
     selectShortcut(id) {
       const shortcut = state.project?.entries.find((item) => shortcutKey(item) === id);
@@ -288,7 +321,7 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
     openProjectFolder(id) {
       if (state.inventory.status !== 'ready') return;
       const project = projectsFor(state.inventory.projects, state.currentCatalog).find((item) => projectKey(item) === id);
-      if (!project) return;
+      if (!project || project.installed === false) return;
       const request = ++folderGeneration;
       publish({ ...state, projectFolder: { status: 'opening', projectId: id } });
       const identity = { catalog: project.catalog, tool: project.tool };
@@ -308,6 +341,74 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
           }
         },
       );
+    },
+    openProjectTerminal(id) {
+      if (state.inventory.status !== 'ready') return;
+      const project = projectsFor(state.inventory.projects, state.currentCatalog).find((item) => projectKey(item) === id);
+      if (!project || project.installed === false || !adapter.openProjectTerminal) return;
+      const request = ++terminalGeneration;
+      publish({ ...state, projectTerminal: { status: 'opening', projectId: id } });
+      const identity = { catalog: project.catalog, tool: project.tool };
+      appendActivity({ operation: 'project-terminal-open', stage: 'started', status: 'in-progress', ...identity, project: project.tool });
+      Promise.resolve().then(() => adapter.openProjectTerminal!(identity)).then(
+        () => {
+          if (request === terminalGeneration) {
+            publish({ ...state, projectTerminal: { status: 'opened', projectId: id, message: `Opened a terminal for ${project.tool}.` } });
+            appendActivity({ operation: 'project-terminal-open', stage: 'completed', status: 'success', catalog: project.catalog, project: project.tool });
+          }
+        },
+        (error: unknown) => {
+          if (request === terminalGeneration) {
+            const message = errorMessage(error, 'Could not open a terminal for the project.');
+            publish({ ...state, projectTerminal: { status: 'error', projectId: id, message } });
+            appendActivity({ operation: 'project-terminal-open', stage: 'failed', status: 'error', catalog: project.catalog, project: project.tool, detail: message });
+          }
+        },
+      );
+    },
+    async pullProject() {
+      const project = state.project;
+      if (!project || project.installed !== false || !adapter.pullProject) return false;
+      return mutation('pull-project', 'project-pull', `Pulling ${project.tool}…`, `Project ${project.tool} installed.`, { catalog: project.catalog, project: project.tool }, async () => {
+        const installed = await adapter.pullProject!({ catalog: project.catalog, tool: project.tool });
+        return { catalog: installed.catalog, projectId: projectKey(installed), projectFilter: 'installed' };
+      });
+    },
+    async updateProject() {
+      const project = state.project;
+      if (!project || project.installed === false || !adapter.updateProject) return false;
+      return mutation('update-project', 'project-update', `Updating ${project.tool}…`, `Project ${project.tool} updated.`, { catalog: project.catalog, project: project.tool }, async () => {
+        const updated = await adapter.updateProject!({ catalog: project.catalog, tool: project.tool });
+        return { catalog: updated.catalog, projectId: projectKey(updated) };
+      });
+    },
+    requestProjectAction(action) {
+      const project = state.project;
+      if (!project || project.installed === false || state.management.status === 'submitting') return;
+      publish({ ...state, pendingProjectAction: { action, project } });
+    },
+    cancelProjectAction() {
+      if (state.management.status !== 'submitting') publish({ ...state, pendingProjectAction: undefined });
+    },
+    async confirmProjectAction() {
+      const pending = state.pendingProjectAction;
+      if (!pending) return false;
+      const { project, action } = pending;
+      const capability = action === 'remove' ? adapter.removeProject : adapter.reinstallProject;
+      if (!capability) return false;
+      const result = await mutation(
+        action === 'remove' ? 'remove-project' : 'reinstall-project',
+        action === 'remove' ? 'project-remove' : 'project-reinstall',
+        `${action === 'remove' ? 'Removing' : 'Reinstalling'} ${project.tool}…`,
+        `Project ${project.tool} ${action === 'remove' ? 'removed' : 'reinstalled'}.`,
+        { catalog: project.catalog, project: project.tool },
+        async () => {
+          const changed = await capability.call(adapter, { catalog: project.catalog, tool: project.tool });
+          return { catalog: changed.catalog, projectId: projectKey(changed), projectFilter: action === 'remove' ? 'not-installed' : 'installed' };
+        },
+      );
+      publish({ ...state, pendingProjectAction: undefined });
+      return result;
     },
     async addCatalog(input) {
       return mutation('add-catalog', 'catalog-add', `Adding catalog ${input.name}…`, `Catalog ${input.name} added.`, { catalog: input.name }, async () => {
@@ -540,7 +641,7 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
     async syncCatalog() {
       const catalog = state.currentCatalog;
       if (!catalog) return false;
-      return mutation('sync-catalog', 'catalog-sync', `Synchronizing ${catalog}…`, `Catalog ${catalog} synchronized.`, { catalog }, async () => {
+      return mutation('sync-catalog', 'catalog-sync', `Refreshing ${catalog}…`, `Catalog ${catalog} refreshed.`, { catalog }, async () => {
         await adapter.syncCatalog(catalog, (activity: CatalogSyncActivity) => appendActivity({
           operation: 'catalog-sync', stage: activity.stage,
           status: activity.stage === 'current' || activity.stage === 'updated' ? 'info' : 'in-progress',

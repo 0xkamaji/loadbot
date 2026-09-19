@@ -2,14 +2,19 @@ import type { ActivityEntry, LoadbotActions, LoadbotState } from '../application
 import { CommandPane } from './CommandPane';
 
 const operationLabels: Record<ActivityEntry['operation'], string> = {
-  'catalog-sync': 'Sync catalog',
+  'catalog-sync': 'Refresh catalog',
   'catalog-add': 'Add catalog',
   'project-add': 'Add project',
   'shortcut-add': 'Add shortcut',
   'shortcut-update': 'Update shortcut',
   'shortcut-delete': 'Delete shortcut',
-  'local-reload': 'Reload local',
+  'local-reload': 'Reload',
   'project-folder-open': 'Open project folder',
+  'project-terminal-open': 'Open project terminal',
+  'project-pull': 'Pull project',
+  'project-update': 'Update project',
+  'project-remove': 'Remove project',
+  'project-reinstall': 'Reinstall project',
 };
 
 function context(entry: ActivityEntry): string {

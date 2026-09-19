@@ -1,6 +1,8 @@
 import { expect, test } from '@playwright/test';
 import inventory from '../../../../tests/fixtures/gui-inventory.json' with { type: 'json' };
 
+const installedInventory = inventory.map((project) => ({ ...project, installed: true }));
+
 test('normal entry uses the real read composition and preserves qualified records', async ({ page }, testInfo) => {
   // Browser transport mock only: Rust tests assert this exact JSON against real local
   // catalog/shortcut fixtures. This does not claim to launch or exercise native IPC.
@@ -11,13 +13,17 @@ test('normal entry uses the real read composition and preserves qualified record
       invoke: async (command: string, args: Record<string, unknown> = {}) => {
         (window as unknown as { __loadbotInvocations: unknown[] }).__loadbotInvocations.push({ command, args });
         if (command === 'read_loadbot_inventory' && Object.keys(args).length === 0) return data;
+        if (command === 'read_loadbot_catalogs' && Object.keys(args).length === 0) return [
+          { name: 'alpha', url: 'test', writable: true, state: 'installed', default: true },
+          { name: 'beta', url: 'test', writable: false, state: 'installed', default: false },
+        ];
         if (command === 'read_loadbot_workspace_layout' && Object.keys(args).length === 0) return undefined;
         if (command === 'write_loadbot_workspace_layout' && typeof args.contents === 'string') return undefined;
         if (command === 'open_loadbot_project' && Object.keys(args).length === 2) return undefined;
         throw new Error('Unexpected command');
       },
     } });
-  }, inventory);
+  }, installedInventory);
   await page.goto('/desktop.html');
   await expect(page.getByRole('button', { name: 'demo alpha' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'demo beta' })).toBeVisible();
@@ -26,12 +32,12 @@ test('normal entry uses the real read composition and preserves qualified record
   await expect(page.getByText('LOCAL INVENTORY')).toBeVisible();
   await expect(page.getByText(/FIXTURE PREVIEW|Sample form ready/)).toHaveCount(0);
   await expect(page.getByRole('textbox')).toHaveCount(0);
-  await expect(page.getByRole('button', { name: 'Catalog context: alpha' })).toBeDisabled();
-  await expect(page.getByRole('button', { name: 'RELOAD LOCAL' })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Catalog context: alpha' })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'RELOAD' })).toBeEnabled();
   await expect(page.getByRole('button', { name: 'RUN SHORTCUT' })).toHaveCount(0);
   await page.getByRole('button', { name: 'inspect [personal]' }).click();
   await expect(page.getByRole('definition').filter({ hasText: 'recipes/inspect file.py' })).toBeVisible();
-  await page.getByRole('button', { name: 'RELOAD LOCAL' }).click();
+  await page.getByRole('button', { name: 'RELOAD' }).click();
   await expect(page.getByRole('button', { name: 'inspect [personal]' })).toHaveAttribute('aria-pressed', 'true');
   await page.getByRole('button', { name: 'Open project folder: demo (alpha)' }).click();
   expect(await page.evaluate(() => (window as unknown as { __loadbotInvocations: Array<{ command: string; args: unknown }> }).__loadbotInvocations)).toContainEqual({
@@ -49,12 +55,16 @@ test('native folder failures remain controlled real errors without fixture fallb
     Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {
       invoke: async (command: string) => {
         if (command === 'read_loadbot_inventory') return data;
+        if (command === 'read_loadbot_catalogs') return [
+          { name: 'alpha', url: 'test', writable: true, state: 'installed', default: true },
+          { name: 'beta', url: 'test', writable: false, state: 'installed', default: false },
+        ];
         if (command === 'read_loadbot_workspace_layout') return undefined;
         if (command === 'open_loadbot_project') throw { message: 'resolved project directory is unavailable' };
         throw new Error('Unexpected command');
       },
     } });
-  }, inventory);
+  }, installedInventory);
   await page.goto('/desktop.html');
   await page.getByRole('button', { name: 'Open project folder: demo (alpha)' }).click();
   await expect(page.getByText('resolved project directory is unavailable')).toBeVisible();
@@ -74,7 +84,7 @@ for (const scenario of ['empty', 'error'] as const) {
     }, scenario);
     await page.goto('/desktop.html');
     await expect(page.getByText(scenario === 'empty'
-      ? 'No projects with commands or shortcuts in local Loadbot data.'
+      ? 'No projects in this catalog.'
       : "Inventory read failed: catalog 'offline' is not installed")).toBeVisible();
     await expect(page.getByRole('group', { name: 'Projects', exact: true }).getByRole('button')).toHaveCount(0);
     await expect(page.getByText('FIXTURE PREVIEW')).toHaveCount(0);

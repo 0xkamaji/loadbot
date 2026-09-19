@@ -40,6 +40,9 @@
 .lb-subtle-action { min-width: 0; min-height: 30px; padding: 2px 8px; font-size: 10px; opacity: .78; }
 .lb-subtle-action:hover:not(:disabled), .lb-subtle-action:focus-visible { opacity: 1; }
 .lb-project-row { display: grid; grid-template-columns: minmax(0, 1fr) 34px; align-items: stretch; }
+.lb-project-filters { display: grid; grid-template-columns: repeat(3, 1fr); gap: 2px; }
+.lb-project-filters button { min-width: 0; border: 0; padding: 5px 3px; background: transparent; color: var(--lb-disabled-text); font: inherit; font-size: 9px; cursor: pointer; }
+.lb-project-filters button[aria-pressed='true'] { background: var(--lb-disabled-text); color: var(--lb-selected-text); }
 .lb-project-select { min-width: 0; }
 .lb-open-project {
   width: 34px; min-width: 34px; min-height: 34px; padding: 0; opacity: .42;
@@ -51,6 +54,14 @@
 }
 .lb-shortcut-list, .lb-selected-shortcut { min-width: 0; min-height: 0; overflow: hidden; }
 .lb-shortcut-list { display: flex; flex-direction: column; gap: var(--lb-space-2); }
+.lb-project-actions { position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: var(--lb-space-1); padding-bottom: var(--lb-space-2); border-bottom: 1px solid var(--lb-disabled-text); }
+.lb-project-actions .lb-button { min-width: 0; min-height: 30px; padding: 2px 8px; font-size: 9px; }
+.lb-project-actions .lb-metadata { flex-basis: 100%; margin: 0; }
+.lb-project-state { margin-right: auto; font-size: 9px; opacity: .72; }
+.lb-project-overflow { position: relative; }
+.lb-project-overflow > div { position: absolute; z-index: 12; top: 100%; right: 0; min-width: 120px; padding: 3px; background: var(--lb-surface); border: 1px solid var(--lb-disabled-text); }
+.lb-project-overflow [role='menuitem'] { display: block; width: 100%; border: 0; padding: 7px; background: transparent; color: var(--lb-text); text-align: left; cursor: pointer; }
+.lb-project-overflow [role='menuitem']:hover { background: var(--lb-disabled-text); color: var(--lb-selected-text); }
 .lb-shortcut-list h2 span { font-size: 14px; }
 .lb-selected-shortcut { overflow: auto; }
 .lb-selected-shortcut > h2 { margin-bottom: var(--lb-space-2); }

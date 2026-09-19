@@ -50,7 +50,7 @@ could replace the stored preference. Native composition now explicitly chooses
 the app-local Tauri store described above; fixture/browser composition remains
 independent, and measurement-only clamps are never persisted.
 
-`RELOAD LOCAL` starts the same complete local inventory read used at startup. It is
+`RELOAD` starts the same complete local inventory read used at startup. It is
 not catalog refresh or remote synchronization. Catalog-qualified project and
 source/name/path-qualified shortcut selections survive when still present. An
 invalid project falls back to the first project; an invalid shortcut falls back to

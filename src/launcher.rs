@@ -468,6 +468,7 @@ struct ProjectKey {
 pub struct Project {
     pub tool: String,
     pub catalog: String,
+    pub installed: bool,
     pub entries: Vec<ProjectEntry>,
 }
 
@@ -524,7 +525,7 @@ pub fn read_project_inventory(
     context: &mut OperationContext<'_>,
 ) -> Result<Vec<Project>> {
     let notice_start = context.notices.len();
-    let tools = operations::all_tools(paths, context)?;
+    let tools = operations::tool_list(paths, context)?;
     let skipped: Vec<_> = context.notices[notice_start..]
         .iter()
         .filter_map(|notice| match notice {
@@ -541,7 +542,7 @@ pub fn read_project_inventory(
         );
     }
     let shortcut_file = shortcuts::load(&paths.shortcuts()?)?;
-    Ok(project_inventory(&tools, &shortcut_file))
+    Ok(project_inventory_with_status(&tools, &shortcut_file))
 }
 
 /// Resolve an installed project's real directory from its qualified Loadbot identity.
@@ -615,8 +616,38 @@ pub fn project_inventory(
             Project {
                 tool: key.tool,
                 catalog: key.catalog,
+                installed: false,
                 entries,
             }
+        })
+        .collect()
+}
+
+fn project_inventory_with_status(
+    tools: &[operations::ToolSummary],
+    shortcut_file: &shortcuts::ShortcutFile,
+) -> Vec<Project> {
+    let installed = tools
+        .iter()
+        .map(|summary| {
+            (
+                (summary.tool.catalog.clone(), summary.tool.name.clone()),
+                summary.installed,
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let resolved = tools
+        .iter()
+        .map(|summary| summary.tool.clone())
+        .collect::<Vec<_>>();
+    project_inventory(&resolved, shortcut_file)
+        .into_iter()
+        .map(|project| Project {
+            installed: installed
+                .get(&(project.catalog.clone(), project.tool.clone()))
+                .copied()
+                .unwrap_or(false),
+            ..project
         })
         .collect()
 }

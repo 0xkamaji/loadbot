@@ -18,7 +18,8 @@ export function LoadbotMenuView({ state, actions, host, mode, workspaceLayoutSto
   const drawerId = useId();
   const { inventory, project, shortcut, drawerOpen } = state;
   const projects = inventory.status === 'ready'
-    ? inventory.projects.filter((item) => !state.currentCatalog || item.catalog === state.currentCatalog) : [];
+    ? inventory.projects.filter((item) => (!state.currentCatalog || item.catalog === state.currentCatalog)
+      && (state.projectFilter === 'all' || (state.projectFilter === 'installed' ? item.installed !== false : item.installed === false))) : [];
   const catalogs = state.catalogState.status === 'ready' ? state.catalogState.catalogs : [];
   const currentCatalog = catalogs.find((item) => item.name === state.currentCatalog);
   const busy = state.management.status === 'submitting';
@@ -105,14 +106,14 @@ export function LoadbotMenuView({ state, actions, host, mode, workspaceLayoutSto
           {!catalogs.length && <StatusDisplay>No catalogs configured.</StatusDisplay>}
           {mode === 'local' && <div className="lb-catalog-actions">
             <Button disabled={!currentCatalog || currentCatalog.state !== 'installed' || busy}
-              title="Sync catalog with its configured Git remote"
-              onClick={() => { setCatalogMenuOpen(false); void actions.syncCatalog(); }}>SYNC CATALOG</Button>
+              title="Refresh catalog from its configured Git remote"
+              onClick={() => { setCatalogMenuOpen(false); void actions.syncCatalog(); }}>REFRESH CATALOG</Button>
             <Button disabled={busy} onClick={() => { setCatalogMenuOpen(false); actions.clearManagementStatus(); setManagementDialog('add-catalog'); }}>+ ADD CATALOG</Button>
           </div>}
         </div>}
       </div>
-      <Button className="lb-reload" disabled={inventory.status === 'loading' || busy} onClick={actions.reloadInventory} title="Reread local Loadbot inventory">
-        {inventory.status === 'loading' ? 'READING…' : 'RELOAD LOCAL'}
+      <Button className="lb-reload" disabled={inventory.status === 'loading' || busy} onClick={actions.reloadInventory} title="Reload local Loadbot state">
+        {inventory.status === 'loading' ? 'READING…' : 'RELOAD'}
       </Button>
       {host?.onClose && <IconButton icon="close" label="Close Loadbot menu" onClick={host.onClose} />}
     </header>
@@ -124,17 +125,21 @@ export function LoadbotMenuView({ state, actions, host, mode, workspaceLayoutSto
             disabled={!currentCatalog?.writable || currentCatalog.state !== 'installed' || busy}
             title={!currentCatalog?.writable ? 'Select an installed writable catalog' : 'Add project to the current catalog'}
             onClick={() => { actions.clearManagementStatus(); setManagementDialog('add-project'); }}>+ ADD PROJECT</Button>}</div>
+          <div className="lb-project-filters" role="group" aria-label="Project filter">
+            {([['installed', 'Installed'], ['all', 'All'], ['not-installed', 'Not Installed']] as const).map(([value, label]) =>
+              <button type="button" key={value} aria-pressed={state.projectFilter === value} onClick={() => actions.selectProjectFilter(value)}>{label}</button>)}
+          </div>
           <MenuList label="Projects">
             {projects.map((item) => {
               const id = projectKey(item);
               return <div className="lb-project-row" data-selected={item === project} key={id}>
                 <MenuRow className="lb-project-select" icon="arrow-right" selected={item === project}
                   title={`${item.catalog}/${item.tool}`} onClick={() => actions.selectProject(id)}>
-                  {item.tool}<small>{item.catalog}</small>
+                  {item.tool}<small>{item.catalog}{item.installed === false ? ' · AVAILABLE' : ''}</small>
                 </MenuRow>
-                <IconButton className="lb-open-project" icon="folder" label={`Open project folder: ${item.tool} (${item.catalog})`}
+                {item.installed !== false && <IconButton className="lb-open-project" icon="folder" label={`Open project folder: ${item.tool} (${item.catalog})`}
                   title="Open project folder" disabled={state.projectFolder.status === 'opening' && state.projectFolder.projectId === id}
-                  onClick={() => actions.openProjectFolder(id)} />
+                  onClick={() => actions.openProjectFolder(id)} />}
               </div>;
             })}
             {inventory.status === 'loading' && <StatusDisplay>{mode === 'fixture' ? 'Loading fixture projects…' : 'Reading local Loadbot inventory…'}</StatusDisplay>}
@@ -153,10 +158,11 @@ export function LoadbotMenuView({ state, actions, host, mode, workspaceLayoutSto
             <div className="lb-section-title"><h2>SHORTCUTS <span>/ {project?.tool ?? 'Select a project'}</span></h2>{mode === 'local' && <div className="lb-shortcut-heading-actions">
               {state.shortcutManagement.active ? <Button className="lb-subtle-action" disabled={busy} onClick={actions.exitShortcutManagement}>DONE</Button>
                 : project?.entries.some((item) => item.source === 'personal') && <Button className="lb-subtle-action" disabled={busy} onClick={actions.enterShortcutManagement}>MANAGE</Button>}
-              {!state.shortcutManagement.active && <Button className="lb-subtle-action" disabled={!project || busy} onClick={() => {
+              {!state.shortcutManagement.active && <Button className="lb-subtle-action" disabled={!project || project.installed === false || busy} onClick={() => {
                 actions.clearManagementStatus(); actions.openRecipeCreator(); setManagementDialog('recipe-editor');
               }}>+ ADD SHORTCUT</Button>}
             </div>}</div>
+            {mode === 'local' && project && <ProjectActions state={state} actions={actions} />}
             <MenuList label="Shortcuts">
               {project?.entries.map((item) => state.shortcutManagement.active
                 ? <label className="lb-manage-shortcut" key={shortcutKey(item)} data-source={item.source}>
@@ -199,4 +205,29 @@ export function LoadbotMenuView({ state, actions, host, mode, workspaceLayoutSto
     </footer>
     {mode === 'local' && <ManagementDialogs dialog={managementDialog} state={state} actions={actions} onClose={() => setManagementDialog(undefined)} />}
   </ApplicationFrame>;
+}
+
+function ProjectActions({ state, actions }: { state: LoadbotState; actions: LoadbotActions }) {
+  const project = state.project!;
+  const id = projectKey(project);
+  const busy = state.management.status === 'submitting';
+  const [overflow, setOverflow] = useState(false);
+  if (project.installed === false) return <div className="lb-project-actions">
+    <span className="lb-project-state">AVAILABLE</span>
+    <Button disabled={busy} onClick={() => void actions.pullProject()}>{busy && state.management.kind === 'pull-project' ? 'PULLING…' : 'PULL'}</Button>
+    <span className="lb-metadata">Catalog metadata is available; pull to create the managed local checkout.</span>
+  </div>;
+  return <div className="lb-project-actions">
+    <span className="lb-project-state">INSTALLED</span>
+    <Button disabled={busy} onClick={() => actions.openProjectFolder(id)}>OPEN FOLDER</Button>
+    <Button disabled={busy || state.projectTerminal.status === 'opening'} onClick={() => actions.openProjectTerminal(id)}>OPEN TERMINAL</Button>
+    <Button disabled={busy} onClick={() => void actions.updateProject()}>{busy && state.management.kind === 'update-project' ? 'UPDATING…' : 'UPDATE'}</Button>
+    <div className="lb-project-overflow">
+      <Button aria-label="More project actions" aria-expanded={overflow} disabled={busy} onClick={() => setOverflow((open) => !open)}>…</Button>
+      {overflow && <div role="menu" aria-label="Project actions">
+        <button type="button" role="menuitem" onClick={() => { setOverflow(false); actions.requestProjectAction('remove'); }}>Remove</button>
+        <button type="button" role="menuitem" onClick={() => { setOverflow(false); actions.requestProjectAction('reinstall'); }}>Reinstall</button>
+      </div>}
+    </div>
+  </div>;
 }

@@ -3,7 +3,7 @@ import type { LoadbotAdapter, LoadbotProject } from '../contract';
 // Entirely fictional, in-memory data. Nothing here discovers paths or reads catalogs.
 const projects: readonly LoadbotProject[] = [
   {
-    catalog: 'personal', tool: 're-toolkit', entries: [
+    catalog: 'personal', tool: 're-toolkit', installed: true, entries: [
       {
         name: 'Malware triage', path: 'recipes/triage.py', runner: 'python', source: 'catalog',
         description: 'Hashes, strings, file details, reports.',
@@ -16,7 +16,7 @@ const projects: readonly LoadbotProject[] = [
     ],
   },
   {
-    catalog: 'personal', tool: 'radio', entries: [
+    catalog: 'personal', tool: 'radio', installed: true, entries: [
       {
         name: 'Inspect recording', path: 'tools/inspect.py', runner: 'python', source: 'catalog',
         description: 'Inspect a sample recording and its center frequency.',
@@ -25,7 +25,7 @@ const projects: readonly LoadbotProject[] = [
     ],
   },
   {
-    catalog: 'personal', tool: 'rotbot', entries: [
+    catalog: 'personal', tool: 'rotbot', installed: true, entries: [
       { name: 'Inspect workspace', path: 'scripts/inspect.py', runner: 'python', source: 'personal', description: 'A fictional project entry, not an integration with Rot.' },
       { name: 'Build report', source: 'personal', description: 'A structured fixture Recipe with ordered parameters.', recipe: {
         version: 1, behavior: 'run', program: { type: 'interpreter', runner: 'python' },
@@ -42,12 +42,12 @@ const projects: readonly LoadbotProject[] = [
     ],
   },
   {
-    catalog: 'community', tool: 'research-tools-with-a-long-project-name', entries: [
+    catalog: 'community', tool: 'research-tools-with-a-long-project-name', installed: true, entries: [
       { name: 'Export an extended analysis report with full repository-relative paths', path: 'recipes/research/export_extended_analysis_report.py', source: 'catalog', description: 'Long labels wrap without hiding their meaning. Scroll the list to inspect more fixture entries.' },
       ...Array.from({ length: 18 }, (_, index) => ({ name: `Review sample ${String(index + 1).padStart(2, '0')}`, path: `recipes/review_${index + 1}.py`, source: 'catalog' as const })),
     ],
   },
-  { catalog: 'community', tool: 're-toolkit', entries: [
+  { catalog: 'community', tool: 're-toolkit', installed: true, entries: [
     { name: 'Export strings', path: 'export.py', source: 'catalog', description: 'Shared variant; identities include the entry source.' },
     { name: 'Export strings', path: 'export.py', source: 'personal', description: 'Personal variant; this remains independently selectable.' },
   ] },
@@ -64,6 +64,11 @@ export function createFixtureAdapter(): LoadbotAdapter {
     ];
   },
   async openProjectFolder() { throw new Error('Folder opening is unavailable in fixture preview.'); },
+  async openProjectTerminal() { throw new Error('Terminal opening is unavailable in fixture preview.'); },
+  async pullProject() { throw new Error('Management is unavailable in fixture preview.'); },
+  async updateProject() { throw new Error('Management is unavailable in fixture preview.'); },
+  async removeProject() { throw new Error('Management is unavailable in fixture preview.'); },
+  async reinstallProject() { throw new Error('Management is unavailable in fixture preview.'); },
   async addCatalog() { throw new Error('Management is unavailable in fixture preview.'); },
   async addProject() { throw new Error('Management is unavailable in fixture preview.'); },
   async addShortcut() { throw new Error('Management is unavailable in fixture preview.'); },

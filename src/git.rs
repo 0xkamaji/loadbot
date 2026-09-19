@@ -121,6 +121,21 @@ pub fn status(path: &Path) -> Result<RepositoryStatus> {
     })
 }
 
+/// Return whether HEAD contains commits that are not reachable from any
+/// configured `origin` reference. Destructive project operations use this in
+/// addition to the worktree status so locally committed work is preserved.
+pub fn has_local_commits_not_on_origin(path: &Path) -> Result<bool> {
+    let count = query(
+        path,
+        &["rev-list", "--count", "HEAD", "--not", "--remotes=origin"],
+    )?;
+    Ok(count
+        .trim()
+        .parse::<u64>()
+        .context("Git returned an invalid commit count")?
+        > 0)
+}
+
 pub fn current_branch(path: &Path) -> Result<Option<String>> {
     let output = raw_output([
         OsStr::new("-C"),

@@ -139,6 +139,30 @@ async fn open_loadbot_project(catalog: String, tool: String) -> Result<(), Deskt
 }
 
 #[tauri::command]
+async fn open_loadbot_project_terminal(catalog: String, tool: String) -> Result<(), DesktopError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let result = (|| -> anyhow::Result<()> {
+            let paths = Paths::discover()?;
+            let mut policy = Unattended;
+            let mut context = OperationContext::new(&mut policy);
+            context.process.terminal = false;
+            let directory =
+                launcher::resolve_project_directory(&paths, &catalog, &tool, &mut context)?;
+            open_terminal(&directory)
+        })();
+        result.map_err(|error| DesktopError {
+            kind: "operation",
+            message: format!("{error:#}"),
+        })
+    })
+    .await
+    .map_err(|error| DesktopError {
+        kind: "worker",
+        message: format!("project-terminal worker failed: {error}"),
+    })?
+}
+
+#[tauri::command]
 async fn read_loadbot_catalogs() -> Result<Vec<CatalogContext>, DesktopError> {
     run_loadbot_worker("catalog query", move |paths, context| {
         Ok(operations::catalog_list(paths, context)?
@@ -190,6 +214,66 @@ async fn add_loadbot_project(
         operations::tool_add(paths, &catalog, &name, url, revision, commit, push, context)?;
         Ok(identity)
     })
+    .await
+}
+
+async fn project_operation(
+    label: &'static str,
+    catalog: String,
+    tool: String,
+    operation: fn(
+        &Paths,
+        &str,
+        Option<&str>,
+        &mut OperationContext<'_>,
+    ) -> anyhow::Result<loadbot::interaction::MutationOutcome>,
+) -> Result<ProjectIdentity, DesktopError> {
+    let identity = ProjectIdentity {
+        catalog: catalog.clone(),
+        tool: tool.clone(),
+    };
+    run_loadbot_worker(label, move |paths, context| {
+        operation(paths, &tool, Some(&catalog), context)?;
+        Ok(identity)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn pull_loadbot_project(
+    catalog: String,
+    tool: String,
+) -> Result<ProjectIdentity, DesktopError> {
+    project_operation("project pull", catalog, tool, operations::tool_pull).await
+}
+
+#[tauri::command]
+async fn update_loadbot_project(
+    catalog: String,
+    tool: String,
+) -> Result<ProjectIdentity, DesktopError> {
+    project_operation("project update", catalog, tool, operations::tool_update).await
+}
+
+#[tauri::command]
+async fn remove_loadbot_project(
+    catalog: String,
+    tool: String,
+) -> Result<ProjectIdentity, DesktopError> {
+    project_operation("project remove", catalog, tool, operations::tool_remove).await
+}
+
+#[tauri::command]
+async fn reinstall_loadbot_project(
+    catalog: String,
+    tool: String,
+) -> Result<ProjectIdentity, DesktopError> {
+    project_operation(
+        "project reinstall",
+        catalog,
+        tool,
+        operations::tool_reinstall,
+    )
     .await
 }
 
@@ -468,6 +552,56 @@ fn directory_open_command(path: &Path) -> Command {
     command
 }
 
+fn open_terminal(path: &Path) -> anyhow::Result<()> {
+    let mut failures = Vec::new();
+    for mut command in terminal_open_commands(path) {
+        let program = command.get_program().to_string_lossy().into_owned();
+        match command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        {
+            Ok(_) => return Ok(()),
+            Err(error) => failures.push(format!("{program}: {error}")),
+        }
+    }
+    anyhow::bail!(
+        "could not open a terminal in {} ({})",
+        path.display(),
+        failures.join("; ")
+    )
+}
+
+fn terminal_open_commands(path: &Path) -> Vec<Command> {
+    #[cfg(target_os = "windows")]
+    let commands = vec![{
+        let mut command = Command::new("cmd.exe");
+        command.arg("/K");
+        command
+    }];
+    #[cfg(target_os = "linux")]
+    let commands = [
+        "x-terminal-emulator",
+        "gnome-terminal",
+        "konsole",
+        "xfce4-terminal",
+        "xterm",
+    ]
+    .map(Command::new)
+    .into_iter()
+    .collect::<Vec<_>>();
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    let commands = vec![Command::new("false")];
+    commands
+        .into_iter()
+        .map(|mut command| {
+            command.current_dir(path);
+            command
+        })
+        .collect()
+}
+
 fn main() {
     // The same native host and qualified semantic capabilities serve Windows and Linux.
     tauri::Builder::default()
@@ -476,8 +610,13 @@ fn main() {
             read_loadbot_inventory,
             read_loadbot_catalogs,
             open_loadbot_project,
+            open_loadbot_project_terminal,
             add_loadbot_catalog,
             add_loadbot_project,
+            pull_loadbot_project,
+            update_loadbot_project,
+            remove_loadbot_project,
+            reinstall_loadbot_project,
             add_loadbot_shortcut,
             add_loadbot_recipe_shortcut,
             update_loadbot_recipe_shortcut,
@@ -506,6 +645,37 @@ mod tests {
         #[cfg(target_os = "linux")]
         assert_eq!(command.get_program(), "xdg-open");
         assert_eq!(command.get_args().collect::<Vec<_>>(), [path.as_os_str()]);
+    }
+
+    #[test]
+    fn project_terminal_uses_the_project_as_its_working_directory() {
+        let path = Path::new("project with spaces;and-metacharacters");
+        let commands = terminal_open_commands(path);
+        #[cfg(target_os = "windows")]
+        {
+            let command = &commands[0];
+            assert_eq!(command.get_program(), "cmd.exe");
+            assert_eq!(command.get_args().collect::<Vec<_>>(), ["/K"]);
+        }
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            commands
+                .iter()
+                .map(|command| command.get_program())
+                .collect::<Vec<_>>(),
+            [
+                "x-terminal-emulator",
+                "gnome-terminal",
+                "konsole",
+                "xfce4-terminal",
+                "xterm"
+            ]
+        );
+        assert!(
+            commands
+                .iter()
+                .all(|command| command.get_current_dir() == Some(path))
+        );
     }
 
     #[test]

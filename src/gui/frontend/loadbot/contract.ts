@@ -2,6 +2,8 @@
 export interface LoadbotProject {
   readonly catalog: string;
   readonly tool: string;
+  /** Authoritative for the native adapter. Legacy/embedded adapters default to installed. */
+  readonly installed?: boolean;
   readonly entries: readonly LoadbotShortcut[];
 }
 
@@ -101,6 +103,11 @@ export interface LoadbotAdapter {
   readInventory(): Promise<readonly LoadbotProject[]>;
   readCatalogs(): Promise<readonly LoadbotCatalog[]>;
   openProjectFolder(project: Pick<LoadbotProject, 'catalog' | 'tool'>): Promise<void>;
+  openProjectTerminal?(project: ProjectIdentity): Promise<void>;
+  pullProject?(project: ProjectIdentity): Promise<ProjectIdentity>;
+  updateProject?(project: ProjectIdentity): Promise<ProjectIdentity>;
+  removeProject?(project: ProjectIdentity): Promise<ProjectIdentity>;
+  reinstallProject?(project: ProjectIdentity): Promise<ProjectIdentity>;
   addCatalog(input: AddCatalogInput): Promise<CatalogIdentity>;
   addProject(input: AddProjectInput): Promise<ProjectIdentity>;
   addShortcut(input: AddShortcutInput): Promise<ShortcutIdentity>;

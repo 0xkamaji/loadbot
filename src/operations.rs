@@ -1288,6 +1288,148 @@ pub fn tool_update(
     Ok(context.outcome_since(notice_start))
 }
 
+/// Remove an installed managed checkout while retaining its catalog entry.
+/// Both uncommitted changes and commits not present on `origin` fail closed.
+pub fn tool_remove(
+    paths: &Paths,
+    name: &str,
+    catalog_name: Option<&str>,
+    context: &mut OperationContext<'_>,
+) -> Result<MutationOutcome> {
+    let _process_scope = crate::process::scope(&context.process);
+    context.process.cancellation.check()?;
+    let notice_start = context.notices.len();
+    let tool = resolve_tool(paths, name, catalog_name, context)?;
+    let destination = paths.tool(&tool.catalog, &tool.name)?;
+    let _repository_lease = context.lease(&destination)?;
+    let _configuration_snapshot = context.watch(&paths.config())?;
+    let _catalog_snapshot = context.watch(&paths.catalog_file(&tool.catalog))?;
+    validate_destructive_checkout(paths, &tool, &destination, context)?;
+    let _completed_step = crate::process::critical_scope();
+    fs::remove_dir_all(&destination).with_context(|| {
+        format!(
+            "could not remove managed checkout {}",
+            destination.display()
+        )
+    })?;
+    context.record(Notice::ToolRemoved {
+        name: tool.name,
+        catalog_name: tool.catalog,
+    });
+    Ok(context.outcome_since(notice_start))
+}
+
+/// Replace an installed managed checkout with a freshly cloned checkout.
+/// The fresh clone is validated before the existing clean checkout is moved,
+/// and a failed swap restores the original checkout.
+pub fn tool_reinstall(
+    paths: &Paths,
+    name: &str,
+    catalog_name: Option<&str>,
+    context: &mut OperationContext<'_>,
+) -> Result<MutationOutcome> {
+    let _process_scope = crate::process::scope(&context.process);
+    context.process.cancellation.check()?;
+    let notice_start = context.notices.len();
+    let tool = resolve_tool(paths, name, catalog_name, context)?;
+    let destination = paths.tool(&tool.catalog, &tool.name)?;
+    let _repository_lease = context.lease(&destination)?;
+    let _configuration_snapshot = context.watch(&paths.config())?;
+    let _catalog_snapshot = context.watch(&paths.catalog_file(&tool.catalog))?;
+    validate_destructive_checkout(paths, &tool, &destination, context)?;
+
+    let parent = destination
+        .parent()
+        .context("tool destination has no parent directory")?;
+    let fresh = tempfile::Builder::new()
+        .prefix(".loadbot-fresh-")
+        .tempdir_in(parent)?;
+    git::clone_repository(
+        &tool.definition.url,
+        tool.definition.revision.as_deref(),
+        fresh.path(),
+        context,
+    )
+    .with_context(|| format!("could not create a fresh checkout for '{name}'"))?;
+    if !git::is_expected_repository(fresh.path(), &tool.definition.url)? {
+        bail!("fresh checkout is not the configured Git repository");
+    }
+
+    // Network work may have taken time. Recheck every destructive precondition.
+    validate_destructive_checkout(paths, &tool, &destination, context)?;
+    let backup = tempfile::Builder::new()
+        .prefix(".loadbot-backup-")
+        .tempdir_in(parent)?;
+    let backup_path = backup.keep();
+    fs::remove_dir(&backup_path)?;
+    let fresh_path = fresh.keep();
+    let _completed_step = crate::process::critical_scope();
+    fs::rename(&destination, &backup_path).with_context(|| {
+        format!(
+            "could not prepare {} for replacement",
+            destination.display()
+        )
+    })?;
+    if let Err(error) = fs::rename(&fresh_path, &destination) {
+        fs::rename(&backup_path, &destination).with_context(|| {
+            format!("fresh checkout swap failed ({error}); could not restore the original checkout")
+        })?;
+        return Err(error)
+            .context("could not install the fresh checkout; original checkout restored");
+    }
+    fs::remove_dir_all(&backup_path).with_context(|| {
+        format!(
+            "fresh checkout installed, but old checkout cleanup failed at {}",
+            backup_path.display()
+        )
+    })?;
+    context.record(Notice::ToolReinstalled {
+        name: tool.name,
+        catalog_name: tool.catalog,
+    });
+    Ok(context.outcome_since(notice_start))
+}
+
+fn validate_destructive_checkout(
+    paths: &Paths,
+    tool: &ResolvedTool,
+    destination: &Path,
+    context: &mut OperationContext<'_>,
+) -> Result<()> {
+    context.process.cancellation.check()?;
+    let current = resolve_tool(paths, &tool.name, Some(&tool.catalog), context)?;
+    if current.definition != tool.definition {
+        return Err(crate::persistence::Busy {
+            resource: destination.to_owned(),
+        }
+        .into());
+    }
+    let metadata = fs::symlink_metadata(destination).with_context(|| {
+        format!(
+            "tool '{}' from catalog '{}' is not installed",
+            tool.name, tool.catalog
+        )
+    })?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() || !git::is_repository(destination)?
+    {
+        bail!("refusing to remove a destination that is not a managed Git checkout");
+    }
+    if !git::is_expected_repository(destination, &tool.definition.url)? {
+        bail!("refusing to remove a checkout that is not the configured Git repository");
+    }
+    if git::status(destination)?.dirty {
+        bail!(
+            "working tree has local changes; preserve or discard them explicitly before retrying"
+        );
+    }
+    if git::has_local_commits_not_on_origin(destination)? {
+        bail!(
+            "repository has local commits not present on origin; push or preserve them before retrying"
+        );
+    }
+    Ok(())
+}
+
 pub fn tool_status(
     paths: &Paths,
     name: &str,
@@ -1830,6 +1972,120 @@ mod tests {
         git(["commit", "-m", "add catalog"], Some(&source));
         git(["push", "origin", "main"], Some(&source));
         remote
+    }
+
+    fn lifecycle_fixture() -> (TempDir, Paths, PathBuf) {
+        let temporary = TempDir::new().unwrap();
+        let paths = Paths::with_root(temporary.path().join("loadbot"));
+        let catalog_remote = valid_catalog_remote(temporary.path(), "lifecycle-catalog");
+        let tool_remote = populated_remote(temporary.path(), "lifecycle-tool");
+        catalog_add(
+            &paths,
+            "personal",
+            catalog_remote.display().to_string(),
+            false,
+            &mut OperationContext::new(&mut crate::interaction::Unattended),
+        )
+        .unwrap();
+        let mut file = catalog::load(&paths.catalog_file("personal")).unwrap();
+        file.tools.insert(
+            "demo".to_owned(),
+            ToolConfig::git(tool_remote.display().to_string(), None),
+        );
+        catalog::save(&paths.catalog_file("personal"), &file).unwrap();
+        tool_pull(
+            &paths,
+            "demo",
+            Some("personal"),
+            &mut OperationContext::new(&mut crate::interaction::Unattended),
+        )
+        .unwrap();
+        let destination = paths.tool("personal", "demo").unwrap();
+        (temporary, paths, destination)
+    }
+
+    #[test]
+    fn destructive_project_operations_protect_dirty_and_local_only_work() {
+        let (_temporary, paths, destination) = lifecycle_fixture();
+        fs::write(destination.join("dirty.txt"), "preserve\n").unwrap();
+        let error = tool_remove(
+            &paths,
+            "demo",
+            Some("personal"),
+            &mut OperationContext::new(&mut crate::interaction::Unattended),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("working tree has local changes"));
+        assert!(destination.join("dirty.txt").exists());
+
+        fs::remove_file(destination.join("dirty.txt")).unwrap();
+        git(["config", "user.name", "Loadbot Tests"], Some(&destination));
+        git(
+            ["config", "user.email", "loadbot@example.test"],
+            Some(&destination),
+        );
+        fs::write(destination.join("local.txt"), "preserve commit\n").unwrap();
+        git(["add", "local.txt"], Some(&destination));
+        git(["commit", "-m", "local work"], Some(&destination));
+        let error = tool_reinstall(
+            &paths,
+            "demo",
+            Some("personal"),
+            &mut OperationContext::new(&mut crate::interaction::Unattended),
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("local commits not present on origin")
+        );
+        assert!(destination.join("local.txt").exists());
+    }
+
+    #[test]
+    fn remove_retains_catalog_entry_and_reinstall_creates_a_fresh_managed_checkout() {
+        let (_temporary, paths, destination) = lifecycle_fixture();
+        tool_reinstall(
+            &paths,
+            "demo",
+            Some("personal"),
+            &mut OperationContext::new(&mut crate::interaction::Unattended),
+        )
+        .unwrap();
+        assert!(git::is_repository(&destination).unwrap());
+        let installed_inventory = crate::launcher::read_project_inventory(
+            &paths,
+            &mut OperationContext::new(&mut crate::interaction::Unattended),
+        )
+        .unwrap();
+        assert!(installed_inventory[0].installed);
+        tool_remove(
+            &paths,
+            "demo",
+            Some("personal"),
+            &mut OperationContext::new(&mut crate::interaction::Unattended),
+        )
+        .unwrap();
+        assert!(!destination.exists());
+        assert!(
+            catalog::load(&paths.catalog_file("personal"))
+                .unwrap()
+                .tools
+                .contains_key("demo")
+        );
+        let listed = tool_list(
+            &paths,
+            &mut OperationContext::new(&mut crate::interaction::Unattended),
+        )
+        .unwrap();
+        assert_eq!(listed.len(), 1);
+        assert!(!listed[0].installed);
+        let available_inventory = crate::launcher::read_project_inventory(
+            &paths,
+            &mut OperationContext::new(&mut crate::interaction::Unattended),
+        )
+        .unwrap();
+        assert!(!available_inventory[0].installed);
     }
 
     #[test]

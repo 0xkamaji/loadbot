@@ -12,6 +12,11 @@ export type InventoryQuery = () => Promise<unknown>;
 export type ProjectFolderOpen = (project: Pick<LoadbotProject, 'catalog' | 'tool'>) => Promise<unknown>;
 export interface ManagementBridge {
   readCatalogs(): Promise<unknown>;
+  openProjectTerminal?(project: ProjectIdentity): Promise<unknown>;
+  pullProject?(project: ProjectIdentity): Promise<unknown>;
+  updateProject?(project: ProjectIdentity): Promise<unknown>;
+  removeProject?(project: ProjectIdentity): Promise<unknown>;
+  reinstallProject?(project: ProjectIdentity): Promise<unknown>;
   addCatalog(input: AddCatalogInput): Promise<unknown>;
   addProject(input: AddProjectInput): Promise<unknown>;
   addShortcut(input: AddShortcutInput): Promise<unknown>;
@@ -40,6 +45,14 @@ function requireTauri(capability: string) {
 
 const nativeManagementBridge: ManagementBridge = {
   async readCatalogs() { requireTauri('Catalog management'); return invoke('read_loadbot_catalogs'); },
+  async openProjectTerminal(project) {
+    requireTauri('Opening project terminals');
+    return invoke('open_loadbot_project_terminal', { ...project });
+  },
+  async pullProject(project) { requireTauri('Project management'); return invoke('pull_loadbot_project', { ...project }); },
+  async updateProject(project) { requireTauri('Project management'); return invoke('update_loadbot_project', { ...project }); },
+  async removeProject(project) { requireTauri('Project management'); return invoke('remove_loadbot_project', { ...project }); },
+  async reinstallProject(project) { requireTauri('Project management'); return invoke('reinstall_loadbot_project', { ...project }); },
   async addCatalog(input) {
     requireTauri('Catalog management');
     return invoke('add_loadbot_catalog', { name: input.name, url: input.url, writable: input.writable });
@@ -194,7 +207,10 @@ function inventory(value: unknown): readonly LoadbotProject[] {
   return value.map((value) => {
     const project = record(value);
     if (!Array.isArray(project.entries)) throw new Error('Invalid inventory response: expected entries.');
-    return { catalog: text(project.catalog), tool: text(project.tool), entries: project.entries.map(entry) };
+    return {
+      catalog: text(project.catalog), tool: text(project.tool),
+      installed: project.installed == null ? true : boolean(project.installed), entries: project.entries.map(entry),
+    };
   });
 }
 
@@ -264,6 +280,26 @@ export function createTauriLoadbotAdapter(
       } catch (error: unknown) {
         throw nativeError(error, 'Could not open the project folder.');
       }
+    },
+    async openProjectTerminal(project) {
+      try { await management.openProjectTerminal?.(project); }
+      catch (error: unknown) { throw nativeError(error, 'Could not open a terminal for the project.'); }
+    },
+    async pullProject(project) {
+      try { return projectIdentity(await management.pullProject?.(project)); }
+      catch (error: unknown) { throw nativeError(error, 'Could not pull the project.'); }
+    },
+    async updateProject(project) {
+      try { return projectIdentity(await management.updateProject?.(project)); }
+      catch (error: unknown) { throw nativeError(error, 'Could not update the project.'); }
+    },
+    async removeProject(project) {
+      try { return projectIdentity(await management.removeProject?.(project)); }
+      catch (error: unknown) { throw nativeError(error, 'Could not remove the project.'); }
+    },
+    async reinstallProject(project) {
+      try { return projectIdentity(await management.reinstallProject?.(project)); }
+      catch (error: unknown) { throw nativeError(error, 'Could not reinstall the project.'); }
     },
     async addCatalog(input) {
       try { return catalogIdentity(await management.addCatalog(input)); }

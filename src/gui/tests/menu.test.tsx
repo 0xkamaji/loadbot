@@ -301,7 +301,7 @@ describe('injected menu outside Tauri', () => {
     }));
 
     await user.click(screen.getByRole('button', { name: 'Catalog context: personal' }));
-    await user.click(screen.getByRole('button', { name: 'SYNC CATALOG' }));
+    await user.click(screen.getByRole('button', { name: 'REFRESH CATALOG' }));
     expect(managed.syncCatalog).toHaveBeenCalledWith('personal', expect.any(Function));
     await vi.waitFor(() => expect(screen.getByRole('button', { name: '+ ADD PROJECT' })).toBeEnabled());
     expect(screen.getByRole('tabpanel', { name: 'Activity' })).toHaveTextContent('Catalog state: personal · installed · writable');

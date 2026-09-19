@@ -176,6 +176,14 @@ pub enum Notice {
         url: String,
         revision: Option<String>,
     },
+    ToolRemoved {
+        name: String,
+        catalog_name: String,
+    },
+    ToolReinstalled {
+        name: String,
+        catalog_name: String,
+    },
     RepositoryInspected(Option<crate::git::RepositoryStatus>),
     CatalogFileInspected(crate::operations::CatalogValidity),
     CatalogRegistered {

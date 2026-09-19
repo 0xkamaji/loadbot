@@ -148,6 +148,12 @@ impl Renderer {
                 old_commit,
                 new_commit,
             } => println!("updated tool '{name}' from {old_commit} to {new_commit}"),
+            Notice::ToolRemoved { name, catalog_name } => {
+                println!("removed tool '{name}' from catalog '{catalog_name}'")
+            }
+            Notice::ToolReinstalled { name, catalog_name } => {
+                println!("reinstalled tool '{name}' from catalog '{catalog_name}'")
+            }
             Notice::SkippedCatalog { name, diagnostic } => eprintln!(
                 "warning: skipping catalog '{name}': {diagnostic}; run 'loadbot catalog status {name}' for details"
             ),

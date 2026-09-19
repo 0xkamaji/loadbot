@@ -218,6 +218,88 @@ describe('headless capability and application boundary', () => {
     expect(open).toHaveBeenCalledWith({ catalog: 'one', tool: 'second' });
   });
 
+  it('filters catalog projects and owns the confirmed project lifecycle with authoritative refresh', async () => {
+    let projects: LoadbotProject[] = [
+      { catalog: 'one', tool: 'installed', installed: true, entries: [] },
+      { catalog: 'one', tool: 'available', installed: false, entries: [{ name: 'catalog command', path: 'run.sh', source: 'catalog' }] },
+    ];
+    const readInventory = vi.fn(async () => structuredClone(projects));
+    const openProjectTerminal = vi.fn(async () => {});
+    const pullProject = vi.fn(async (identity) => {
+      projects = projects.map((project) => project.tool === identity.tool ? { ...project, installed: true } : project);
+      return identity;
+    });
+    const updateProject = vi.fn(async (identity) => identity);
+    const removeProject = vi.fn(async (identity) => {
+      projects = projects.map((project) => project.tool === identity.tool ? { ...project, installed: false } : project);
+      return identity;
+    });
+    const reinstallProject = vi.fn(async (identity) => identity);
+    const managed: LoadbotAdapter = {
+      ...adapter(readInventory), openProjectTerminal, pullProject, updateProject, removeProject, reinstallProject,
+    };
+    const application = createLoadbotApplication(managed);
+    application.start();
+    await vi.waitFor(() => expect(application.getSnapshot().inventory.status).toBe('ready'));
+
+    expect(application.getSnapshot()).toMatchObject({ projectFilter: 'installed', project: { tool: 'installed' } });
+    application.actions.selectProjectFilter('not-installed');
+    expect(application.getSnapshot().project?.tool).toBe('available');
+    application.actions.selectProjectFilter('all');
+    expect(application.getSnapshot().project?.tool).toBe('available');
+    application.actions.selectProjectFilter('not-installed');
+    expect(application.getSnapshot().shortcut?.name).toBe('catalog command');
+
+    expect(await application.actions.pullProject()).toBe(true);
+    expect(pullProject).toHaveBeenCalledWith({ catalog: 'one', tool: 'available' });
+    expect(application.getSnapshot()).toMatchObject({ projectFilter: 'installed', project: { tool: 'available', installed: true } });
+    expect(await application.actions.updateProject()).toBe(true);
+    expect(updateProject).toHaveBeenCalledWith({ catalog: 'one', tool: 'available' });
+    application.actions.openProjectTerminal(projectKey(application.getSnapshot().project!));
+    await vi.waitFor(() => expect(openProjectTerminal).toHaveBeenCalledWith({ catalog: 'one', tool: 'available' }));
+
+    application.actions.requestProjectAction('reinstall');
+    expect(reinstallProject).not.toHaveBeenCalled();
+    expect(application.getSnapshot().pendingProjectAction?.action).toBe('reinstall');
+    expect(await application.actions.confirmProjectAction()).toBe(true);
+    expect(reinstallProject).toHaveBeenCalledWith({ catalog: 'one', tool: 'available' });
+    expect(application.getSnapshot().project?.tool).toBe('available');
+
+    application.actions.requestProjectAction('remove');
+    expect(removeProject).not.toHaveBeenCalled();
+    application.actions.cancelProjectAction();
+    expect(removeProject).not.toHaveBeenCalled();
+    application.actions.requestProjectAction('remove');
+    expect(await application.actions.confirmProjectAction()).toBe(true);
+    expect(application.getSnapshot()).toMatchObject({ projectFilter: 'not-installed', project: { tool: 'available', installed: false } });
+    expect(readInventory).toHaveBeenCalledTimes(5);
+    expect(application.getSnapshot().activity.map((entry) => entry.operation)).toEqual(expect.arrayContaining([
+      'project-pull', 'project-update', 'project-terminal-open', 'project-reinstall', 'project-remove',
+    ]));
+  });
+
+  it('records project lifecycle failures and Reload performs reads without mutations', async () => {
+    const readInventory = vi.fn(async () => [{ catalog: 'one', tool: 'installed', installed: true, entries: [] }]);
+    const managed = adapter(readInventory);
+    managed.updateProject = vi.fn(async () => { throw new Error('working tree has local changes'); });
+    managed.pullProject = vi.fn();
+    managed.removeProject = vi.fn();
+    managed.reinstallProject = vi.fn();
+    const application = createLoadbotApplication(managed);
+    application.start();
+    await vi.waitFor(() => expect(application.getSnapshot().inventory.status).toBe('ready'));
+    expect(await application.actions.updateProject()).toBe(false);
+    expect(application.getSnapshot().activity.at(-1)).toMatchObject({
+      operation: 'project-update', stage: 'failed', status: 'error', detail: 'working tree has local changes',
+    });
+    const reads = readInventory.mock.calls.length;
+    application.actions.reloadInventory();
+    await vi.waitFor(() => expect(readInventory.mock.calls.length).toBe(reads + 1));
+    expect(managed.pullProject).not.toHaveBeenCalled();
+    expect(managed.removeProject).not.toHaveBeenCalled();
+    expect(managed.reinstallProject).not.toHaveBeenCalled();
+  });
+
   it('routes management through qualified adapter operations and reloads authoritative state', async () => {
     let projects: LoadbotProject[] = [{ catalog: 'personal', tool: 'existing', entries: [] }];
     let catalogs = [{ name: 'personal', url: 'catalog', writable: true, state: 'installed' as const, default: true }];

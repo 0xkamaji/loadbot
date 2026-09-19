@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import serializedInventory from '../../../tests/fixtures/gui-inventory.json';
 import { createTauriLoadbotAdapter, type ManagementBridge } from '../frontend/hosts/tauriInventoryAdapter';
@@ -16,6 +16,7 @@ const tauri = vi.hoisted(() => ({
 vi.mock('@tauri-apps/api/core', () => tauri);
 const management = (names: readonly string[] = ['personal']): ManagementBridge => ({
   readCatalogs: async () => names.map((name, index) => ({ name, url: 'test', writable: true, state: 'installed', default: index === 0 })),
+  openProjectTerminal: vi.fn(), pullProject: vi.fn(), updateProject: vi.fn(), removeProject: vi.fn(), reinstallProject: vi.fn(),
   addCatalog: vi.fn(), addProject: vi.fn(), addShortcut: vi.fn(), addRecipeShortcut: vi.fn(), updateRecipeShortcut: vi.fn(),
   chooseProjectFile: vi.fn(), chooseProjectDirectory: vi.fn(), viewShortcutHelp: vi.fn(), deleteShortcuts: vi.fn(), syncCatalog: vi.fn(),
 });
@@ -70,7 +71,9 @@ describe('one platform-neutral real read adapter', () => {
       : command === 'read_loadbot_catalogs' ? [{ name: 'alpha', url: 'test', writable: true, state: 'installed', default: true }, { name: 'beta', url: 'test', writable: false, state: 'installed', default: false }]
         : undefined);
     render(<LoadbotMenu {...realMenuDependencies} sampleForms={fixtureMenuDependencies.sampleForms} />);
-    expect(await screen.findByRole('button', { name: 'demo alpha' })).toBeInTheDocument();
+    await screen.findByText('No projects in this catalog.');
+    fireEvent.click(screen.getByRole('button', { name: 'All' }));
+    expect(await screen.findByRole('button', { name: /^demo alpha/ })).toBeInTheDocument();
     expect(tauri.invoke).toHaveBeenCalledWith('read_loadbot_inventory');
     expect(tauri.invoke).toHaveBeenCalledWith('read_loadbot_workspace_layout');
     expect(realMenuDependencies).not.toHaveProperty('sampleForms');
@@ -136,6 +139,9 @@ describe('one platform-neutral real read adapter', () => {
       if (command === 'read_loadbot_catalogs') return [{ name: 'personal', url: 'repo', writable: true, state: 'installed', default: true }];
       if (command === 'add_loadbot_catalog') return { catalog: input?.name };
       if (command === 'add_loadbot_project') return { catalog: input?.catalog, tool: input?.name };
+      if (['pull_loadbot_project', 'update_loadbot_project', 'remove_loadbot_project', 'reinstall_loadbot_project'].includes(command)) {
+        return { catalog: input?.catalog, tool: input?.tool };
+      }
       if (command === 'add_loadbot_shortcut') return { catalog: input?.catalog, tool: input?.tool, name: input?.name, path: input?.path };
       if (command === 'add_loadbot_recipe_shortcut' || command === 'update_loadbot_recipe_shortcut') return { catalog: input?.catalog, tool: input?.tool, name: input?.name, path: null };
       if (command === 'choose_loadbot_project_file') return 'scripts/tool.py';
@@ -155,6 +161,11 @@ describe('one platform-neutral real read adapter', () => {
     await expect(adapter.readCatalogs()).resolves.toEqual([{ name: 'personal', url: 'repo', writable: true, state: 'installed', default: true }]);
     await adapter.addCatalog({ name: 'other', url: 'other-repo', writable: false });
     await adapter.addProject({ catalog: 'personal', name: 'demo', url: 'tool-repo', commit: false, push: false });
+    await adapter.openProjectTerminal?.({ catalog: 'personal', tool: 'demo' });
+    await adapter.pullProject?.({ catalog: 'personal', tool: 'demo' });
+    await adapter.updateProject?.({ catalog: 'personal', tool: 'demo' });
+    await adapter.removeProject?.({ catalog: 'personal', tool: 'demo' });
+    await adapter.reinstallProject?.({ catalog: 'personal', tool: 'demo' });
     await adapter.addShortcut({ catalog: 'personal', tool: 'demo', name: 'inspect', path: 'scripts/inspect.py', runner: 'python' });
     const recipe = { version: 1, behavior: 'run' as const, program: { type: 'executable' as const, name: 'cargo' }, working_directory: { type: 'project-root' as const }, arguments: [{ type: 'literal' as const, value: 'build' }] };
     await adapter.addRecipeShortcut({ catalog: 'personal', tool: 'demo', name: 'build', recipe });
@@ -172,6 +183,11 @@ describe('one platform-neutral real read adapter', () => {
     expect(tauri.invoke.mock.calls.slice(1)).toEqual([
       ['add_loadbot_catalog', { name: 'other', url: 'other-repo', writable: false }],
       ['add_loadbot_project', { catalog: 'personal', name: 'demo', url: 'tool-repo', commit: false, push: false }],
+      ['open_loadbot_project_terminal', { catalog: 'personal', tool: 'demo' }],
+      ['pull_loadbot_project', { catalog: 'personal', tool: 'demo' }],
+      ['update_loadbot_project', { catalog: 'personal', tool: 'demo' }],
+      ['remove_loadbot_project', { catalog: 'personal', tool: 'demo' }],
+      ['reinstall_loadbot_project', { catalog: 'personal', tool: 'demo' }],
       ['add_loadbot_shortcut', { catalog: 'personal', tool: 'demo', name: 'inspect', path: 'scripts/inspect.py', runner: 'python' }],
       ['add_loadbot_recipe_shortcut', { catalog: 'personal', tool: 'demo', name: 'build', recipe }],
       ['update_loadbot_recipe_shortcut', { catalog: 'personal', tool: 'demo', name: 'build', description: 'Build it', recipe: { ...recipe, behavior: 'launch' } }],

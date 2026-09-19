@@ -10,6 +10,10 @@ export function ManagementDialogs({ dialog, state, actions, onClose }: {
 }) {
   function close() {
     if (state.management.status === 'submitting') return;
+    if (state.pendingProjectAction) {
+      actions.cancelProjectAction();
+      return;
+    }
     if (state.shortcutManagement.pendingDelete) {
       actions.cancelShortcutDeletion();
       return;
@@ -19,17 +23,37 @@ export function ManagementDialogs({ dialog, state, actions, onClose }: {
     onClose();
   }
   useEffect(() => {
-    if (!dialog && !state.recipeEditor && !state.shortcutManagement.pendingDelete) return;
+    if (!dialog && !state.recipeEditor && !state.shortcutManagement.pendingDelete && !state.pendingProjectAction) return;
     const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') close(); };
     window.addEventListener('keydown', escape);
     return () => window.removeEventListener('keydown', escape);
-  }, [dialog, onClose, state.management.status, state.recipeEditor, state.shortcutManagement.pendingDelete]);
+  }, [dialog, onClose, state.management.status, state.recipeEditor, state.shortcutManagement.pendingDelete, state.pendingProjectAction]);
+  if (state.pendingProjectAction) return <ProjectActionConfirmation state={state} actions={actions} />;
   if (state.shortcutManagement.pendingDelete) return <DeleteShortcutConfirmation state={state} actions={actions} />;
   if (!dialog && !state.recipeEditor) return null;
   if (dialog === 'recipe-editor' || state.recipeEditor) return <RecipeBuilder state={state} actions={actions} onClose={close} onDone={onClose} />;
   if (dialog === 'add-catalog') return <AddCatalogForm state={state} actions={actions} onClose={close} onDone={onClose} />;
   if (dialog === 'add-project') return <AddProjectForm state={state} actions={actions} onClose={close} onDone={onClose} />;
   return null;
+}
+
+function ProjectActionConfirmation({ state, actions }: { state: LoadbotState; actions: LoadbotActions }) {
+  const pending = state.pendingProjectAction!;
+  const busy = state.management.status === 'submitting';
+  const reinstall = pending.action === 'reinstall';
+  return <Dialog label={reinstall ? 'Reinstall project' : 'Remove project'} onClose={actions.cancelProjectAction}>
+    <h2>{reinstall ? 'REINSTALL' : 'REMOVE'} “{pending.project.tool}”?</h2>
+    <p>{reinstall
+      ? 'This deletes the existing managed checkout and replaces it with a fresh clone from the catalog source.'
+      : 'This deletes the local managed checkout. The project remains in the catalog and can be pulled again.'}</p>
+    <p><strong>Local changes and local-only commits are never removed.</strong> The backend will refuse this action until they are preserved or discarded explicitly.</p>
+    {state.management.status !== 'idle' && (state.management.kind === 'remove-project' || state.management.kind === 'reinstall-project')
+      && <StatusDisplay>{state.management.message}</StatusDisplay>}
+    <div className="lb-dialog-actions"><Button onClick={actions.cancelProjectAction} disabled={busy}>CANCEL</Button>
+      <Button className="lb-danger-action" onClick={() => void actions.confirmProjectAction()} disabled={busy}>
+        {busy ? (reinstall ? 'REINSTALLING…' : 'REMOVING…') : reinstall ? 'REINSTALL' : 'REMOVE CHECKOUT'}
+      </Button></div>
+  </Dialog>;
 }
 
 function DeleteShortcutConfirmation({ state, actions }: { state: LoadbotState; actions: LoadbotActions }) {

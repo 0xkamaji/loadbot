@@ -35,8 +35,8 @@ create optimistic frontend objects.
 Catalog remains compact session context in the header. The menu lists configured
 catalogs with installed/missing/mismatch and writable/read-only facts. Selecting one
 filters the current session without synchronizing it and without changing Loadbot's
-persistent default catalog. `SYNC CATALOG` is a separate deliberate Git update; on
-success the GUI rereads local state. `RELOAD LOCAL` only rereads state and never
+persistent default catalog. `REFRESH CATALOG` is a separate deliberate Git update; on
+success the GUI rereads local state. `RELOAD` only rereads state and never
 contacts or updates a remote.
 
 `ADD CATALOG` registers and clones an existing valid Loadbot catalog using its name,

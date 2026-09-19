@@ -2,6 +2,7 @@ use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
@@ -9,6 +10,7 @@ use serde::Deserialize;
 use crate::interaction::Interaction;
 
 const ROT_IDENTITY_VERSION: u32 = 1;
+const NETWORK_GIT_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 pub struct RotIdentity {
@@ -632,7 +634,7 @@ fn checked_network_output(
     checked_network_output_with(
         arguments,
         canonical_url,
-        |arguments| raw_output_control(arguments, &control),
+        |arguments| raw_network_output_control(arguments, &control),
         query_rot_identities,
         interaction.can_choose(),
         interaction,
@@ -840,6 +842,45 @@ where
         control,
     )
     .context("could not execute Git (ensure Git is available in PATH)")
+}
+
+fn raw_network_output_control<I, S>(
+    arguments: I,
+    control: &crate::process::Control,
+) -> Result<Output>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    let mut command = network_git_command(arguments, !control.terminal);
+    let mode = crate::process::Mode::Capture {
+        limit: 4 * 1024 * 1024,
+    };
+    let output = if control.terminal {
+        crate::process::execute(&mut command, mode, control)
+    } else {
+        crate::process::execute_with_timeout(&mut command, mode, control, NETWORK_GIT_TIMEOUT)
+    };
+    output.context(
+        "could not execute network Git operation (ensure Git and SSH are available in PATH)",
+    )
+}
+
+fn network_git_command<I, S>(arguments: I, noninteractive: bool) -> Command
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    let mut command = Command::new("git");
+    command.args(arguments);
+    if noninteractive {
+        command
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes")
+            .env("SSH_ASKPASS_REQUIRE", "never")
+            .env("GCM_INTERACTIVE", "Never");
+    }
+    command
 }
 
 fn stdout_text(output: &Output) -> String {
@@ -1223,6 +1264,57 @@ mod tests {
         assert!(output.status.success());
         assert_eq!(identity_queries, 0);
         assert_eq!(prompt.select_calls, 0);
+    }
+
+    #[test]
+    fn network_git_commands_are_noninteractive_without_disabling_host_verification() {
+        let command = network_git_command(["fetch", "origin"], true);
+        let environment = command
+            .get_envs()
+            .map(|(name, value)| {
+                (
+                    name.to_string_lossy().into_owned(),
+                    value.map(|value| value.to_string_lossy().into_owned()),
+                )
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(environment["GIT_TERMINAL_PROMPT"].as_deref(), Some("0"));
+        assert_eq!(
+            environment["GIT_SSH_COMMAND"].as_deref(),
+            Some("ssh -o BatchMode=yes")
+        );
+        assert_eq!(environment["SSH_ASKPASS_REQUIRE"].as_deref(), Some("never"));
+        assert_eq!(environment["GCM_INTERACTIVE"].as_deref(), Some("Never"));
+
+        let configuration = command
+            .get_args()
+            .map(|argument| argument.to_string_lossy())
+            .chain(environment.values().flatten().map(|value| value.into()))
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(!configuration.contains("StrictHostKeyChecking"));
+        assert!(!configuration.contains("UserKnownHostsFile"));
+
+        let interactive = network_git_command(["fetch", "origin"], false);
+        assert!(interactive.get_envs().next().is_none());
+    }
+
+    #[test]
+    fn noninteractive_network_executor_preserves_success_and_real_stderr() {
+        let control = crate::process::Control {
+            terminal: false,
+            ..crate::process::Control::default()
+        };
+        let success = raw_network_output_control(["--version"], &control).unwrap();
+        assert!(success.status.success());
+        assert!(stdout_text(&success).starts_with("git version"));
+
+        let failure =
+            raw_network_output_control(["--definitely-not-a-git-option"], &control).unwrap();
+        assert!(!failure.status.success());
+        let stderr = String::from_utf8_lossy(&failure.stderr);
+        assert!(!stderr.trim().is_empty());
+        assert!(git_error_message(&failure).contains(stderr.trim()));
     }
 
     #[cfg(unix)]

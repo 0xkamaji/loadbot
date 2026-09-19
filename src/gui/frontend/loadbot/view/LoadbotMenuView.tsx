@@ -150,16 +150,28 @@ export function LoadbotMenuView({ state, actions, host, mode, workspaceLayoutSto
         <Panel className="lb-shortcut-panel" aria-label="Shortcut workspace" ref={rightRef}
           style={{ gridTemplateRows: `${paneSizes.shortcuts}px 8px minmax(0, 1fr)` }}>
           <section className="lb-shortcut-list">
-            <div className="lb-section-title"><h2>SHORTCUTS <span>/ {project?.tool ?? 'Select a project'}</span></h2>{mode === 'local' && <Button
-              className="lb-subtle-action" disabled={!project || busy} onClick={() => { actions.clearManagementStatus(); setManagementDialog('add-shortcut'); }}>+ ADD SHORTCUT</Button>}</div>
+            <div className="lb-section-title"><h2>SHORTCUTS <span>/ {project?.tool ?? 'Select a project'}</span></h2>{mode === 'local' && <div className="lb-shortcut-heading-actions">
+              {state.shortcutManagement.active ? <Button className="lb-subtle-action" disabled={busy} onClick={actions.exitShortcutManagement}>DONE</Button>
+                : project?.entries.some((item) => item.source === 'personal') && <Button className="lb-subtle-action" disabled={busy} onClick={actions.enterShortcutManagement}>MANAGE</Button>}
+              {!state.shortcutManagement.active && <Button className="lb-subtle-action" disabled={!project || busy} onClick={() => { actions.clearManagementStatus(); setManagementDialog('add-shortcut'); }}>+ ADD SHORTCUT</Button>}
+            </div>}</div>
             <MenuList label="Shortcuts">
-              {project?.entries.map((item) => <MenuRow key={shortcutKey(item)} icon="arrow-right" selected={item === shortcut}
-                title={`${item.name} [${item.source === 'catalog' ? 'shared' : 'personal'}]`} onClick={() => actions.selectShortcut(shortcutKey(item))}>
-                {item.name}{project.entries.some((other) => other !== item && other.name === item.name) && <small>[{item.source === 'catalog' ? 'shared' : 'personal'}]</small>}
-              </MenuRow>)}
+              {project?.entries.map((item) => state.shortcutManagement.active
+                ? <label className="lb-manage-shortcut" key={shortcutKey(item)} data-source={item.source}>
+                  <input type="checkbox" disabled={item.source !== 'personal' || busy}
+                    checked={state.shortcutManagement.selected.includes(shortcutKey(item))}
+                    onChange={() => actions.toggleShortcutForDeletion(shortcutKey(item))} />
+                  <span>{item.name}<small>{item.source === 'catalog' ? 'CATALOG · READ ONLY' : 'PERSONAL'}</small></span>
+                </label>
+                : <MenuRow key={shortcutKey(item)} icon="arrow-right" selected={item === shortcut}
+                  title={`${item.name} [${item.source === 'catalog' ? 'shared' : 'personal'}]`} onClick={() => actions.selectShortcut(shortcutKey(item))}>
+                  {item.name}{project.entries.some((other) => other !== item && other.name === item.name) && <small>[{item.source === 'catalog' ? 'shared' : 'personal'}]</small>}
+                </MenuRow>)}
               {!project && inventory.status === 'ready' && projects.length > 0 && <StatusDisplay>Select a project to inspect its shortcuts.</StatusDisplay>}
               {project && !project.entries.length && <StatusDisplay>{mode === 'fixture' ? 'No shortcuts in this fixture project.' : 'No shortcuts in this project.'}</StatusDisplay>}
             </MenuList>
+            {state.shortcutManagement.active && <div className="lb-manage-footer"><span>{state.shortcutManagement.selected.length} selected</span>
+              <Button className="lb-danger-action" disabled={!state.shortcutManagement.selected.length || busy} onClick={actions.requestSelectedShortcutDeletion}>DELETE SELECTED</Button></div>}
           </section>
           <Splitter orientation="horizontal" label="Resize shortcuts and selected shortcut" value={paneSizes.shortcuts} limits={shortcutLimits}
             onChange={(value) => previewPane('shortcuts', value)} onCommit={persistPreferences}

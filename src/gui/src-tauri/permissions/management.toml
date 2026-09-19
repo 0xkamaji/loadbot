@@ -8,5 +8,8 @@ commands.allow = [
   "add_loadbot_shortcut",
   "add_loadbot_recipe_shortcut",
   "update_loadbot_recipe_shortcut",
+  "delete_loadbot_shortcuts",
+  "choose_loadbot_project_file",
+  "choose_loadbot_project_directory",
   "sync_loadbot_catalog",
 ]

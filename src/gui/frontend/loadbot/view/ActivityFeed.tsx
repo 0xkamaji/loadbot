@@ -7,6 +7,7 @@ const operationLabels: Record<ActivityEntry['operation'], string> = {
   'project-add': 'Add project',
   'shortcut-add': 'Add shortcut',
   'shortcut-update': 'Update shortcut',
+  'shortcut-delete': 'Delete shortcut',
   'local-reload': 'Reload local',
   'project-folder-open': 'Open project folder',
 };

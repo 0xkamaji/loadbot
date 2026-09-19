@@ -17,6 +17,9 @@ export interface ManagementBridge {
   addShortcut(input: AddShortcutInput): Promise<unknown>;
   addRecipeShortcut(input: RecipeShortcutInput): Promise<unknown>;
   updateRecipeShortcut(input: RecipeShortcutInput): Promise<unknown>;
+  chooseProjectFile(project: ProjectIdentity): Promise<unknown>;
+  chooseProjectDirectory(project: ProjectIdentity): Promise<unknown>;
+  deleteShortcuts(shortcuts: readonly ShortcutIdentity[]): Promise<unknown>;
   syncCatalog(catalog: string, onActivity?: CatalogSyncActivitySink): Promise<unknown>;
 }
 
@@ -62,6 +65,18 @@ const nativeManagementBridge: ManagementBridge = {
     requireTauri('Recipe shortcut management');
     return invoke('update_loadbot_recipe_shortcut', { ...input });
   },
+  async chooseProjectFile(project) {
+    requireTauri('Project file selection');
+    return invoke('choose_loadbot_project_file', { catalog: project.catalog, tool: project.tool });
+  },
+  async chooseProjectDirectory(project) {
+    requireTauri('Project folder selection');
+    return invoke('choose_loadbot_project_directory', { catalog: project.catalog, tool: project.tool });
+  },
+  async deleteShortcuts(shortcuts) {
+    requireTauri('Shortcut management');
+    return invoke('delete_loadbot_shortcuts', { identities: shortcuts });
+  },
   async syncCatalog(catalog, onActivity) {
     requireTauri('Catalog synchronization');
     const channel = new Channel<unknown>();
@@ -88,6 +103,10 @@ function boolean(value: unknown): boolean {
 function number(value: unknown): number {
   if (typeof value !== 'number' || !Number.isInteger(value)) throw new Error('Invalid inventory response: expected an integer.');
   return value;
+}
+function optionalPath(value: unknown): string | undefined {
+  if (value == null) return undefined;
+  return text(value);
 }
 function recipeArgument(value: unknown): LoadbotRecipeArgument {
   const item = record(value);
@@ -247,6 +266,18 @@ export function createTauriLoadbotAdapter(
     async updateRecipeShortcut(input) {
       try { return shortcutIdentity(await management.updateRecipeShortcut(input)); }
       catch (error: unknown) { throw nativeError(error, 'Could not update the Recipe shortcut.'); }
+    },
+    async chooseProjectFile(project) {
+      try { return optionalPath(await management.chooseProjectFile(project)); }
+      catch (error: unknown) { throw nativeError(error, 'Could not choose a file in the project.'); }
+    },
+    async chooseProjectDirectory(project) {
+      try { return optionalPath(await management.chooseProjectDirectory(project)); }
+      catch (error: unknown) { throw nativeError(error, 'Could not choose a folder in the project.'); }
+    },
+    async deleteShortcuts(shortcuts) {
+      try { return number(await management.deleteShortcuts(shortcuts)); }
+      catch (error: unknown) { throw nativeError(error, 'Could not delete the selected shortcuts.'); }
     },
     async syncCatalog(catalog, onActivity) {
       try { await management.syncCatalog(catalog, onActivity); }

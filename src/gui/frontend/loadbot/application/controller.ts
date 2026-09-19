@@ -1,7 +1,7 @@
 import type {
   AddCatalogInput, AddProjectInput, AddShortcutInput, CatalogSyncActivity, CatalogSyncStage, LoadbotAdapter, LoadbotCatalog,
   LoadbotProject, LoadbotShortcut,
-  LoadbotRecipe, LoadbotRecipeArgument,
+  LoadbotRecipe, LoadbotRecipeArgument, ShortcutIdentity,
 } from '../contract';
 import { projectKey, selectionKey, shortcutKey } from '../identity';
 import { completeLoadbotCommand, executeLoadbotCommand, type CommandCompletion, type CommandResult } from './command';
@@ -19,13 +19,13 @@ export type CatalogState =
   | { readonly status: 'loading' }
   | { readonly status: 'ready'; readonly catalogs: readonly LoadbotCatalog[] }
   | { readonly status: 'error'; readonly message?: string };
-export type ManagementKind = 'add-catalog' | 'add-project' | 'add-shortcut' | 'update-shortcut' | 'sync-catalog';
+export type ManagementKind = 'add-catalog' | 'add-project' | 'add-shortcut' | 'update-shortcut' | 'delete-shortcut' | 'sync-catalog';
 export type ManagementState =
   | { readonly status: 'idle' }
   | { readonly status: 'submitting'; readonly kind: ManagementKind; readonly message: string }
   | { readonly status: 'success'; readonly kind: ManagementKind; readonly message: string }
   | { readonly status: 'error'; readonly kind: ManagementKind; readonly message: string };
-export type ActivityOperation = 'catalog-sync' | 'catalog-add' | 'project-add' | 'shortcut-add' | 'shortcut-update' | 'local-reload' | 'project-folder-open';
+export type ActivityOperation = 'catalog-sync' | 'catalog-add' | 'project-add' | 'shortcut-add' | 'shortcut-update' | 'shortcut-delete' | 'local-reload' | 'project-folder-open';
 export type ActivityStatus = 'in-progress' | 'info' | 'success' | 'error';
 export type ActivityStage = CatalogSyncStage | 'started' | 'authoritative-reload' | 'catalog-state' | 'completed' | 'failed';
 export interface ActivityEntry {
@@ -66,6 +66,11 @@ export interface LoadbotState {
   readonly activity: readonly ActivityEntry[];
   readonly management: ManagementState;
   readonly recipeEditor?: { readonly draft: RecipeDraft; readonly errors: readonly string[] };
+  readonly shortcutManagement: {
+    readonly active: boolean;
+    readonly selected: readonly string[];
+    readonly pendingDelete?: readonly ShortcutIdentity[];
+  };
   readonly projectFolder: {
     readonly status: 'idle' | 'opening' | 'opened' | 'error';
     readonly projectId?: string;
@@ -93,7 +98,17 @@ export interface LoadbotActions {
   updateRecipeParameter(key: number, value: LoadbotRecipeArgument, idManuallyEdited?: boolean): void;
   removeRecipeParameter(key: number): void;
   moveRecipeParameter(key: number, direction: -1 | 1): void;
+  chooseRecipeProgramFile(): Promise<boolean>;
+  chooseRecipeArgumentPath(key: number): Promise<boolean>;
+  chooseRecipeWorkingDirectory(): Promise<boolean>;
   saveRecipe(): Promise<boolean>;
+  enterShortcutManagement(): void;
+  exitShortcutManagement(): void;
+  toggleShortcutForDeletion(id: string): void;
+  requestSelectedShortcutDeletion(): void;
+  requestCurrentShortcutDeletion(): void;
+  cancelShortcutDeletion(): void;
+  confirmShortcutDeletion(): Promise<boolean>;
   syncCatalog(): Promise<boolean>;
   clearManagementStatus(): void;
   selectBottomView(view: 'command' | 'activity'): void;
@@ -113,7 +128,7 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
   let state: LoadbotState = {
     inventory: { status: 'loading' }, catalogState: { status: 'loading' }, fields: [], values: {},
     missingInputIds: [], drawerOpen: true, bottomView: 'command', command: { entries: [], history: [] },
-    activity: [], management: { status: 'idle' },
+    activity: [], management: { status: 'idle' }, shortcutManagement: { active: false, selected: [] },
     projectFolder: { status: 'idle' },
   };
   const listeners = new Set<() => void>();
@@ -165,9 +180,14 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
       const project = visible.find((item) => projectKey(item) === selectedProject) ?? visible[0];
       const shortcut = project?.entries.find((item) => shortcutKey(item) === selectedShortcut)
         ?? project?.entries.find((item) => item.source === 'personal' && item.name === preferred.shortcutName);
+      const deletable = new Set(project?.entries.filter((item) => item.source === 'personal').map(shortcutKey) ?? []);
+      const shortcutManagement = {
+        active: state.shortcutManagement.active,
+        selected: state.shortcutManagement.selected.filter((id) => deletable.has(id)),
+      };
       publish({
         ...state, inventory: { status: 'ready', projects }, catalogState: { status: 'ready', catalogs }, currentCatalog,
-        ...selection(project, shortcut),
+        ...selection(project, shortcut), shortcutManagement,
       });
       return true;
     } catch (error: unknown) {
@@ -235,14 +255,14 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
       if (state.catalogState.status !== 'ready' || !state.catalogState.catalogs.some((item) => item.name === name)) return;
       const projects = state.inventory.status === 'ready' ? projectsFor(state.inventory.projects, name) : [];
       folderGeneration++;
-      publish({ ...state, currentCatalog: name, ...selection(projects[0]), projectFolder: { status: 'idle' } });
+      publish({ ...state, currentCatalog: name, ...selection(projects[0]), projectFolder: { status: 'idle' }, shortcutManagement: { active: false, selected: [] } });
     },
     selectProject(id) {
       if (state.inventory.status !== 'ready') return;
       const project = projectsFor(state.inventory.projects, state.currentCatalog).find((item) => projectKey(item) === id);
       if (!project || project === state.project) return;
       folderGeneration++;
-      publish({ ...state, ...selection(project), projectFolder: { status: 'idle' } });
+      publish({ ...state, ...selection(project), projectFolder: { status: 'idle' }, shortcutManagement: { active: state.shortcutManagement.active, selected: [] } });
     },
     selectShortcut(id) {
       const shortcut = state.project?.entries.find((item) => shortcutKey(item) === id);
@@ -349,6 +369,49 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
       if (!state.recipeEditor) return;
       publish({ ...state, recipeEditor: { draft: moveDraftArgument(state.recipeEditor.draft, key, direction), errors: [] } });
     },
+    async chooseRecipeProgramFile() {
+      const editor = state.recipeEditor;
+      const project = state.project;
+      if (!editor || !project) return false;
+      try {
+        const path = await adapter.chooseProjectFile({ catalog: project.catalog, tool: project.tool });
+        if (path === undefined) return false;
+        actions.setRecipeProgram({ type: 'project-file', path });
+        return true;
+      } catch (error: unknown) {
+        publish({ ...state, recipeEditor: { ...editor, errors: [errorMessage(error, 'Could not choose a project file.')] } });
+        return false;
+      }
+    },
+    async chooseRecipeArgumentPath(key) {
+      const editor = state.recipeEditor;
+      const project = state.project;
+      const argument = editor?.draft.arguments.find((item) => item.key === key);
+      if (!editor || !project || argument?.value.type !== 'project-path') return false;
+      try {
+        const path = await adapter.chooseProjectFile({ catalog: project.catalog, tool: project.tool });
+        if (path === undefined) return false;
+        actions.updateRecipeParameter(key, { type: 'project-path', path });
+        return true;
+      } catch (error: unknown) {
+        publish({ ...state, recipeEditor: { ...editor, errors: [errorMessage(error, 'Could not choose a project file.')] } });
+        return false;
+      }
+    },
+    async chooseRecipeWorkingDirectory() {
+      const editor = state.recipeEditor;
+      const project = state.project;
+      if (!editor || !project) return false;
+      try {
+        const path = await adapter.chooseProjectDirectory({ catalog: project.catalog, tool: project.tool });
+        if (path === undefined) return false;
+        actions.setRecipeWorkingDirectory({ type: 'project-relative', path });
+        return true;
+      } catch (error: unknown) {
+        publish({ ...state, recipeEditor: { ...editor, errors: [errorMessage(error, 'Could not choose a project folder.')] } });
+        return false;
+      }
+    },
     async saveRecipe() {
       const editor = state.recipeEditor;
       const project = state.project;
@@ -374,6 +437,59 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
         return { catalog: saved.catalog, projectId: projectKey(saved), shortcutName: saved.name };
       });
       if (result) publish({ ...state, recipeEditor: undefined });
+      return result;
+    },
+    enterShortcutManagement() {
+      publish({ ...state, shortcutManagement: { active: true, selected: [] } });
+    },
+    exitShortcutManagement() {
+      if (state.management.status !== 'submitting') publish({ ...state, shortcutManagement: { active: false, selected: [] } });
+    },
+    toggleShortcutForDeletion(id) {
+      if (!state.shortcutManagement.active || !state.project) return;
+      const shortcut = state.project.entries.find((item) => shortcutKey(item) === id);
+      if (shortcut?.source !== 'personal') return;
+      const selected = state.shortcutManagement.selected.includes(id)
+        ? state.shortcutManagement.selected.filter((item) => item !== id)
+        : [...state.shortcutManagement.selected, id];
+      publish({ ...state, shortcutManagement: { ...state.shortcutManagement, selected } });
+    },
+    requestSelectedShortcutDeletion() {
+      const project = state.project;
+      if (!project || !state.shortcutManagement.selected.length) return;
+      const selected = new Set(state.shortcutManagement.selected);
+      const pendingDelete = project.entries.filter((item) => item.source === 'personal' && selected.has(shortcutKey(item)))
+        .map((item) => ({ catalog: project.catalog, tool: project.tool, name: item.name, path: item.path }));
+      if (pendingDelete.length) publish({ ...state, shortcutManagement: { ...state.shortcutManagement, pendingDelete } });
+    },
+    requestCurrentShortcutDeletion() {
+      const project = state.project;
+      const shortcut = state.shortcut;
+      if (!project || shortcut?.source !== 'personal') return;
+      publish({ ...state, shortcutManagement: { ...state.shortcutManagement, pendingDelete: [{
+        catalog: project.catalog, tool: project.tool, name: shortcut.name, path: shortcut.path,
+      }] } });
+    },
+    cancelShortcutDeletion() {
+      if (state.management.status !== 'submitting') publish({ ...state, shortcutManagement: { ...state.shortcutManagement, pendingDelete: undefined } });
+    },
+    async confirmShortcutDeletion() {
+      const project = state.project;
+      const pending = state.shortcutManagement.pendingDelete;
+      if (!project || !pending?.length) return false;
+      const count = pending.length;
+      const names = pending.map((item) => item.name);
+      const result = await mutation('delete-shortcut', 'shortcut-delete',
+        count === 1 ? `Deleting shortcut ${names[0]}…` : `Deleting ${count} shortcuts…`,
+        count === 1 ? `Shortcut ${names[0]} deleted.` : `${count} shortcuts deleted.`,
+        { catalog: project.catalog, project: project.tool, shortcut: count === 1 ? names[0] : undefined },
+        async () => {
+          const deleted = await adapter.deleteShortcuts(pending);
+          if (deleted !== count) throw new Error(`Expected to delete ${count} shortcuts, but the backend deleted ${deleted}.`);
+          return { catalog: project.catalog, projectId: projectKey(project) };
+        });
+      if (result) publish({ ...state, shortcutManagement: { active: false, selected: [] } });
+      else publish({ ...state, shortcutManagement: { ...state.shortcutManagement, pendingDelete: undefined } });
       return result;
     },
     async syncCatalog() {

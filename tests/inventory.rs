@@ -645,6 +645,168 @@ fn qualified_project_identity_resolves_the_existing_managed_directory_without_wr
 }
 
 #[test]
+fn project_picker_paths_are_portable_contained_and_type_checked() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = paths(root.path());
+    let url = "https://example.invalid/tool.git";
+    catalog(
+        &paths,
+        "alpha",
+        &format!("version = 1\n[tools.demo]\ntype = 'git'\nurl = '{url}'\n"),
+    );
+    let project = installed_tool(&paths, "alpha", "demo", url);
+    fs::create_dir_all(project.join("scripts/nested")).unwrap();
+    fs::write(project.join("scripts/tool.py"), "pass\n").unwrap();
+    let outside = root.path().join("outside.txt");
+    fs::write(&outside, "outside").unwrap();
+    let mut policy = Unattended;
+    let mut context = OperationContext::new(&mut policy);
+
+    assert_eq!(
+        operations::portable_project_path(
+            &paths,
+            "alpha",
+            "demo",
+            &project.join("scripts/tool.py"),
+            operations::ProjectPathKind::File,
+            &mut context,
+        )
+        .unwrap(),
+        "scripts/tool.py"
+    );
+    assert_eq!(
+        operations::portable_project_path(
+            &paths,
+            "alpha",
+            "demo",
+            &project.join("scripts/nested"),
+            operations::ProjectPathKind::Directory,
+            &mut context,
+        )
+        .unwrap(),
+        "scripts/nested"
+    );
+    assert!(
+        operations::portable_project_path(
+            &paths,
+            "alpha",
+            "demo",
+            &outside,
+            operations::ProjectPathKind::File,
+            &mut context,
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("outside installed project")
+    );
+    assert!(
+        operations::portable_project_path(
+            &paths,
+            "alpha",
+            "demo",
+            &project.join("scripts"),
+            operations::ProjectPathKind::File,
+            &mut context,
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("not a file")
+    );
+}
+
+#[test]
+fn personal_bulk_delete_is_atomic_and_preserves_unrelated_metadata() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = paths(root.path());
+    let path = paths.shortcuts().unwrap();
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    for (name, tool, target) in [
+        ("first", "demo", "first.sh"),
+        ("second", "demo", "second.sh"),
+        ("keep", "other", "keep.sh"),
+    ] {
+        shortcuts::save(
+            &path,
+            name,
+            Shortcut::new("alpha".into(), tool.into(), target.into()).unwrap(),
+        )
+        .unwrap();
+    }
+    let mut file = shortcuts::load(&path).unwrap();
+    file.extra
+        .insert("future".into(), toml::Value::String("preserved".into()));
+    file.shortcuts
+        .get_mut("keep")
+        .unwrap()
+        .extra
+        .insert("owner".into(), toml::Value::String("user".into()));
+    config::save_toml(&path, &file).unwrap();
+    let before = fs::read(&path).unwrap();
+    let mut policy = Unattended;
+    let mut context = OperationContext::new(&mut policy);
+    let invalid = vec![
+        operations::ShortcutIdentity {
+            name: "first".into(),
+            catalog: "alpha".into(),
+            tool: "demo".into(),
+            path: Some("first.sh".into()),
+        },
+        operations::ShortcutIdentity {
+            name: "second".into(),
+            catalog: "wrong".into(),
+            tool: "demo".into(),
+            path: Some("second.sh".into()),
+        },
+    ];
+    assert!(operations::shortcut_delete_many(&paths, &invalid, &mut context).is_err());
+    assert_eq!(
+        fs::read(&path).unwrap(),
+        before,
+        "validation failure must delete nothing"
+    );
+
+    let valid = vec![
+        operations::ShortcutIdentity {
+            name: "first".into(),
+            catalog: "alpha".into(),
+            tool: "demo".into(),
+            path: Some("first.sh".into()),
+        },
+        operations::ShortcutIdentity {
+            name: "second".into(),
+            catalog: "alpha".into(),
+            tool: "demo".into(),
+            path: Some("second.sh".into()),
+        },
+    ];
+    assert_eq!(
+        operations::shortcut_delete_many(&paths, &valid, &mut context).unwrap(),
+        2
+    );
+    let saved = shortcuts::load(&path).unwrap();
+    assert_eq!(saved.shortcuts.keys().collect::<Vec<_>>(), ["keep"]);
+    assert_eq!(saved.extra["future"].as_str(), Some("preserved"));
+    assert_eq!(
+        saved.shortcuts["keep"].extra["owner"].as_str(),
+        Some("user")
+    );
+    operations::shortcut_delete(
+        &paths,
+        &operations::ShortcutIdentity {
+            name: "keep".into(),
+            catalog: "alpha".into(),
+            tool: "other".into(),
+            path: Some("keep.sh".into()),
+        },
+        &mut context,
+    )
+    .unwrap();
+    let saved = shortcuts::load(&path).unwrap();
+    assert!(saved.shortcuts.is_empty());
+    assert_eq!(saved.extra["future"].as_str(), Some("preserved"));
+}
+
+#[test]
 fn skipped_catalog_is_an_explicit_failure_not_a_partial_or_empty_success() {
     let root = tempfile::tempdir().unwrap();
     let paths = paths(root.path());

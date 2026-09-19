@@ -18,14 +18,17 @@ export function ShortcutDetails({ state, actions, mode }: { state: LoadbotState;
         <dt>Target</dt><dd title={shortcut.path}>{shortcut.path}</dd></>}
       {shortcut.recipe && <><dt>Invocation</dt><dd>Recipe version {shortcut.recipe.version}</dd>
         <dt>Behavior</dt><dd>{shortcut.recipe.behavior === 'run' ? 'Run Recipe' : 'Launch Application'}</dd>
-        <dt>Program</dt><dd>{shortcut.recipe.program.type === 'project-file' ? `Project File · ${shortcut.recipe.program.path}`
+        <dt>Runs with</dt><dd>{shortcut.recipe.program.type === 'project-file' ? `File in tool · ${shortcut.recipe.program.path}`
           : shortcut.recipe.program.type === 'interpreter' ? `Interpreter · ${shortcut.recipe.program.runner}`
-            : `Executable · ${shortcut.recipe.program.name}`}</dd>
-        <dt>Working directory</dt><dd>{shortcut.recipe.working_directory.type === 'project-relative'
-          ? `Project relative · ${shortcut.recipe.working_directory.path}` : shortcut.recipe.working_directory.type === 'target-parent' ? 'Target parent' : 'Project root'}</dd>
-        <dt>Arguments</dt><dd>{shortcut.recipe.arguments.length || 'None'}</dd></>}
+            : `Program · ${shortcut.recipe.program.name}`}</dd>
+        <dt>Runs from</dt><dd>{shortcut.recipe.working_directory.type === 'project-relative'
+          ? `Folder inside tool · ${shortcut.recipe.working_directory.path}` : shortcut.recipe.working_directory.type === 'target-parent' ? "File's folder" : 'Tool folder'}</dd>
+        <dt>Options</dt><dd>{shortcut.recipe.arguments.length || 'None'}</dd></>}
     </dl>
-    {mode === 'local' && shortcut.recipe && shortcut.source === 'personal' && <Button className="lb-edit-recipe" onClick={() => actions.openSelectedRecipeEditor()}>EDIT RECIPE</Button>}
+    {mode === 'local' && shortcut.source === 'personal' && <div className="lb-shortcut-actions">
+      {shortcut.recipe && <Button className="lb-edit-recipe" onClick={() => actions.openSelectedRecipeEditor()}>EDIT RECIPE</Button>}
+      <Button className="lb-danger-action" onClick={actions.requestCurrentShortcutDeletion}>DELETE SHORTCUT</Button>
+    </div>}
     {shortcut.recipe && shortcut.source === 'catalog' && <p className="lb-note">Shared catalog Recipes are read-only here.</p>}
     <p className="lb-note">Inventory details. Execution is not connected.</p>
   </div>;

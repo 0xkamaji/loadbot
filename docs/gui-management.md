@@ -65,6 +65,27 @@ them, and shared catalog Recipes remain read-only because their authority is the
 Git-backed `catalog.toml`. The preview of an incomplete draft is presentation-only
 and never becomes an execution command.
 
+The authoring UI translates the precise Recipe domain into task-oriented labels:
+users choose what runs the tool, where it runs from, and ordered options such as
+Ask for file, On/off flag, Flag + value, Fixed text, and File in tool. Stable
+parameter IDs are generated from their labels and remain under an Advanced
+disclosure; once edited explicitly, later label changes do not replace them.
+
+Project-owned files and folders use the official native Tauri dialog plugin through
+semantic `chooseProjectFile` and `chooseProjectDirectory` adapter capabilities. The
+dialog starts in the installed project. Rust canonicalizes the result, rejects
+outside-project paths and file/directory mismatches, and returns only a portable
+project-relative path. Cancel returns no value and changes neither the draft nor
+Activity. Runtime File/Directory options remain definitions only; authoring never
+selects their future runtime values.
+
+Personal shortcuts expose contextual deletion with a Loadbot confirmation that
+states tools and files are untouched. Manage mode allows multiple personal
+shortcuts to be selected while catalog commands remain visibly read-only. Bulk
+deletion validates every qualified identity, then removes all definitions under one
+shortcuts-file lease and one atomic save; a conflict deletes none. Both paths reread
+authoritative inventory and emit semantic Activity. The frontend never edits TOML.
+
 One controller-owned management state prevents concurrent duplicate submissions and
 represents progress, success, and failure. A successful operation selects its known
 identity after rereading real state. A failure also triggers a local authoritative
@@ -87,9 +108,9 @@ identity behavior, session command history, and deliberate system-terminal bound
 
 ## Phase boundary
 
-Fixtures remain isolated behind `LoadbotAdapter`; their management calls return a
-controlled unavailable error and never touch real state. Fixtures include Legacy,
-Run Recipe, and Launch Recipe inspection examples. Delete, background sync, catalog
-initialization, project pulling, Recipe/shortcut execution, application launching,
-Output UI, PTY/system-terminal execution, Rot GUI integration, and model/personality
-behavior are not implemented.
+Fixtures remain isolated behind `LoadbotAdapter`; a fresh in-memory fixture adapter
+can exercise project-path choices and personal deletion without touching real state.
+Fixtures include Legacy, Run Recipe, and Launch Recipe inspection examples.
+Background sync, catalog initialization, project pulling, Recipe/shortcut execution,
+application launching, Output UI, PTY/system-terminal execution, Rot GUI integration,
+and model/personality behavior are not implemented.

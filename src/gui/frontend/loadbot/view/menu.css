@@ -65,7 +65,20 @@
 .lb-run { display: flex; gap: var(--lb-space-3); align-items: center; }
 .lb-run .lb-button { flex-shrink: 0; min-width: 170px; }
 .lb-run .lb-status { flex: 1; }
-.lb-edit-recipe { margin-top: var(--lb-space-3); }
+.lb-shortcut-actions { display: flex; flex-wrap: wrap; gap: var(--lb-space-2); margin-top: var(--lb-space-3); }
+.lb-shortcut-actions .lb-edit-recipe { margin-top: 0; }
+.lb-shortcut-heading-actions { display: flex; gap: var(--lb-space-1); }
+.lb-manage-shortcut {
+  display: grid; grid-template-columns: auto minmax(0, 1fr); gap: var(--lb-space-2); align-items: center;
+  min-height: 34px; padding: 4px var(--lb-space-2); border-bottom: 1px solid rgb(255 255 255 / .08);
+}
+.lb-manage-shortcut input { accent-color: var(--lb-terminal-accent); }
+.lb-manage-shortcut > span { min-width: 0; overflow-wrap: anywhere; }
+.lb-manage-shortcut small { display: block; margin-top: 2px; font-size: 9px; opacity: .68; }
+.lb-manage-shortcut[data-source='catalog'] { opacity: .62; }
+.lb-manage-footer { display: flex; justify-content: space-between; align-items: center; gap: var(--lb-space-2); font-size: 11px; }
+.lb-danger-action { border-color: var(--lb-terminal-error); }
+.lb-delete-summary { max-height: 150px; overflow: auto; padding-left: 22px; font-size: 12px; }
 .lb-shortcut-kind { display: grid; gap: var(--lb-space-2); }
 .lb-shortcut-kind > .lb-button { display: grid; justify-items: start; text-align: left; padding: var(--lb-space-3); }
 .lb-shortcut-kind > .lb-button span { margin-top: var(--lb-space-1); font-size: 10px; font-weight: normal; opacity: .8; }
@@ -81,6 +94,7 @@
 .lb-parameter header { display: flex; align-items: center; justify-content: space-between; gap: var(--lb-space-2); }
 .lb-parameter header span { display: flex; gap: 2px; }
 .lb-parameter header .lb-button { min-width: 30px; min-height: 28px; padding: 0 6px; }
+.lb-advanced-toggle { justify-self: start; min-height: 28px; min-width: 0; padding: 2px 8px; font-size: 9px; opacity: .8; }
 .lb-recipe-preview { min-width: 0; padding: var(--lb-space-3); background: var(--lb-terminal-surface); color: var(--lb-terminal-text); border: 1px solid var(--lb-terminal-accent); }
 .lb-recipe-preview code { display: block; margin-top: var(--lb-space-2); overflow-wrap: anywhere; white-space: pre-wrap; }
 .lb-recipe-preview p { color: var(--lb-terminal-muted); }

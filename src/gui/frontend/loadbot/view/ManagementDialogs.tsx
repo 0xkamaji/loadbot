@@ -11,21 +11,41 @@ export function ManagementDialogs({ dialog, state, actions, onClose }: {
 }) {
   function close() {
     if (state.management.status === 'submitting') return;
+    if (state.shortcutManagement.pendingDelete) {
+      actions.cancelShortcutDeletion();
+      return;
+    }
     actions.clearManagementStatus();
     actions.closeRecipeEditor();
     onClose();
   }
   useEffect(() => {
-    if (!dialog && !state.recipeEditor) return;
+    if (!dialog && !state.recipeEditor && !state.shortcutManagement.pendingDelete) return;
     const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') close(); };
     window.addEventListener('keydown', escape);
     return () => window.removeEventListener('keydown', escape);
-  }, [dialog, onClose, state.management.status, state.recipeEditor]);
+  }, [dialog, onClose, state.management.status, state.recipeEditor, state.shortcutManagement.pendingDelete]);
+  if (state.shortcutManagement.pendingDelete) return <DeleteShortcutConfirmation state={state} actions={actions} />;
   if (!dialog && !state.recipeEditor) return null;
   if (dialog === 'recipe-editor' || state.recipeEditor) return <RecipeBuilder state={state} actions={actions} onClose={close} onDone={onClose} />;
   if (dialog === 'add-catalog') return <AddCatalogForm state={state} actions={actions} onClose={close} onDone={onClose} />;
   if (dialog === 'add-project') return <AddProjectForm state={state} actions={actions} onClose={close} onDone={onClose} />;
   return <AddShortcutForm state={state} actions={actions} onClose={close} onDone={onClose} />;
+}
+
+function DeleteShortcutConfirmation({ state, actions }: { state: LoadbotState; actions: LoadbotActions }) {
+  const shortcuts = state.shortcutManagement.pendingDelete ?? [];
+  const busy = state.management.status === 'submitting';
+  const count = shortcuts.length;
+  return <Dialog label={count === 1 ? 'Delete shortcut' : 'Delete shortcuts'} onClose={actions.cancelShortcutDeletion}>
+    <h2>{count === 1 ? `DELETE “${shortcuts[0]?.name}”?` : `DELETE ${count} SHORTCUTS?`}</h2>
+    <p>This deletes {count === 1 ? 'the shortcut' : 'these shortcuts'} from Loadbot. It does not delete the tool or any files.</p>
+    {count > 1 && <ul className="lb-delete-summary">{shortcuts.slice(0, 8).map((item) => <li key={`${item.catalog}/${item.tool}/${item.name}`}>{item.name}</li>)}
+      {count > 8 && <li>…and {count - 8} more</li>}</ul>}
+    {state.management.status !== 'idle' && state.management.kind === 'delete-shortcut' && <StatusDisplay>{state.management.message}</StatusDisplay>}
+    <div className="lb-dialog-actions"><Button onClick={actions.cancelShortcutDeletion} disabled={busy}>CANCEL</Button>
+      <Button className="lb-danger-action" onClick={() => void actions.confirmShortcutDeletion()} disabled={busy}>{busy ? 'DELETING…' : count === 1 ? 'DELETE' : `DELETE ${count}`}</Button></div>
+  </Dialog>;
 }
 
 function FormStatus({ state, kind }: { state: LoadbotState; kind: ManagementKind }) {
@@ -96,7 +116,7 @@ function AddShortcutForm({ state, actions, onClose, onDone }: FormProps) {
   return <Dialog label="Add shortcut" onClose={onClose}>
     <h2>ADD SHORTCUT / {state.project?.tool}</h2>
     {kind === 'choose' ? <div className="lb-shortcut-kind">
-      <p>What should this shortcut do?</p>
+      <p>Tell Loadbot how you normally use this tool.</p>
       <Button onClick={() => actions.openRecipeCreator('run')}>RUN RECIPE<span>Structured tool invocation with future observed output.</span></Button>
       <Button onClick={() => actions.openRecipeCreator('launch')}>LAUNCH APPLICATION<span>Start an application and hand off its lifecycle.</span></Button>
       <Button onClick={() => setKind('legacy')}>SIMPLE LEGACY SHORTCUT<span>Keep the existing path and optional runner workflow.</span></Button>

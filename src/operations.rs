@@ -52,7 +52,7 @@ pub struct ToolStatus {
     pub repository: Option<git::RepositoryStatus>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ShortcutIdentity {
     pub name: String,
     pub catalog: String,
@@ -165,6 +165,99 @@ pub fn shortcut_update_recipe(
         tool: tool_name.to_owned(),
         path: None,
     })
+}
+
+/// Delete personal shortcuts only after their complete qualified identities have
+/// been resolved and rechecked under the shortcuts-file lease.
+pub fn shortcut_delete_many(
+    paths: &Paths,
+    identities: &[ShortcutIdentity],
+    context: &mut OperationContext<'_>,
+) -> Result<usize> {
+    let _process_scope = crate::process::scope(&context.process);
+    context.process.cancellation.check()?;
+    if identities.is_empty() {
+        bail!("at least one shortcut is required");
+    }
+    let path = paths.shortcuts()?;
+    let file = shortcuts::load(&path)?;
+    let mut expected = Vec::with_capacity(identities.len());
+    for identity in identities {
+        context.process.cancellation.check()?;
+        paths::validate_name(&identity.name).context("invalid shortcut name")?;
+        let shortcut = file
+            .shortcuts
+            .get(&identity.name)
+            .with_context(|| format!("personal shortcut '{}' does not exist", identity.name))?;
+        if shortcut.catalog != identity.catalog || shortcut.tool != identity.tool {
+            bail!(
+                "personal shortcut '{}' does not belong to {}/{}",
+                identity.name,
+                identity.catalog,
+                identity.tool
+            );
+        }
+        match (&shortcut.invocation, &identity.path) {
+            (crate::recipe::StoredInvocation::Legacy(legacy), Some(path))
+                if legacy.path == *path => {}
+            (crate::recipe::StoredInvocation::Recipe(_), None) => {}
+            _ => bail!(
+                "personal shortcut '{}' no longer matches the selected definition",
+                identity.name
+            ),
+        }
+        expected.push((identity.name.clone(), shortcut.clone()));
+    }
+    shortcuts::remove_many_if_matches(&path, &expected)?;
+    Ok(expected.len())
+}
+
+pub fn shortcut_delete(
+    paths: &Paths,
+    identity: &ShortcutIdentity,
+    context: &mut OperationContext<'_>,
+) -> Result<()> {
+    shortcut_delete_many(paths, std::slice::from_ref(identity), context).map(|_| ())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectPathKind {
+    File,
+    Directory,
+}
+
+/// Convert one native picker result into a portable project-relative path. Both
+/// sides are canonicalized so symlinks cannot escape the installed project.
+pub fn portable_project_path(
+    paths: &Paths,
+    catalog_name: &str,
+    tool_name: &str,
+    selected: &Path,
+    kind: ProjectPathKind,
+    context: &mut OperationContext<'_>,
+) -> Result<String> {
+    let root = installed_tool_path(paths, tool_name, catalog_name, context)?;
+    let canonical_root = fs::canonicalize(&root)
+        .with_context(|| format!("could not resolve installed project {}", root.display()))?;
+    let canonical_selected = fs::canonicalize(selected)
+        .with_context(|| format!("could not resolve selected path {}", selected.display()))?;
+    let metadata = fs::metadata(&canonical_selected)?;
+    match kind {
+        ProjectPathKind::File if !metadata.is_file() => bail!("selected path is not a file"),
+        ProjectPathKind::Directory if !metadata.is_dir() => {
+            bail!("selected path is not a directory")
+        }
+        _ => {}
+    }
+    let relative = canonical_selected
+        .strip_prefix(&canonical_root)
+        .with_context(|| {
+            format!("selected path is outside installed project {catalog_name}/{tool_name}")
+        })?;
+    if relative.as_os_str().is_empty() {
+        bail!("select a path inside the tool; use Tool folder for the project root");
+    }
+    shortcuts::portable_path(relative)
 }
 
 pub fn catalog_add(

@@ -2,7 +2,7 @@ import { act, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { fixtureMenuDependencies } from '../frontend/hosts/fixtureComposition';
-import type { LoadbotAdapter, LoadbotProject } from '../frontend/loadbot/contract';
+import type { LoadbotAdapter, LoadbotProject, ShortcutIdentity } from '../frontend/loadbot/contract';
 import { LoadbotMenu } from '../frontend/loadbot/LoadbotMenu';
 
 const projectRows = () => within(screen.getByRole('group', { name: 'Projects' }));
@@ -12,7 +12,8 @@ describe('injected menu outside Tauri', () => {
   const adapter = (projects: readonly LoadbotProject[], open = vi.fn(async () => {})): LoadbotAdapter => ({
     readInventory: async () => projects,
     readCatalogs: async () => [...new Set(projects.map((item) => item.catalog))].map((name, index) => ({ name, url: 'fixture', writable: true, state: 'installed' as const, default: index === 0 })),
-    openProjectFolder: open, addCatalog: vi.fn(), addProject: vi.fn(), addShortcut: vi.fn(), addRecipeShortcut: vi.fn(), updateRecipeShortcut: vi.fn(), syncCatalog: vi.fn(),
+    openProjectFolder: open, addCatalog: vi.fn(), addProject: vi.fn(), addShortcut: vi.fn(), addRecipeShortcut: vi.fn(), updateRecipeShortcut: vi.fn(),
+    chooseProjectFile: vi.fn(), chooseProjectDirectory: vi.fn(), deleteShortcuts: vi.fn(), syncCatalog: vi.fn(),
   });
   it('changes project/shortcut, resets isolated forms, and preserves state through the drawer', async () => {
     const user = userEvent.setup();
@@ -331,16 +332,18 @@ describe('injected menu outside Tauri', () => {
     expect(screen.getByRole('dialog', { name: 'Create Recipe shortcut' })).toBeInTheDocument();
     await user.type(screen.getByLabelText('Shortcut name *'), 'build');
     await user.type(screen.getByLabelText('Description (optional)'), 'Build project');
-    await user.type(screen.getByLabelText('Executable *'), 'cargo');
-    await user.click(screen.getByRole('button', { name: '+ ADD PARAMETER' }));
-    await user.clear(screen.getByLabelText('Label *'));
-    await user.type(screen.getByLabelText('Label *'), 'Profile');
-    expect(screen.getByLabelText('ID *')).toHaveValue('profile');
-    await user.clear(screen.getByLabelText('ID *'));
-    await user.type(screen.getByLabelText('ID *'), 'build-profile');
-    await user.clear(screen.getByLabelText('Label *'));
-    await user.type(screen.getByLabelText('Label *'), 'Mode');
-    expect(screen.getByLabelText('ID *')).toHaveValue('build-profile');
+    await user.type(screen.getByLabelText('Program *'), 'cargo');
+    await user.click(screen.getByRole('button', { name: '+ ADD OPTION' }));
+    await user.clear(screen.getByLabelText('Name *'));
+    await user.type(screen.getByLabelText('Name *'), 'Profile');
+    expect(screen.queryByLabelText('Parameter ID *')).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'ADVANCED' }));
+    expect(screen.getByLabelText('Parameter ID *')).toHaveValue('profile');
+    await user.clear(screen.getByLabelText('Parameter ID *'));
+    await user.type(screen.getByLabelText('Parameter ID *'), 'build-profile');
+    await user.clear(screen.getByLabelText('Name *'));
+    await user.type(screen.getByLabelText('Name *'), 'Mode');
+    expect(screen.getByLabelText('Parameter ID *')).toHaveValue('build-profile');
     expect(screen.getByRole('region', { name: 'Recipe preview' })).toHaveTextContent('cargo {Mode}');
     await user.click(screen.getByRole('button', { name: 'CREATE RECIPE' }));
 
@@ -357,5 +360,72 @@ describe('injected menu outside Tauri', () => {
     expect(updateRecipeShortcut).toHaveBeenCalledWith(expect.objectContaining({ recipe: expect.objectContaining({ behavior: 'launch' }) }));
     expect(await screen.findByText('Launch Application')).toBeInTheDocument();
     expect(screen.queryByText(/output/i)).not.toBeInTheDocument();
+  });
+
+  it('browses portable author-time paths and manages only personal shortcuts with confirmation', async () => {
+    const user = userEvent.setup();
+    let projects: readonly LoadbotProject[] = [{ catalog: 'personal', tool: 'demo', entries: [
+      { name: 'Personal one', path: 'one.sh', source: 'personal' },
+      { name: 'Shared command', path: 'shared.sh', source: 'catalog' },
+      { name: 'Personal two', path: 'two.sh', source: 'personal' },
+    ] }];
+    const chooseProjectFile = vi.fn()
+      .mockResolvedValueOnce('scripts/tool.py')
+      .mockResolvedValueOnce('config/default.toml')
+      .mockResolvedValueOnce(undefined);
+    const chooseProjectDirectory = vi.fn(async () => 'scripts/tools');
+    const deleteShortcuts = vi.fn(async (identities: readonly ShortcutIdentity[]) => {
+      const names = new Set(identities.map((item) => item.name));
+      projects = [{ ...projects[0]!, entries: projects[0]!.entries.filter((item) => !names.has(item.name)) }];
+      return identities.length;
+    });
+    const managed: LoadbotAdapter = {
+      ...adapter(projects), readInventory: async () => projects, chooseProjectFile, chooseProjectDirectory, deleteShortcuts,
+    };
+    render(<LoadbotMenu adapter={managed} />);
+    await projectRows().findByRole('button', { name: 'demo personal' });
+
+    await user.click(screen.getByRole('button', { name: '+ ADD SHORTCUT' }));
+    await user.click(screen.getByRole('button', { name: /RUN RECIPE/ }));
+    await user.selectOptions(screen.getByLabelText('Run with'), 'project-file');
+    await user.click(screen.getAllByRole('button', { name: 'BROWSE' })[0]!);
+    expect(screen.getByLabelText('File *')).toHaveValue('scripts/tool.py');
+    await user.selectOptions(screen.getByLabelText('Location'), 'project-relative');
+    await user.click(screen.getAllByRole('button', { name: 'BROWSE' })[1]!);
+    expect(screen.getByLabelText('Folder *')).toHaveValue('scripts/tools');
+    await user.selectOptions(screen.getByLabelText('Option type'), 'project-path');
+    await user.click(screen.getByRole('button', { name: '+ ADD OPTION' }));
+    await user.click(screen.getAllByRole('button', { name: 'BROWSE' })[2]!);
+    expect(screen.getAllByLabelText('File *')[1]).toHaveValue('config/default.toml');
+    await user.click(screen.getAllByRole('button', { name: 'BROWSE' })[0]!);
+    expect(screen.getAllByLabelText('File *')[0]).toHaveValue('scripts/tool.py');
+    expect(screen.queryByText(/Could not choose/)).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'CANCEL' }));
+
+    expect(screen.getByRole('button', { name: 'DELETE SHORTCUT' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'DELETE SHORTCUT' }));
+    expect(screen.getByRole('dialog', { name: 'Delete shortcut' })).toHaveTextContent('does not delete the tool or any files');
+    await user.click(screen.getByRole('button', { name: 'CANCEL' }));
+    expect(deleteShortcuts).not.toHaveBeenCalled();
+    await user.click(shortcutRows().getByRole('button', { name: 'Shared command' }));
+    expect(screen.queryByRole('button', { name: 'DELETE SHORTCUT' })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'MANAGE' }));
+    expect(screen.getByRole('checkbox', { name: /Shared command/ })).toBeDisabled();
+    await user.click(screen.getByRole('checkbox', { name: /Personal one/ }));
+    await user.click(screen.getByRole('button', { name: 'DONE' }));
+    expect(screen.queryByRole('checkbox', { name: /Personal one/ })).not.toBeInTheDocument();
+    expect(deleteShortcuts).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: 'MANAGE' }));
+    await user.click(screen.getByRole('checkbox', { name: /Personal one/ }));
+    await user.click(screen.getByRole('checkbox', { name: /Personal two/ }));
+    expect(screen.getByText('2 selected')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'DELETE SELECTED' }));
+    expect(screen.getByRole('dialog', { name: 'Delete shortcuts' })).toHaveTextContent('Personal one');
+    await user.click(screen.getByRole('button', { name: 'DELETE 2' }));
+    await vi.waitFor(() => expect(deleteShortcuts).toHaveBeenCalledOnce());
+    expect(deleteShortcuts.mock.calls[0]?.[0]).toHaveLength(2);
+    expect(await shortcutRows().findByRole('button', { name: 'Shared command' })).toBeInTheDocument();
+    expect(shortcutRows().queryByRole('button', { name: 'Personal one' })).not.toBeInTheDocument();
   });
 });

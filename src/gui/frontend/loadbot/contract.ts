@@ -94,5 +94,8 @@ export interface LoadbotAdapter {
   addShortcut(input: AddShortcutInput): Promise<ShortcutIdentity>;
   addRecipeShortcut(input: RecipeShortcutInput): Promise<ShortcutIdentity>;
   updateRecipeShortcut(input: RecipeShortcutInput): Promise<ShortcutIdentity>;
+  chooseProjectFile(project: ProjectIdentity): Promise<string | undefined>;
+  chooseProjectDirectory(project: ProjectIdentity): Promise<string | undefined>;
+  deleteShortcuts(shortcuts: readonly ShortcutIdentity[]): Promise<number>;
   syncCatalog(catalog: string, onActivity?: CatalogSyncActivitySink): Promise<void>;
 }

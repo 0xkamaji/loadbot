@@ -221,6 +221,37 @@ pub fn remove_if_matches(path: &Path, name: &str, expected: &Shortcut) -> Result
     remove_matching(path, name, Some(expected))
 }
 
+/// Remove a set of personal definitions in one leased, atomic transaction.
+/// Every expected definition is checked before anything is removed.
+pub fn remove_many_if_matches(path: &Path, expected: &[(String, Shortcut)]) -> Result<()> {
+    if expected.is_empty() {
+        bail!("at least one shortcut is required");
+    }
+    let mut names = std::collections::BTreeSet::new();
+    for (name, shortcut) in expected {
+        paths::validate_name(name).context("invalid shortcut name")?;
+        shortcut.validate()?;
+        if !names.insert(name) {
+            bail!("shortcut '{name}' was requested more than once");
+        }
+    }
+    let _lease = crate::persistence::Lease::acquire(path)?;
+    let mut file = load(path)?;
+    for (name, shortcut) in expected {
+        if file.shortcuts.get(name) != Some(shortcut) {
+            return Err(crate::persistence::Busy {
+                resource: path.to_owned(),
+            }
+            .into());
+        }
+    }
+    for (name, _) in expected {
+        file.shortcuts.remove(name);
+    }
+    reject_symlink(path)?;
+    config::save_toml(path, &file)
+}
+
 fn remove_matching(path: &Path, name: &str, expected: Option<&Shortcut>) -> Result<()> {
     paths::validate_name(name).context("invalid shortcut name")?;
     let _lease = crate::persistence::Lease::acquire(path)?;

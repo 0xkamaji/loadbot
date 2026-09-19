@@ -4,14 +4,15 @@ import { COMMAND_HISTORY_LIMIT, createLoadbotApplication } from '../frontend/loa
 import { fixtureAdapter } from '../frontend/loadbot/fixtures/adapter';
 import { fixtureSampleForms } from '../frontend/loadbot/fixtures/sampleForms';
 import { projectKey, shortcutKey } from '../frontend/loadbot/identity';
-import type { LoadbotAdapter, LoadbotProject } from '../frontend/loadbot/contract';
+import type { LoadbotAdapter, LoadbotProject, ShortcutIdentity } from '../frontend/loadbot/contract';
 
 describe('headless capability and application boundary', () => {
   const adapter = (readInventory: LoadbotAdapter['readInventory'], openProjectFolder: LoadbotAdapter['openProjectFolder'] = vi.fn(async () => {})): LoadbotAdapter => ({
     readInventory,
     readCatalogs: async () => [{ name: 'personal', url: 'test', writable: true, state: 'installed', default: false }, { name: 'community', url: 'test', writable: false, state: 'installed', default: false }, { name: 'one', url: 'test', writable: true, state: 'installed', default: false }, { name: 'two', url: 'test', writable: true, state: 'installed', default: false }, { name: 'three', url: 'test', writable: true, state: 'installed', default: false }],
     openProjectFolder,
-    addCatalog: vi.fn(), addProject: vi.fn(), addShortcut: vi.fn(), addRecipeShortcut: vi.fn(), updateRecipeShortcut: vi.fn(), syncCatalog: vi.fn(),
+    addCatalog: vi.fn(), addProject: vi.fn(), addShortcut: vi.fn(), addRecipeShortcut: vi.fn(), updateRecipeShortcut: vi.fn(),
+    chooseProjectFile: vi.fn(), chooseProjectDirectory: vi.fn(), deleteShortcuts: vi.fn(), syncCatalog: vi.fn(),
   });
 
   it('returns independent serializable fixture snapshots without widget metadata', async () => {
@@ -238,7 +239,8 @@ describe('headless capability and application boundary', () => {
         ] } : item);
         return { catalog: input.catalog, tool: input.tool, name: input.name, path: input.path };
       }),
-      addRecipeShortcut: vi.fn(), updateRecipeShortcut: vi.fn(),
+      addRecipeShortcut: vi.fn(), updateRecipeShortcut: vi.fn(), chooseProjectFile: vi.fn(),
+      chooseProjectDirectory: vi.fn(), deleteShortcuts: vi.fn(),
       syncCatalog: vi.fn(async () => {}),
     };
     const application = createLoadbotApplication(managed);
@@ -412,5 +414,83 @@ describe('headless capability and application boundary', () => {
     expect(managed.addRecipeShortcut).not.toHaveBeenCalled();
     application.actions.closeRecipeEditor();
     expect(application.getSnapshot().recipeEditor).toBeUndefined();
+  });
+
+  it('applies semantic project pickers to author-time paths and treats cancellation as no change', async () => {
+    const managed = adapter(async () => [{ catalog: 'one', tool: 'demo', entries: [] }]);
+    managed.chooseProjectFile = vi.fn()
+      .mockResolvedValueOnce('scripts/tool.py')
+      .mockResolvedValueOnce('config/default.toml')
+      .mockResolvedValueOnce(undefined);
+    managed.chooseProjectDirectory = vi.fn(async () => 'scripts/tools');
+    const application = createLoadbotApplication(managed);
+    application.start();
+    await vi.waitFor(() => expect(application.getSnapshot().inventory.status).toBe('ready'));
+    application.actions.openRecipeCreator('run');
+    application.actions.setRecipeProgram({ type: 'project-file', path: 'old.py' });
+    expect(await application.actions.chooseRecipeProgramFile()).toBe(true);
+    expect(application.getSnapshot().recipeEditor?.draft.recipe.program).toEqual({ type: 'project-file', path: 'scripts/tool.py' });
+    application.actions.addRecipeParameter('project-path');
+    const argument = application.getSnapshot().recipeEditor!.draft.arguments[0]!;
+    expect(await application.actions.chooseRecipeArgumentPath(argument.key)).toBe(true);
+    expect(application.getSnapshot().recipeEditor?.draft.arguments[0]?.value).toEqual({ type: 'project-path', path: 'config/default.toml' });
+    expect(await application.actions.chooseRecipeWorkingDirectory()).toBe(true);
+    expect(application.getSnapshot().recipeEditor?.draft.recipe.working_directory).toEqual({ type: 'project-relative', path: 'scripts/tools' });
+    expect(await application.actions.chooseRecipeProgramFile()).toBe(false);
+    expect(application.getSnapshot().recipeEditor?.draft.recipe.program).toEqual({ type: 'project-file', path: 'scripts/tool.py' });
+    application.actions.addRecipeParameter('file');
+    expect(managed.chooseProjectFile).toHaveBeenCalledTimes(3);
+    expect(application.getSnapshot().recipeEditor?.draft.arguments[1]?.value).toMatchObject({ type: 'input', kind: 'file' });
+    expect(application.getSnapshot().activity).toEqual([]);
+  });
+
+  it('owns atomic personal shortcut selection, confirmation, deletion, and authoritative reload', async () => {
+    let projects: LoadbotProject[] = [{ catalog: 'one', tool: 'demo', entries: [
+      { name: 'personal-one', path: 'one.sh', source: 'personal' },
+      { name: 'shared', path: 'shared.sh', source: 'catalog' },
+      { name: 'personal-two', recipe: { version: 1, behavior: 'run', program: { type: 'executable', name: 'cargo' }, working_directory: { type: 'project-root' }, arguments: [] }, source: 'personal' },
+    ] }];
+    const managed = adapter(async () => structuredClone(projects));
+    managed.deleteShortcuts = vi.fn(async (identities: readonly ShortcutIdentity[]) => {
+      const names = new Set(identities.map((item) => item.name));
+      projects = [{ ...projects[0]!, entries: projects[0]!.entries.filter((item) => !names.has(item.name)) }];
+      return identities.length;
+    });
+    const application = createLoadbotApplication(managed);
+    application.start();
+    await vi.waitFor(() => expect(application.getSnapshot().inventory.status).toBe('ready'));
+    application.actions.enterShortcutManagement();
+    const entries = application.getSnapshot().project!.entries;
+    application.actions.toggleShortcutForDeletion(shortcutKey(entries[0]!));
+    application.actions.toggleShortcutForDeletion(shortcutKey(entries[1]!));
+    application.actions.toggleShortcutForDeletion(shortcutKey(entries[2]!));
+    expect(application.getSnapshot().shortcutManagement.selected).toHaveLength(2);
+    application.actions.requestSelectedShortcutDeletion();
+    expect(application.getSnapshot().shortcutManagement.pendingDelete?.map((item) => item.name)).toEqual(['personal-one', 'personal-two']);
+    expect(await application.actions.confirmShortcutDeletion()).toBe(true);
+    expect(managed.deleteShortcuts).toHaveBeenCalledOnce();
+    expect(managed.deleteShortcuts).toHaveBeenCalledWith([
+      { catalog: 'one', tool: 'demo', name: 'personal-one', path: 'one.sh' },
+      { catalog: 'one', tool: 'demo', name: 'personal-two', path: undefined },
+    ]);
+    expect(application.getSnapshot().project?.entries.map((item) => item.name)).toEqual(['shared']);
+    expect(application.getSnapshot().shortcutManagement).toEqual({ active: false, selected: [] });
+    expect(application.getSnapshot().activity.at(-1)).toMatchObject({ operation: 'shortcut-delete', status: 'success' });
+  });
+
+  it('keeps authoritative shortcuts after a delete failure and reports no false success', async () => {
+    const projects: LoadbotProject[] = [{ catalog: 'one', tool: 'demo', entries: [
+      { name: 'keep-me', path: 'keep.sh', source: 'personal' },
+    ] }];
+    const managed = adapter(async () => structuredClone(projects));
+    managed.deleteShortcuts = vi.fn(async () => { throw new Error('shortcut changed concurrently'); });
+    const application = createLoadbotApplication(managed);
+    application.start();
+    await vi.waitFor(() => expect(application.getSnapshot().inventory.status).toBe('ready'));
+    application.actions.requestCurrentShortcutDeletion();
+    expect(await application.actions.confirmShortcutDeletion()).toBe(false);
+    expect(application.getSnapshot().project?.entries.map((item) => item.name)).toEqual(['keep-me']);
+    expect(application.getSnapshot().management).toEqual({ status: 'error', kind: 'delete-shortcut', message: 'shortcut changed concurrently' });
+    expect(application.getSnapshot().activity.at(-1)).toMatchObject({ operation: 'shortcut-delete', status: 'error' });
   });
 });

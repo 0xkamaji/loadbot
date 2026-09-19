@@ -315,7 +315,7 @@ details. Tauri remains a thin structured bridge. The application/controller owns
 form/run state and bounded output. GUI buttons, Command actions and CLI rendering
 delegate to these same operations.
 
-## Implemented in Phases 2 and 3
+## Implemented in Phases 2, 3, and 3B
 
 Phase 2 implements the shared versioned model, backward-compatible loader,
 validation, semantic inventory inspection, typed runtime inputs, and pure resolution
@@ -331,14 +331,20 @@ use a compare-under-lease transaction so a concurrently changed definition is no
 overwritten. Opening a Legacy shortcut never converts it. Shared catalog Recipes
 are inspectable but remain owned by `catalog.toml` and read-only in this GUI.
 
-The editor maps its user vocabulary directly onto the Phase 2 model: fixed project
-path → `ProjectPath`, value/runtime file/runtime directory/flag-plus-value →
-`Input`, flag → `Switch`, and literal → `Literal`. Move buttons reorder only the
-stored argument vector. Its incomplete-draft preview is a presentation projection
-with placeholders; backend validation and the stored Recipe remain authoritative.
-Project-relative target/path fields are textual in this phase because the native
-host has no file-dialog capability; Rust containment and existence checks are not
-weakened.
+The editor maps plain-language options directly onto the Phase 2 model: File in tool
+→ `ProjectPath`, Ask for text/file/folder and Flag + value → `Input`, On/off flag →
+`Switch`, and Fixed text → `Literal`. Move buttons reorder only the stored argument
+vector. Its incomplete-draft preview is a presentation projection with placeholders;
+backend validation and the stored Recipe remain authoritative. Stable IDs are
+suggested from labels and hidden under Advanced until needed.
+
+Phase 3B adds official native file/folder dialogs for fixed project-owned paths.
+The backend resolves the installed project, canonicalizes and type-checks the chosen
+native path, enforces containment, and returns a portable relative string; absolute
+machine paths never enter the Recipe. Runtime file/folder inputs remain definitions
+and are not selected while authoring. Phase 3B also adds leased, atomic personal
+shortcut deletion, including validate-all/save-once bulk deletion. Catalog commands
+remain read-only and no tool or target file is deleted.
 
 ## Future phases
 

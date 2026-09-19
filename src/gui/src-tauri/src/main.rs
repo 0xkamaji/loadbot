@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tauri::Manager;
 use tauri::ipc::Channel;
+use tauri_plugin_dialog::DialogExt;
 
 const WORKSPACE_LAYOUT_FILE: &str = "workspace-layout-v1.json";
 const MAX_WORKSPACE_LAYOUT_BYTES: usize = 4096;
@@ -226,15 +227,7 @@ async fn add_loadbot_recipe_shortcut(
     recipe: RecipeDefinition,
 ) -> Result<ShortcutIdentity, DesktopError> {
     run_loadbot_worker("Recipe shortcut add", move |paths, context| {
-        operations::shortcut_add_recipe(
-            paths,
-            &catalog,
-            &tool,
-            &name,
-            description,
-            recipe,
-            context,
-        )
+        operations::shortcut_add_recipe(paths, &catalog, &tool, &name, description, recipe, context)
     })
     .await
 }
@@ -259,6 +252,74 @@ async fn update_loadbot_recipe_shortcut(
         )
     })
     .await
+}
+
+#[tauri::command]
+async fn delete_loadbot_shortcuts(
+    identities: Vec<ShortcutIdentity>,
+) -> Result<usize, DesktopError> {
+    run_loadbot_worker("shortcut delete", move |paths, context| {
+        operations::shortcut_delete_many(paths, &identities, context)
+    })
+    .await
+}
+
+async fn choose_project_path(
+    app: tauri::AppHandle,
+    catalog: String,
+    tool: String,
+    kind: operations::ProjectPathKind,
+) -> Result<Option<String>, DesktopError> {
+    let root_catalog = catalog.clone();
+    let root_tool = tool.clone();
+    let root = run_loadbot_worker("project path lookup", move |paths, context| {
+        operations::installed_tool_path(paths, &root_tool, &root_catalog, context)
+    })
+    .await?;
+    let selected = tauri::async_runtime::spawn_blocking(move || {
+        let picker = app.dialog().file().set_directory(root);
+        match kind {
+            operations::ProjectPathKind::File => picker.blocking_pick_file(),
+            operations::ProjectPathKind::Directory => picker.blocking_pick_folder(),
+        }
+        .map(|path| path.into_path())
+        .transpose()
+    })
+    .await
+    .map_err(|error| DesktopError {
+        kind: "worker",
+        message: format!("project picker worker failed: {error}"),
+    })?
+    .map_err(|error| DesktopError {
+        kind: "operation",
+        message: format!("selected path is not a native filesystem path: {error}"),
+    })?;
+    let Some(selected) = selected else {
+        return Ok(None);
+    };
+    run_loadbot_worker("project path validation", move |paths, context| {
+        operations::portable_project_path(paths, &catalog, &tool, &selected, kind, context)
+            .map(Some)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn choose_loadbot_project_file(
+    app: tauri::AppHandle,
+    catalog: String,
+    tool: String,
+) -> Result<Option<String>, DesktopError> {
+    choose_project_path(app, catalog, tool, operations::ProjectPathKind::File).await
+}
+
+#[tauri::command]
+async fn choose_loadbot_project_directory(
+    app: tauri::AppHandle,
+    catalog: String,
+    tool: String,
+) -> Result<Option<String>, DesktopError> {
+    choose_project_path(app, catalog, tool, operations::ProjectPathKind::Directory).await
 }
 
 #[tauri::command]
@@ -400,6 +461,7 @@ fn directory_open_command(path: &Path) -> Command {
 fn main() {
     // The same native host and qualified semantic capabilities serve Windows and Linux.
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             read_loadbot_inventory,
             read_loadbot_catalogs,
@@ -409,6 +471,9 @@ fn main() {
             add_loadbot_shortcut,
             add_loadbot_recipe_shortcut,
             update_loadbot_recipe_shortcut,
+            delete_loadbot_shortcuts,
+            choose_loadbot_project_file,
+            choose_loadbot_project_directory,
             sync_loadbot_catalog,
             read_loadbot_workspace_layout,
             write_loadbot_workspace_layout

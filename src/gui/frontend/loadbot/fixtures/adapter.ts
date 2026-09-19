@@ -53,8 +53,10 @@ const projects: readonly LoadbotProject[] = [
   ] },
 ];
 
-export const fixtureAdapter: LoadbotAdapter = {
-  async readInventory() { return structuredClone(projects); },
+export function createFixtureAdapter(): LoadbotAdapter {
+  let inventory = structuredClone(projects) as LoadbotProject[];
+  return {
+  async readInventory() { return structuredClone(inventory); },
   async readCatalogs() {
     return [
       { name: 'personal', url: 'fixture://personal', writable: true, state: 'installed', default: true },
@@ -67,5 +69,22 @@ export const fixtureAdapter: LoadbotAdapter = {
   async addShortcut() { throw new Error('Management is unavailable in fixture preview.'); },
   async addRecipeShortcut() { throw new Error('Management is unavailable in fixture preview.'); },
   async updateRecipeShortcut() { throw new Error('Management is unavailable in fixture preview.'); },
+  async chooseProjectFile() { return 'scripts/fixture-tool.py'; },
+  async chooseProjectDirectory() { return 'scripts'; },
+  async deleteShortcuts(shortcuts) {
+    const requested = shortcuts.map((identity) => {
+      const project = inventory.find((item) => item.catalog === identity.catalog && item.tool === identity.tool);
+      const shortcut = project?.entries.find((item) => item.source === 'personal' && item.name === identity.name && item.path === identity.path);
+      if (!project || !shortcut) throw new Error(`Personal fixture shortcut not found: ${identity.name}`);
+      return { project, shortcut };
+    });
+    const keys = new Set(requested.map(({ project, shortcut }) => `${project.catalog}\0${project.tool}\0${shortcut.name}\0${shortcut.path ?? ''}`));
+    inventory = inventory.map((project) => ({ ...project, entries: project.entries.filter((shortcut) =>
+      !keys.has(`${project.catalog}\0${project.tool}\0${shortcut.name}\0${shortcut.path ?? ''}`)) }));
+    return requested.length;
+  },
   async syncCatalog() { throw new Error('Management is unavailable in fixture preview.'); },
-};
+  };
+}
+
+export const fixtureAdapter = createFixtureAdapter();

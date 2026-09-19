@@ -54,7 +54,17 @@ pub fn clone_repository(
     interaction: &mut dyn Interaction,
 ) -> Result<()> {
     let (arguments, read_url) = clone_arguments(url, revision, destination);
-    checked_network_output(arguments, &read_url, interaction)?;
+    if read_url == url {
+        checked_network_output(arguments, url, interaction)?;
+    } else {
+        checked_read_network_output(
+            arguments,
+            &read_url,
+            clone_arguments_for_url(url, revision, destination),
+            url,
+            interaction,
+        )?;
+    }
     configure_read_remote(destination, url)?;
     Ok(())
 }
@@ -66,15 +76,22 @@ fn clone_arguments(
 ) -> (Vec<OsString>, String) {
     let read_url =
         github_https_read_url(configured_url).unwrap_or_else(|| configured_url.to_owned());
+    (
+        clone_arguments_for_url(&read_url, revision, destination),
+        read_url,
+    )
+}
+
+fn clone_arguments_for_url(url: &str, revision: Option<&str>, destination: &Path) -> Vec<OsString> {
     let mut arguments = vec![OsString::from("clone")];
     if let Some(revision) = revision {
         arguments.push(OsString::from("--branch"));
         arguments.push(OsString::from(revision));
     }
     arguments.push(OsString::from("--"));
-    arguments.push(OsString::from(&read_url));
+    arguments.push(OsString::from(url));
     arguments.push(destination.as_os_str().to_owned());
-    (arguments, read_url)
+    arguments
 }
 
 pub fn is_expected_repository(path: &Path, configured_url: &str) -> Result<bool> {
@@ -196,23 +213,50 @@ pub fn origin_refs(
     path: &Path,
     interaction: &mut dyn Interaction,
 ) -> Result<Vec<(String, String)>> {
-    if let Some(configured_url) = fetch_url(path)? {
-        configure_read_remote(path, &configured_url)?;
+    let fetch = fetch_url(path)?;
+    let push = push_url(path)?;
+    let configured_url = match (fetch.as_deref(), push.as_deref()) {
+        (Some(fetch), Some(push))
+            if github_https_repository(fetch).is_some()
+                && github_ssh_repository(push, &[]).is_some()
+                && urls_match(fetch, push) =>
+        {
+            Some(push.to_owned())
+        }
+        _ => fetch,
+    };
+    if let Some(configured_url) = configured_url.as_deref() {
+        configure_read_remote(path, configured_url)?;
     }
-    network_query(
-        path,
-        &["ls-remote", "--refs", "origin"],
-        configured_remote_url(path, false)?.as_deref(),
-        interaction,
-    )?
-    .lines()
-    .map(|line| {
-        let (commit, reference) = line
-            .split_once(char::is_whitespace)
-            .context("Git returned an invalid origin ref")?;
-        Ok((commit.to_owned(), reference.trim().to_owned()))
-    })
-    .collect()
+    let fetch_url = configured_remote_url(path, false)?;
+    let refs = if let Some(ssh_url) = configured_url
+        .as_deref()
+        .filter(|url| github_https_read_url(url).is_some())
+    {
+        read_network_query(
+            path,
+            &["ls-remote", "--refs", "origin"],
+            fetch_url.as_deref().unwrap_or(""),
+            &["ls-remote", "--refs", ssh_url],
+            ssh_url,
+            interaction,
+        )?
+    } else {
+        network_query(
+            path,
+            &["ls-remote", "--refs", "origin"],
+            fetch_url.as_deref(),
+            interaction,
+        )?
+    };
+    refs.lines()
+        .map(|line| {
+            let (commit, reference) = line
+                .split_once(char::is_whitespace)
+                .context("Git returned an invalid origin ref")?;
+            Ok((commit.to_owned(), reference.trim().to_owned()))
+        })
+        .collect()
 }
 
 pub fn origin_has_refs(path: &Path, interaction: &mut dyn Interaction) -> Result<bool> {
@@ -242,12 +286,23 @@ pub fn update(
 
     configure_read_remote(path, configured_url)?;
 
-    network_query(
-        path,
-        &["fetch", "origin"],
-        configured_remote_url(path, false)?.as_deref(),
-        interaction,
-    )?;
+    let read_url = configured_remote_url(path, false)?;
+    if github_https_read_url(configured_url).is_some() {
+        read_network_query(
+            path,
+            &["fetch", "origin"],
+            read_url.as_deref().unwrap_or(""),
+            &[
+                "fetch",
+                configured_url,
+                "+refs/heads/*:refs/remotes/origin/*",
+            ],
+            configured_url,
+            interaction,
+        )?;
+    } else {
+        network_query(path, &["fetch", "origin"], read_url.as_deref(), interaction)?;
+    }
     let target = format!("origin/{branch}");
     interaction.process_control().cancellation.check()?;
     // User decisions during fetch release the operation lease. Recheck Git's
@@ -652,6 +707,28 @@ fn network_query(
     )?))
 }
 
+fn read_network_query(
+    path: &Path,
+    preferred_arguments: &[&str],
+    preferred_url: &str,
+    ssh_arguments: &[&str],
+    ssh_url: &str,
+    interaction: &mut dyn Interaction,
+) -> Result<String> {
+    let command_arguments = |arguments: &[&str]| {
+        let mut command_arguments = vec![OsString::from("-C"), path.as_os_str().to_owned()];
+        command_arguments.extend(arguments.iter().map(OsString::from));
+        command_arguments
+    };
+    Ok(stdout_text(&checked_read_network_output(
+        command_arguments(preferred_arguments),
+        preferred_url,
+        command_arguments(ssh_arguments),
+        ssh_url,
+        interaction,
+    )?))
+}
+
 fn configured_remote_url(path: &Path, push: bool) -> Result<Option<String>> {
     if push {
         let output = raw_output([
@@ -705,6 +782,62 @@ fn checked_network_output(
         interaction.can_choose(),
         interaction,
     )
+}
+
+fn checked_read_network_output(
+    preferred_arguments: Vec<OsString>,
+    preferred_url: &str,
+    ssh_arguments: Vec<OsString>,
+    ssh_url: &str,
+    interaction: &mut dyn Interaction,
+) -> Result<Output> {
+    let control = interaction.process_control();
+    checked_read_network_output_with(
+        preferred_arguments,
+        preferred_url,
+        ssh_arguments,
+        ssh_url,
+        |arguments| raw_network_output_control(arguments, &control),
+        query_rot_identities,
+        interaction.can_choose(),
+        interaction,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn checked_read_network_output_with<G, I, P>(
+    preferred_arguments: Vec<OsString>,
+    preferred_url: &str,
+    ssh_arguments: Vec<OsString>,
+    ssh_url: &str,
+    mut run_git: G,
+    identities: I,
+    interactive: bool,
+    prompt: &mut P,
+) -> Result<Output>
+where
+    G: FnMut(&[OsString]) -> Result<Output>,
+    I: FnMut() -> Result<Vec<RotIdentity>>,
+    P: Interaction + ?Sized,
+{
+    let preferred = run_git(&preferred_arguments)?;
+    if preferred.status.success() {
+        return Ok(preferred);
+    }
+    let preferred_error = git_error_message(&preferred);
+    checked_network_output_with(
+        ssh_arguments,
+        ssh_url,
+        |arguments| run_git(arguments),
+        identities,
+        interactive,
+        prompt,
+    )
+    .map_err(|error| {
+        anyhow::anyhow!(
+            "HTTPS read from {preferred_url} failed: {preferred_error}\n\nSSH fallback failed: {error:#}"
+        )
+    })
 }
 
 fn checked_network_output_with<G, I, P>(
@@ -1526,36 +1659,73 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn derived_https_auth_failure_propagates_without_querying_rot() {
+    fn anonymous_https_failure_retries_original_ssh_through_rot() {
         let mut prompt = TestPrompt::new(None);
-        let mut identity_queries = 0;
-        let (_, read_url) = clone_arguments(
-            "git@github.com:owner/private.git",
-            None,
-            Path::new("checkout"),
-        );
-        let error = checked_network_output_with(
-            vec![OsString::from("clone")],
+        let configured = "git@github.com:owner/private.git";
+        let (preferred, read_url) = clone_arguments(configured, None, Path::new("checkout"));
+        let ssh = clone_arguments_for_url(configured, None, Path::new("checkout"));
+        let mut calls = Vec::new();
+        let output = checked_read_network_output_with(
+            preferred.clone(),
             &read_url,
-            |_| {
-                Ok(command_output(
-                    false,
-                    "remote: Repository not found.\nfatal: repository 'https://github.com/owner/private.git/' not found",
-                ))
+            ssh.clone(),
+            configured,
+            |arguments| {
+                calls.push(arguments.to_vec());
+                Ok(match calls.len() {
+                    1 => command_output(false, "remote: Repository not found."),
+                    2 => command_output(false, "Permission denied (publickey)."),
+                    _ => command_output(true, ""),
+                })
             },
-            || {
-                identity_queries += 1;
-                Ok(Vec::new())
+            || Ok(vec![identity("github-work", "owner")]),
+            false,
+            &mut prompt,
+        )
+        .unwrap();
+
+        assert!(output.status.success());
+        assert_eq!(read_url, "https://github.com/owner/private.git");
+        assert_eq!(calls[0], preferred);
+        assert_eq!(calls[1], ssh);
+        assert_eq!(calls[2][0], OsString::from("-c"));
+        assert_eq!(
+            calls[2][1],
+            OsString::from(
+                "url.git@github-work:owner/private.git.insteadOf=git@github.com:owner/private.git"
+            )
+        );
+        assert_eq!(&calls[2][2..], ssh.as_slice());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn anonymous_https_and_ssh_failures_are_both_preserved() {
+        let mut prompt = TestPrompt::new(None);
+        let error = checked_read_network_output_with(
+            vec![OsString::from("clone"), OsString::from("https")],
+            "https://github.com/owner/private.git",
+            vec![OsString::from("clone"), OsString::from("ssh")],
+            "git@github.com:owner/private.git",
+            |arguments| {
+                if arguments.last() == Some(&OsString::from("https")) {
+                    Ok(command_output(false, "remote: Repository not found."))
+                } else {
+                    Ok(command_output(false, "Permission denied (publickey)."))
+                }
             },
+            || bail!("Rot is not installed"),
             false,
             &mut prompt,
         )
         .unwrap_err();
 
-        assert_eq!(read_url, "https://github.com/owner/private.git");
-        assert!(error.to_string().contains("Repository not found"));
-        assert!(error.to_string().contains("fatal: repository"));
-        assert_eq!(identity_queries, 0);
+        let message = format!("{error:#}");
+        assert!(message.contains("HTTPS read"));
+        assert!(message.contains("Repository not found"));
+        assert!(message.contains("SSH fallback failed"));
+        assert!(message.contains("Permission denied (publickey)"));
+        assert!(message.contains("Rot is not installed"));
     }
 
     #[cfg(unix)]

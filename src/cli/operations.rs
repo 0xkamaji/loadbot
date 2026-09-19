@@ -120,6 +120,16 @@ pub fn tool_update(paths: &Paths, name: &str, catalog_name: Option<&str>) -> Res
         .map(|_| ())
 }
 
+pub fn tool_remove(paths: &Paths, name: &str, catalog_name: Option<&str>) -> Result<()> {
+    output::with_context(|context| backend::tool_remove(paths, name, catalog_name, context))
+        .map(|_| ())
+}
+
+pub fn tool_reinstall(paths: &Paths, name: &str, catalog_name: Option<&str>) -> Result<()> {
+    output::with_context(|context| backend::tool_reinstall(paths, name, catalog_name, context))
+        .map(|_| ())
+}
+
 pub fn tool_status(paths: &Paths, name: &str, catalog_name: Option<&str>) -> Result<()> {
     output::with_context(|context| backend::tool_status(paths, name, catalog_name, context))
         .map(|_| ())

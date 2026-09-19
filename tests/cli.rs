@@ -843,6 +843,27 @@ fn tool_clone_status_update_and_dirty_refusal_remain_safe() {
 }
 
 #[test]
+fn direct_reinstall_and_remove_commands_use_managed_project_lifecycle() {
+    let Some(fixture) = Fixture::new() else {
+        return;
+    };
+    assert_success(fixture.add_catalog("personal", true));
+    assert_success(fixture.add_tool("demo", "personal", &[]));
+    assert_success(fixture.loadbot(["pull", "demo", "--catalog", "personal"]));
+    let installed = fixture.home.join("tools/personal/demo");
+
+    assert_success(fixture.loadbot(["reinstall", "demo", "--catalog", "personal"]));
+    assert!(installed.join(".git").is_dir());
+    assert_success(fixture.loadbot(["remove", "demo", "--catalog", "personal"]));
+    assert!(!installed.exists());
+    assert!(
+        fs::read_to_string(fixture.home.join("catalogs/personal/catalog.toml"))
+            .unwrap()
+            .contains("[tools.demo]")
+    );
+}
+
+#[test]
 fn unrelated_tool_destination_is_never_overwritten() {
     let Some(fixture) = Fixture::new() else {
         return;
@@ -1139,7 +1160,18 @@ path = "triage.py"
     assert_eq!(
         root,
         [
-            "add", "catalog", "gui", "list", "path", "pull", "run", "setup", "shortcut", "status",
+            "add",
+            "catalog",
+            "gui",
+            "list",
+            "path",
+            "pull",
+            "reinstall",
+            "remove",
+            "run",
+            "setup",
+            "shortcut",
+            "status",
             "update"
         ]
     );
@@ -1416,8 +1448,19 @@ fn dynamic_completion_preserves_root_and_nested_commands() {
         (
             vec![""],
             vec![
-                "add", "catalog", "gui", "list", "path", "pull", "run", "setup", "shortcut",
-                "status", "update",
+                "add",
+                "catalog",
+                "gui",
+                "list",
+                "path",
+                "pull",
+                "reinstall",
+                "remove",
+                "run",
+                "setup",
+                "shortcut",
+                "status",
+                "update",
             ],
         ),
         (vec!["shortcut", ""], vec!["add", "list", "remove"]),

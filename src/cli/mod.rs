@@ -106,6 +106,16 @@ fn dispatch_command(paths: &Paths, command: Commands) -> Result<()> {
         Commands::Update { name, catalog } => {
             run_tool_named(paths, name, catalog, "update", operations::tool_update)
         }
+        Commands::Remove { name, catalog } => {
+            run_tool_named(paths, name, catalog, "remove", operations::tool_remove)
+        }
+        Commands::Reinstall { name, catalog } => run_tool_named(
+            paths,
+            name,
+            catalog,
+            "reinstall",
+            operations::tool_reinstall,
+        ),
         Commands::List => operations::tool_list(paths),
         Commands::Path { name, catalog } => {
             run_tool_named(paths, name, catalog, "path", operations::tool_path)

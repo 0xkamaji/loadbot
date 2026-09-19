@@ -43,6 +43,18 @@ pub enum Commands {
         #[arg(long)]
         catalog: Option<String>,
     },
+    /// Remove a managed local checkout while retaining its catalog entry.
+    Remove {
+        name: Option<String>,
+        #[arg(long)]
+        catalog: Option<String>,
+    },
+    /// Replace a managed local checkout with a fresh clone.
+    Reinstall {
+        name: Option<String>,
+        #[arg(long)]
+        catalog: Option<String>,
+    },
     /// List configured tools.
     List,
     /// Print the absolute path assigned to a tool.
@@ -175,12 +187,14 @@ mod tests {
 
     #[test]
     fn direct_tool_arguments_are_preserved() {
-        for command in ["pull", "update", "path", "status"] {
+        for command in ["pull", "update", "remove", "reinstall", "path", "status"] {
             let parsed =
                 Cli::try_parse_from(["loadbot", command, "demo", "--catalog", "personal"]).unwrap();
             let (name, catalog) = match parsed.command.unwrap() {
                 Commands::Pull { name, catalog }
                 | Commands::Update { name, catalog }
+                | Commands::Remove { name, catalog }
+                | Commands::Reinstall { name, catalog }
                 | Commands::Path { name, catalog }
                 | Commands::Status { name, catalog } => (name, catalog),
                 _ => panic!("wrong command"),

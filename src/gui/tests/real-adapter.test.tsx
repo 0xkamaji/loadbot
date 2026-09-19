@@ -131,6 +131,9 @@ describe('one platform-neutral real read adapter', () => {
     expect(tauri.invoke).toHaveBeenCalledTimes(1);
     tauri.invoke.mockRejectedValueOnce({ message: 'project is not installed' });
     await expect(adapter.openProjectFolder({ catalog: 'x', tool: 'y' })).rejects.toThrow('project is not installed');
+    tauri.invoke.mockRejectedValueOnce({ kind: 'cancelled', message: 'operation cancelled' });
+    const cancelled = await adapter.updateProject?.({ catalog: 'x', tool: 'y' }).catch((error) => error);
+    expect(cancelled).toMatchObject({ message: 'operation cancelled', kind: 'cancelled' });
   });
 
   it('uses only structured semantic native management commands', async () => {
@@ -141,6 +144,7 @@ describe('one platform-neutral real read adapter', () => {
       if (command === 'add_loadbot_project') return { catalog: input?.catalog, tool: input?.name };
       if (['pull_loadbot_project', 'update_loadbot_project', 'remove_loadbot_project', 'reinstall_loadbot_project'].includes(command)) {
         const channel = input?.onActivity as InstanceType<typeof tauri.Channel>;
+        channel.onmessage({ kind: 'log', stream: 'command', text: `git ${command}` } as never);
         channel.onmessage({
           stage: command === 'update_loadbot_project' ? 'fetching-and-updating'
             : command === 'remove_loadbot_project' ? 'removing-checkout' : 'cloning-project',
@@ -159,6 +163,7 @@ describe('one platform-neutral real read adapter', () => {
       if (command === 'delete_loadbot_shortcuts') return (input?.identities as unknown[]).length;
       if (command === 'sync_loadbot_catalog') {
         const channel = input?.onActivity as InstanceType<typeof tauri.Channel>;
+        channel.onmessage({ kind: 'log', stream: 'stderr', text: 'remote diagnostic' } as never);
         channel.onmessage({ stage: 'repository-checked', catalog: input?.catalog } as never);
         return undefined;
       }
@@ -188,8 +193,12 @@ describe('one platform-neutral real read adapter', () => {
     const activity = vi.fn();
     await adapter.syncCatalog('personal', activity);
     expect(activity).toHaveBeenCalledWith({ stage: 'repository-checked', catalog: 'personal', detail: undefined });
-    expect(projectActivity.mock.calls.map(([event]) => event.stage)).toEqual([
+    expect(activity).toHaveBeenCalledWith({ kind: 'log', stream: 'stderr', text: 'remote diagnostic' });
+    expect(projectActivity.mock.calls.filter(([event]) => !('kind' in event)).map(([event]) => event.stage)).toEqual([
       'cloning-project', 'fetching-and-updating', 'removing-checkout', 'cloning-project',
+    ]);
+    expect(projectActivity.mock.calls.filter(([event]) => 'kind' in event).map(([event]) => event.text)).toEqual([
+      'git pull_loadbot_project', 'git update_loadbot_project', 'git remove_loadbot_project', 'git reinstall_loadbot_project',
     ]);
     expect(tauri.invoke.mock.calls.slice(1)).toEqual([
       ['add_loadbot_catalog', { name: 'other', url: 'other-repo', writable: false }],

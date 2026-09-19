@@ -15,6 +15,7 @@ use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Arc;
 use tauri::Manager;
 use tauri::ipc::Channel;
 use tauri_plugin_dialog::DialogExt;
@@ -50,13 +51,19 @@ struct CatalogIdentity {
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct BackendActivity {
-    stage: &'static str,
-    catalog: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tool: Option<String>,
-    detail: Option<String>,
+#[serde(tag = "kind", rename_all = "kebab-case")]
+enum BackendActivity {
+    Progress {
+        stage: &'static str,
+        catalog: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tool: Option<String>,
+        detail: Option<String>,
+    },
+    Log {
+        stream: &'static str,
+        text: String,
+    },
 }
 
 struct DesktopInteraction {
@@ -73,25 +80,25 @@ impl Interaction for DesktopInteraction {
 
 fn backend_activity(notice: &Notice) -> Option<BackendActivity> {
     Some(match notice {
-        Notice::CatalogSyncStarted { name } => BackendActivity {
+        Notice::CatalogSyncStarted { name } => BackendActivity::Progress {
             stage: "validating",
             catalog: name.clone(),
             tool: None,
             detail: None,
         },
-        Notice::CatalogSyncRepositoryChecked { name } => BackendActivity {
+        Notice::CatalogSyncRepositoryChecked { name } => BackendActivity::Progress {
             stage: "repository-checked",
             catalog: name.clone(),
             tool: None,
             detail: None,
         },
-        Notice::CatalogSyncUpdateStarted { name } => BackendActivity {
+        Notice::CatalogSyncUpdateStarted { name } => BackendActivity::Progress {
             stage: "updating-repository",
             catalog: name.clone(),
             tool: None,
             detail: None,
         },
-        Notice::CatalogCurrent { name, new_commit } => BackendActivity {
+        Notice::CatalogCurrent { name, new_commit } => BackendActivity::Progress {
             stage: "current",
             catalog: name.clone(),
             tool: None,
@@ -101,7 +108,7 @@ fn backend_activity(notice: &Notice) -> Option<BackendActivity> {
             name,
             old_commit,
             new_commit,
-        } => BackendActivity {
+        } => BackendActivity::Progress {
             stage: "updated",
             catalog: name.clone(),
             tool: None,
@@ -112,7 +119,7 @@ fn backend_activity(notice: &Notice) -> Option<BackendActivity> {
             stage,
             name,
             catalog_name,
-        } => BackendActivity {
+        } => BackendActivity::Progress {
             stage: match stage {
                 ToolOperationStage::ValidatingCheckout => "validating-checkout",
                 ToolOperationStage::CloningProject => "cloning-project",
@@ -127,6 +134,53 @@ fn backend_activity(notice: &Notice) -> Option<BackendActivity> {
         },
         _ => return None,
     })
+}
+
+fn backend_process_activity(event: loadbot::process::Event) -> Option<BackendActivity> {
+    use loadbot::process::{Event, Stream};
+    let log = |stream, text| BackendActivity::Log { stream, text };
+    Some(match event {
+        Event::Starting {
+            program,
+            arguments,
+            directory,
+        } => {
+            let command = std::iter::once(program)
+                .chain(arguments)
+                .map(|part| quote_log_argument(&part.to_string_lossy()))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let text = directory.map_or(command.clone(), |path| {
+                format!("{command}\nworking directory: {}", path.display())
+            });
+            log("command", text)
+        }
+        Event::Output { stream, bytes } => log(
+            match stream {
+                Stream::Stdout => "stdout",
+                Stream::Stderr => "stderr",
+            },
+            String::from_utf8_lossy(&bytes).into_owned(),
+        ),
+        Event::Exited { status, .. } => log("system", format!("process exited with {status}")),
+        Event::Cancelled { .. } => log("system", "process cancelled".into()),
+        Event::Failed { diagnostic } => log("system", diagnostic),
+        Event::OperationStarted | Event::OperationFinished { .. } | Event::Started { .. } => {
+            return None;
+        }
+    })
+}
+
+fn quote_log_argument(value: &str) -> String {
+    if !value.is_empty()
+        && value
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || "-._/:=@".contains(character))
+    {
+        value.to_owned()
+    } else {
+        format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+    }
 }
 
 #[tauri::command]
@@ -500,13 +554,28 @@ where
     tauri::async_runtime::spawn_blocking(move || {
         let result = (|| -> anyhow::Result<T> {
             let paths = Paths::discover()?;
+            let process_activity = activity.clone();
             let mut policy = DesktopInteraction { activity };
             let mut context = OperationContext::new(&mut policy);
             context.process.terminal = false;
+            if let Some(channel) = process_activity {
+                context.process.observer = Some(Arc::new(move |event| {
+                    if let Some(activity) = backend_process_activity(event) {
+                        let _ = channel.send(activity);
+                    }
+                }));
+            }
             context.run(|context| operation(&paths, context)).result
         })();
         result.map_err(|error| DesktopError {
-            kind: "operation",
+            kind: if error
+                .downcast_ref::<loadbot::process::Cancelled>()
+                .is_some()
+            {
+                "cancelled"
+            } else {
+                "operation"
+            },
             message: format!("{error:#}"),
         })
     })
@@ -736,9 +805,18 @@ mod tests {
             name: "personal".into(),
         })
         .unwrap();
-        assert_eq!(checked.stage, "repository-checked");
-        assert_eq!(checked.catalog, "personal");
-        assert!(checked.detail.is_none());
+        let BackendActivity::Progress {
+            stage,
+            catalog,
+            detail,
+            ..
+        } = checked
+        else {
+            panic!("expected progress activity")
+        };
+        assert_eq!(stage, "repository-checked");
+        assert_eq!(catalog, "personal");
+        assert!(detail.is_none());
 
         let updated = backend_activity(&Notice::CatalogSynced {
             name: "personal".into(),
@@ -746,8 +824,11 @@ mod tests {
             new_commit: "def".into(),
         })
         .unwrap();
-        assert_eq!(updated.stage, "updated");
-        assert_eq!(updated.detail.as_deref(), Some("abc → def"));
+        let BackendActivity::Progress { stage, detail, .. } = updated else {
+            panic!("expected progress activity")
+        };
+        assert_eq!(stage, "updated");
+        assert_eq!(detail.as_deref(), Some("abc → def"));
 
         let project = backend_activity(&Notice::ToolOperationStage {
             operation: loadbot::interaction::ToolOperation::Reinstall,
@@ -756,10 +837,45 @@ mod tests {
             catalog_name: "personal".into(),
         })
         .unwrap();
-        assert_eq!(project.stage, "replacing-checkout");
-        assert_eq!(project.catalog, "personal");
-        assert_eq!(project.tool.as_deref(), Some("demo"));
-        assert!(project.detail.is_none());
+        let BackendActivity::Progress {
+            stage,
+            catalog,
+            tool,
+            detail,
+        } = project
+        else {
+            panic!("expected progress activity")
+        };
+        assert_eq!(stage, "replacing-checkout");
+        assert_eq!(catalog, "personal");
+        assert_eq!(tool.as_deref(), Some("demo"));
+        assert!(detail.is_none());
+    }
+
+    #[test]
+    fn native_activity_maps_real_process_commands_and_output_as_verbose_logs() {
+        let command = backend_process_activity(loadbot::process::Event::Starting {
+            program: "git".into(),
+            arguments: ["fetch", "origin"].into_iter().map(Into::into).collect(),
+            directory: Some(PathBuf::from("catalog path")),
+        })
+        .unwrap();
+        let BackendActivity::Log { stream, text } = command else {
+            panic!("expected log activity")
+        };
+        assert_eq!(stream, "command");
+        assert_eq!(text, "git fetch origin\nworking directory: catalog path");
+
+        let stderr = backend_process_activity(loadbot::process::Event::Output {
+            stream: loadbot::process::Stream::Stderr,
+            bytes: b"Permission denied (publickey).\n".to_vec(),
+        })
+        .unwrap();
+        let BackendActivity::Log { stream, text } = stderr else {
+            panic!("expected log activity")
+        };
+        assert_eq!(stream, "stderr");
+        assert_eq!(text, "Permission denied (publickey).\n");
     }
 
     #[test]

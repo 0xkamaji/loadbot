@@ -1,7 +1,7 @@
 import type {
-  AddCatalogInput, AddProjectInput, AddShortcutInput, CatalogSyncActivity, CatalogSyncStage, LoadbotAdapter, LoadbotCatalog,
+  AddCatalogInput, AddProjectInput, AddShortcutInput, CatalogSyncActivityEvent, CatalogSyncStage, LoadbotAdapter, LoadbotCatalog,
   LoadbotProject, LoadbotShortcut,
-  LoadbotRecipe, LoadbotRecipeArgument, LoadbotRunner, ProjectOperationActivity, ProjectOperationStage,
+  LoadbotRecipe, LoadbotRecipeArgument, LoadbotRunner, OperationLogActivity, ProjectOperationActivityEvent, ProjectOperationStage,
   ShortcutHelpResult, ShortcutIdentity,
 } from '../contract';
 import { projectKey, selectionKey, shortcutKey } from '../identity';
@@ -29,13 +29,15 @@ export type ManagementState =
   | { readonly status: 'idle' }
   | { readonly status: 'submitting'; readonly kind: ManagementKind; readonly message: string }
   | { readonly status: 'success'; readonly kind: ManagementKind; readonly message: string }
+  | { readonly status: 'cancelled'; readonly kind: ManagementKind; readonly message: string }
   | { readonly status: 'error'; readonly kind: ManagementKind; readonly message: string };
 export type ActivityOperation = 'catalog-sync' | 'catalog-add' | 'project-add' | 'shortcut-add' | 'shortcut-update' | 'shortcut-delete' | 'local-reload'
   | 'project-folder-open' | 'project-terminal-open' | 'project-pull' | 'project-update' | 'project-remove' | 'project-reinstall';
-export type ActivityStatus = 'in-progress' | 'info' | 'success' | 'error';
-export type ActivityStage = CatalogSyncStage | ProjectOperationStage | 'started' | 'authoritative-reload' | 'catalog-state' | 'completed' | 'failed';
+export type ActivityStatus = 'in-progress' | 'info' | 'success' | 'error' | 'cancelled';
+export type ActivityStage = CatalogSyncStage | ProjectOperationStage | 'started' | 'authoritative-reload' | 'catalog-state' | 'completed' | 'failed' | 'cancelled';
 export interface ActivityEntry {
   readonly id: number;
+  readonly operationId: string;
   readonly timestamp: string;
   readonly operation: ActivityOperation;
   readonly stage: ActivityStage;
@@ -45,7 +47,15 @@ export interface ActivityEntry {
   readonly shortcut?: string;
   readonly detail?: string;
 }
+export interface ActivityLogEntry {
+  readonly id: number;
+  readonly operationId: string;
+  readonly timestamp: string;
+  readonly stream: OperationLogActivity['stream'];
+  readonly text: string;
+}
 export const ACTIVITY_HISTORY_LIMIT = 250;
+export const ACTIVITY_LOG_HISTORY_LIMIT = 1000;
 export const COMMAND_HISTORY_LIMIT = 100;
 export interface CommandEntry {
   readonly id: number;
@@ -75,6 +85,7 @@ export interface LoadbotState {
   readonly bottomView: 'command' | 'activity';
   readonly command: CommandState;
   readonly activity: readonly ActivityEntry[];
+  readonly activityLogs: readonly ActivityLogEntry[];
   readonly management: ManagementState;
   readonly recipeEditor?: { readonly draft: RecipeDraft; readonly errors: readonly string[]; readonly help?: ShortcutHelpState };
   readonly shortcutManagement: {
@@ -154,7 +165,7 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
   let state: LoadbotState = {
     inventory: { status: 'loading' }, catalogState: { status: 'loading' }, projectFilter: 'installed', fields: [], values: {},
     missingInputIds: [], drawerOpen: true, bottomView: 'command', command: { entries: [], history: [] },
-    activity: [], management: { status: 'idle' }, shortcutManagement: { active: false, selected: [] },
+    activity: [], activityLogs: [], management: { status: 'idle' }, shortcutManagement: { active: false, selected: [] },
     projectFolder: { status: 'idle' }, projectTerminal: { status: 'idle' },
   };
   const listeners = new Set<() => void>();
@@ -162,6 +173,8 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
   let folderGeneration = 0;
   let terminalGeneration = 0;
   let activityId = 0;
+  let operationId = 0;
+  let activityLogId = 0;
   let commandId = 0;
   let recipeArgumentKey = 1000;
   let recipeHelpGeneration = 0;
@@ -182,10 +195,25 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
       .slice(-ACTIVITY_HISTORY_LIMIT);
     publish({ ...state, activity, bottomView: reveal ? 'activity' : state.bottomView });
   };
+  const beginActivity = (entry: Omit<ActivityEntry, 'id' | 'timestamp' | 'operationId'>) => {
+    const id = `operation-${++operationId}`;
+    appendActivity({ ...entry, operationId: id });
+    return id;
+  };
+  const appendLog = (operation: string, log: OperationLogActivity) => {
+    const activityLogs = [...state.activityLogs, {
+      id: ++activityLogId, operationId: operation, timestamp: new Date().toISOString(), stream: log.stream, text: log.text,
+    }].slice(-ACTIVITY_LOG_HISTORY_LIMIT);
+    publish({ ...state, activityLogs, bottomView: 'activity' });
+  };
   const errorMessage = (error: unknown, fallback: string) => error instanceof Error ? error.message : fallback;
-  const projectProgress = (operation: ActivityOperation) => (activity: ProjectOperationActivity) => appendActivity({
-    operation, stage: activity.stage, status: 'in-progress', catalog: activity.catalog, project: activity.tool,
-  });
+  const cancelled = (error: unknown) => Boolean(error && typeof error === 'object' && 'kind' in error && error.kind === 'cancelled');
+  const projectProgress = (id: string, operation: ActivityOperation) => (activity: ProjectOperationActivityEvent) => {
+    if ('kind' in activity) appendLog(id, activity);
+    else appendActivity({
+      operationId: id, operation, stage: activity.stage, status: 'in-progress', catalog: activity.catalog, project: activity.tool,
+    });
+  };
 
   function changeSampleInput(id: string, value: string | boolean) {
     const field = state.fields.find((item) => item.id === id);
@@ -241,18 +269,19 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
     progress: string,
     completed: string,
     context: Pick<ActivityEntry, 'catalog' | 'project' | 'shortcut'>,
-    operation: () => Promise<ReadPreference>,
+    operation: (operationId: string) => Promise<ReadPreference>,
   ): Promise<boolean> {
     if (state.management.status === 'submitting') return false;
     publish({ ...state, management: { status: 'submitting', kind, message: progress } });
-    appendActivity({ operation: activityOperation, stage: 'started', status: 'in-progress', ...context });
+    const id = beginActivity({ operation: activityOperation, stage: 'started', status: 'in-progress', ...context });
     try {
-      const preferred = await operation();
-      appendActivity({ operation: activityOperation, stage: 'authoritative-reload', status: 'in-progress', ...context });
+      const preferred = await operation(id);
+      appendActivity({ operationId: id, operation: activityOperation, stage: 'authoritative-reload', status: 'in-progress', ...context });
       const reloaded = await beginWorkspaceRead(preferred);
       if (reloaded && activityOperation === 'catalog-sync' && state.catalogState.status === 'ready') {
         const catalog = state.catalogState.catalogs.find((item) => item.name === preferred.catalog);
         if (catalog) appendActivity({
+          operationId: id,
           operation: activityOperation, stage: 'catalog-state', status: 'info', catalog: catalog.name,
           detail: `${catalog.state} · ${catalog.writable ? 'writable' : 'read-only'}`,
         });
@@ -264,22 +293,27 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
           : { status: 'error', kind, message: `${completed} Local state could not be reread; use Reload.` },
       });
       appendActivity({
+        operationId: id,
         operation: activityOperation, stage: reloaded ? 'completed' : 'failed', status: reloaded ? 'success' : 'error',
         ...context, detail: reloaded ? completed : 'The operation completed, but local state could not be reread.',
       });
       return true;
     } catch (error: unknown) {
       const message = errorMessage(error, 'The Loadbot operation failed.');
+      const wasCancelled = cancelled(error);
       // Some shared operations can report a failure after an earlier durable step
       // (for example, a catalog definition saved before an explicit push fails).
       // Never guess: reread local authority before presenting the failure.
-      appendActivity({ operation: activityOperation, stage: 'authoritative-reload', status: 'in-progress', ...context });
+      appendActivity({ operationId: id, operation: activityOperation, stage: 'authoritative-reload', status: 'in-progress', ...context });
       await beginWorkspaceRead();
       publish({
         ...state,
-        management: { status: 'error', kind, message },
+        management: { status: wasCancelled ? 'cancelled' : 'error', kind, message },
       });
-      appendActivity({ operation: activityOperation, stage: 'failed', status: 'error', ...context, detail: message });
+      appendActivity({
+        operationId: id, operation: activityOperation, stage: wasCancelled ? 'cancelled' : 'failed',
+        status: wasCancelled ? 'cancelled' : 'error', ...context, detail: message,
+      });
       return false;
     }
   }
@@ -316,8 +350,9 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
     },
     reloadInventory() {
       if (state.management.status === 'submitting') return;
-      appendActivity({ operation: 'local-reload', stage: 'started', status: 'in-progress' });
+      const id = beginActivity({ operation: 'local-reload', stage: 'started', status: 'in-progress' });
       void beginWorkspaceRead().then((reloaded) => appendActivity({
+        operationId: id,
         operation: 'local-reload', stage: reloaded ? 'completed' : 'failed', status: reloaded ? 'success' : 'error',
         detail: reloaded ? 'Local inventory and catalog context reread.' : 'Could not reread local Loadbot state.',
       }));
@@ -329,20 +364,20 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
       const request = ++folderGeneration;
       publish({ ...state, projectFolder: { status: 'opening', projectId: id } });
       const identity = { catalog: project.catalog, tool: project.tool };
-      appendActivity({ operation: 'project-folder-open', stage: 'started', status: 'in-progress', catalog: project.catalog, project: project.tool });
+      const operation = beginActivity({ operation: 'project-folder-open', stage: 'started', status: 'in-progress', catalog: project.catalog, project: project.tool });
       Promise.resolve().then(() => adapter.openProjectFolder(identity)).then(
         () => {
           if (request === folderGeneration) {
             publish({ ...state, projectFolder: { status: 'opened', projectId: id, message: `Opened ${project.tool}.` } });
-            appendActivity({ operation: 'project-folder-open', stage: 'completed', status: 'success', catalog: project.catalog, project: project.tool });
           }
+          appendActivity({ operationId: operation, operation: 'project-folder-open', stage: 'completed', status: 'success', catalog: project.catalog, project: project.tool });
         },
         (error: unknown) => {
+          const message = errorMessage(error, 'Could not open the project folder.');
           if (request === folderGeneration) {
-            const message = errorMessage(error, 'Could not open the project folder.');
             publish({ ...state, projectFolder: { status: 'error', projectId: id, message } });
-            appendActivity({ operation: 'project-folder-open', stage: 'failed', status: 'error', catalog: project.catalog, project: project.tool, detail: message });
           }
+          appendActivity({ operationId: operation, operation: 'project-folder-open', stage: 'failed', status: 'error', catalog: project.catalog, project: project.tool, detail: message });
         },
       );
     },
@@ -353,36 +388,36 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
       const request = ++terminalGeneration;
       publish({ ...state, projectTerminal: { status: 'opening', projectId: id } });
       const identity = { catalog: project.catalog, tool: project.tool };
-      appendActivity({ operation: 'project-terminal-open', stage: 'started', status: 'in-progress', ...identity, project: project.tool });
+      const operation = beginActivity({ operation: 'project-terminal-open', stage: 'started', status: 'in-progress', ...identity, project: project.tool });
       Promise.resolve().then(() => adapter.openProjectTerminal!(identity)).then(
         () => {
           if (request === terminalGeneration) {
             publish({ ...state, projectTerminal: { status: 'opened', projectId: id, message: `Opened a terminal for ${project.tool}.` } });
-            appendActivity({ operation: 'project-terminal-open', stage: 'completed', status: 'success', catalog: project.catalog, project: project.tool });
           }
+          appendActivity({ operationId: operation, operation: 'project-terminal-open', stage: 'completed', status: 'success', catalog: project.catalog, project: project.tool });
         },
         (error: unknown) => {
+          const message = errorMessage(error, 'Could not open a terminal for the project.');
           if (request === terminalGeneration) {
-            const message = errorMessage(error, 'Could not open a terminal for the project.');
             publish({ ...state, projectTerminal: { status: 'error', projectId: id, message } });
-            appendActivity({ operation: 'project-terminal-open', stage: 'failed', status: 'error', catalog: project.catalog, project: project.tool, detail: message });
           }
+          appendActivity({ operationId: operation, operation: 'project-terminal-open', stage: 'failed', status: 'error', catalog: project.catalog, project: project.tool, detail: message });
         },
       );
     },
     async pullProject() {
       const project = state.project;
       if (!project || project.installed !== false || !adapter.pullProject) return false;
-      return mutation('pull-project', 'project-pull', `Pulling ${project.tool}…`, `Project ${project.tool} pulled.`, { catalog: project.catalog, project: project.tool }, async () => {
-        const installed = await adapter.pullProject!({ catalog: project.catalog, tool: project.tool }, projectProgress('project-pull'));
+      return mutation('pull-project', 'project-pull', `Pulling ${project.tool}…`, `Project ${project.tool} pulled.`, { catalog: project.catalog, project: project.tool }, async (operation) => {
+        const installed = await adapter.pullProject!({ catalog: project.catalog, tool: project.tool }, projectProgress(operation, 'project-pull'));
         return { catalog: installed.catalog, projectId: projectKey(installed), projectFilter: 'installed' };
       });
     },
     async updateProject() {
       const project = state.project;
       if (!project || project.installed === false || !adapter.updateProject) return false;
-      return mutation('update-project', 'project-update', `Updating ${project.tool}…`, `Project ${project.tool} updated.`, { catalog: project.catalog, project: project.tool }, async () => {
-        const updated = await adapter.updateProject!({ catalog: project.catalog, tool: project.tool }, projectProgress('project-update'));
+      return mutation('update-project', 'project-update', `Updating ${project.tool}…`, `Project ${project.tool} updated.`, { catalog: project.catalog, project: project.tool }, async (operation) => {
+        const updated = await adapter.updateProject!({ catalog: project.catalog, tool: project.tool }, projectProgress(operation, 'project-update'));
         return { catalog: updated.catalog, projectId: projectKey(updated) };
       });
     },
@@ -406,9 +441,9 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
         `${action === 'remove' ? 'Removing' : 'Reinstalling'} ${project.tool}…`,
         `Project ${project.tool} ${action === 'remove' ? 'removed' : 'reinstalled'}.`,
         { catalog: project.catalog, project: project.tool },
-        async () => {
+        async (operation) => {
           const changed = await capability.call(adapter, { catalog: project.catalog, tool: project.tool },
-            projectProgress(action === 'remove' ? 'project-remove' : 'project-reinstall'));
+            projectProgress(operation, action === 'remove' ? 'project-remove' : 'project-reinstall'));
           return { catalog: changed.catalog, projectId: projectKey(changed), projectFilter: action === 'remove' ? 'not-installed' : 'installed' };
         },
       );
@@ -646,12 +681,15 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
     async syncCatalog() {
       const catalog = state.currentCatalog;
       if (!catalog) return false;
-      return mutation('sync-catalog', 'catalog-sync', `Refreshing ${catalog}…`, `Catalog ${catalog} refreshed.`, { catalog }, async () => {
-        await adapter.syncCatalog(catalog, (activity: CatalogSyncActivity) => appendActivity({
-          operation: 'catalog-sync', stage: activity.stage,
-          status: activity.stage === 'current' || activity.stage === 'updated' ? 'info' : 'in-progress',
-          catalog: activity.catalog, detail: activity.detail,
-        }));
+      return mutation('sync-catalog', 'catalog-sync', `Refreshing ${catalog}…`, `Catalog ${catalog} refreshed.`, { catalog }, async (operation) => {
+        await adapter.syncCatalog(catalog, (activity: CatalogSyncActivityEvent) => {
+          if ('kind' in activity) appendLog(operation, activity);
+          else appendActivity({
+            operationId: operation, operation: 'catalog-sync', stage: activity.stage,
+            status: activity.stage === 'current' || activity.stage === 'updated' ? 'info' : 'in-progress',
+            catalog: activity.catalog, detail: activity.detail,
+          });
+        });
         return { catalog };
       });
     },

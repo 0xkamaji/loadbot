@@ -326,6 +326,8 @@ describe('injected menu outside Tauri', () => {
       ...adapter([{ catalog: 'personal', tool: 'demo', installed: true, entries: [] }]),
       syncCatalog: vi.fn((_catalog, onActivity) => {
         onActivity?.({ stage: 'repository-checked', catalog: 'personal' });
+        onActivity?.({ kind: 'log', stream: 'command', text: 'git fetch origin' });
+        onActivity?.({ kind: 'log', stream: 'stderr', text: 'From github.com:0xkamaji/loadbot-catalog' });
         onActivity?.({ stage: 'updating-repository', catalog: 'personal' });
         return pending.promise;
       }),
@@ -337,15 +339,25 @@ describe('injected menu outside Tauri', () => {
     await user.click(screen.getByRole('button', { name: 'REFRESH CATALOG' }));
     const refreshing = screen.getByRole('button', { name: 'REFRESHING…' });
     expect(refreshing).toBeDisabled();
-    expect(screen.getByRole('tabpanel', { name: 'Activity' })).toHaveTextContent('Refresh catalog started');
+    const activity = screen.getByRole('tabpanel', { name: 'Activity' });
+    expect(activity).toHaveTextContent('Refresh Catalog started');
+    expect(activity).toHaveTextContent('RUNNING');
     expect(screen.getByRole('tabpanel', { name: 'Activity' })).toHaveTextContent('Configured catalog repository verified');
     expect(screen.getByRole('tabpanel', { name: 'Activity' })).toHaveTextContent('Updating catalog from its configured Git remote');
+    const verbose = screen.getByText('Verbose logs');
+    expect(screen.getByText(/git fetch origin/)).not.toBeVisible();
+    await user.click(verbose);
+    expect(screen.getByText(/git fetch origin/)).toBeVisible();
+    expect(screen.getByText(/From github.com:0xkamaji\/loadbot-catalog/)).toBeVisible();
     expect(document.body).not.toHaveTextContent(/\d+%/);
 
     await act(async () => pending.resolve());
     await user.click(screen.getByRole('button', { name: 'Catalog context: personal' }));
     expect(screen.getByRole('button', { name: 'REFRESH CATALOG' })).toBeEnabled();
     expect(screen.getByRole('tabpanel', { name: 'Activity' })).toHaveTextContent('Catalog personal refreshed.');
+    expect(screen.getByRole('tabpanel', { name: 'Activity' })).toHaveTextContent('COMPLETED');
+    await user.click(screen.getByText('Refresh Catalog: personal'));
+    expect(within(screen.getByRole('tabpanel', { name: 'Activity' })).getByText('Catalog personal refreshed.')).not.toBeVisible();
   });
 
   it('shows project lifecycle busy labels, real stages, completion, and failure', async () => {
@@ -397,7 +409,8 @@ describe('injected menu outside Tauri', () => {
     expect(screen.getByRole('tabpanel', { name: 'Activity' })).toHaveTextContent('Fetching remote and updating checkout');
     await act(async () => update.reject(new Error('remote is unavailable')));
     expect(await screen.findByRole('button', { name: 'UPDATE' })).toBeEnabled();
-    expect(screen.getByRole('tabpanel', { name: 'Activity' })).toHaveTextContent('Update project failed: remote is unavailable');
+    expect(screen.getByRole('tabpanel', { name: 'Activity' })).toHaveTextContent('Update Project failed: remote is unavailable');
+    expect(screen.getByRole('tabpanel', { name: 'Activity' })).toHaveTextContent('FAILED');
 
     await user.click(screen.getByRole('button', { name: 'More project actions' }));
     await user.click(screen.getByRole('menuitem', { name: 'Reinstall' }));

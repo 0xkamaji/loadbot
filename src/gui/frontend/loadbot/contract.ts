@@ -94,13 +94,21 @@ export interface CatalogSyncActivity {
   readonly catalog: string;
   readonly detail?: string;
 }
-export type CatalogSyncActivitySink = (activity: CatalogSyncActivity) => void;
+export type OperationLogStream = 'command' | 'stdout' | 'stderr' | 'system';
+export interface OperationLogActivity {
+  readonly kind: 'log';
+  readonly stream: OperationLogStream;
+  readonly text: string;
+}
+export type CatalogSyncActivityEvent = CatalogSyncActivity | OperationLogActivity;
+export type CatalogSyncActivitySink = (activity: CatalogSyncActivityEvent) => void;
 export type ProjectOperationStage = 'validating-checkout' | 'cloning-project' | 'validating-fresh-checkout'
   | 'fetching-and-updating' | 'removing-checkout' | 'replacing-checkout';
 export interface ProjectOperationActivity extends ProjectIdentity {
   readonly stage: ProjectOperationStage;
 }
-export type ProjectOperationActivitySink = (activity: ProjectOperationActivity) => void;
+export type ProjectOperationActivityEvent = ProjectOperationActivity | OperationLogActivity;
+export type ProjectOperationActivitySink = (activity: ProjectOperationActivityEvent) => void;
 
 /** Backend capabilities are semantic and qualified; native paths never cross this seam.
  * Each read returns a complete, caller-owned inventory snapshot, or rejects.

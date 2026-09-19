@@ -1,21 +1,30 @@
-import type { ActivityEntry, LoadbotActions, LoadbotState } from '../application/controller';
+import { useEffect, useState } from 'react';
+import type { ActivityEntry, ActivityLogEntry, LoadbotActions, LoadbotState } from '../application/controller';
 import { CommandPane } from './CommandPane';
 
 const operationLabels: Record<ActivityEntry['operation'], string> = {
-  'catalog-sync': 'Refresh catalog',
-  'catalog-add': 'Add catalog',
-  'project-add': 'Add project',
-  'shortcut-add': 'Add shortcut',
-  'shortcut-update': 'Update shortcut',
-  'shortcut-delete': 'Delete shortcut',
+  'catalog-sync': 'Refresh Catalog',
+  'catalog-add': 'Add Catalog',
+  'project-add': 'Add Project',
+  'shortcut-add': 'Add Shortcut',
+  'shortcut-update': 'Update Shortcut',
+  'shortcut-delete': 'Delete Shortcut',
   'local-reload': 'Reload',
-  'project-folder-open': 'Open project folder',
-  'project-terminal-open': 'Open project terminal',
-  'project-pull': 'Pull project',
-  'project-update': 'Update project',
-  'project-remove': 'Remove project',
-  'project-reinstall': 'Reinstall project',
+  'project-folder-open': 'Open Project Folder',
+  'project-terminal-open': 'Open Project Terminal',
+  'project-pull': 'Pull Project',
+  'project-update': 'Update Project',
+  'project-remove': 'Remove Project',
+  'project-reinstall': 'Reinstall Project',
 };
+
+type GroupStatus = 'running' | 'completed' | 'failed' | 'cancelled';
+interface ActivityGroup {
+  readonly id: string;
+  readonly entries: readonly ActivityEntry[];
+  readonly logs: readonly ActivityLogEntry[];
+  readonly status: GroupStatus;
+}
 
 function context(entry: ActivityEntry): string {
   return [entry.catalog, entry.project, entry.shortcut].filter(Boolean).join(' / ');
@@ -40,11 +49,63 @@ function description(entry: ActivityEntry): string {
     case 'catalog-state': return `Catalog state: ${entry.catalog} · ${entry.detail}`;
     case 'completed': return entry.detail ?? `${operationLabels[entry.operation]} completed`;
     case 'failed': return `${operationLabels[entry.operation]} failed${entry.detail ? `: ${entry.detail}` : ''}`;
+    case 'cancelled': return `${operationLabels[entry.operation]} cancelled${entry.detail ? `: ${entry.detail}` : ''}`;
     default: return entry.detail ?? entry.stage;
   }
 }
 
+function groupStatus(entries: readonly ActivityEntry[]): GroupStatus {
+  const terminal = [...entries].reverse().find((entry) => ['completed', 'failed', 'cancelled'].includes(entry.stage));
+  return terminal?.stage === 'completed' ? 'completed' : terminal?.stage === 'failed' ? 'failed'
+    : terminal?.stage === 'cancelled' ? 'cancelled' : 'running';
+}
+
+function activityGroups(state: LoadbotState): readonly ActivityGroup[] {
+  const entries = new Map<string, ActivityEntry[]>();
+  for (const entry of state.activity) {
+    const group = entries.get(entry.operationId) ?? [];
+    group.push(entry);
+    entries.set(entry.operationId, group);
+  }
+  const logs = new Map<string, ActivityLogEntry[]>();
+  for (const log of state.activityLogs) {
+    const group = logs.get(log.operationId) ?? [];
+    group.push(log);
+    logs.set(log.operationId, group);
+  }
+  return [...entries].map(([id, group]) => ({ id, entries: group, logs: logs.get(id) ?? [], status: groupStatus(group) }));
+}
+
+function ActivityGroupView({ group }: { group: ActivityGroup }) {
+  const [expanded, setExpanded] = useState(group.status === 'running');
+  useEffect(() => {
+    if (group.status === 'running') setExpanded(true);
+  }, [group.status]);
+  const first = group.entries[0]!;
+  const target = context(first);
+  return <li className="lb-activity-group" data-status={group.status}>
+    <details open={expanded} onToggle={(event) => setExpanded(event.currentTarget.open)}>
+      <summary>
+        <span>{operationLabels[first.operation]}{target ? `: ${target}` : ''}</span>
+        <time dateTime={first.timestamp}>{first.timestamp.slice(11, 19)}</time>
+        <strong>{group.status.toUpperCase()}</strong>
+      </summary>
+      <ol className="lb-activity-stages">
+        {group.entries.map((entry) => <li key={entry.id} data-status={entry.status}>
+          <time dateTime={entry.timestamp}>{entry.timestamp.slice(11, 19)}</time>
+          <span>{description(entry)}</span>
+        </li>)}
+      </ol>
+      {group.logs.length > 0 && <details className="lb-verbose-logs">
+        <summary>Verbose logs</summary>
+        <pre>{group.logs.map((log) => `${log.timestamp.slice(11, 19)}  [${log.stream}] ${log.text}`).join('\n')}</pre>
+      </details>}
+    </details>
+  </li>;
+}
+
 export function BottomWorkspace({ state, actions }: { state: LoadbotState; actions: LoadbotActions }) {
+  const groups = activityGroups(state);
   return <>
     <div className="lb-bottom-tabs" role="tablist" aria-label="Bottom workspace">
       <button type="button" role="tab" aria-selected={state.bottomView === 'command'} onClick={() => actions.selectBottomView('command')}>COMMAND</button>
@@ -52,12 +113,9 @@ export function BottomWorkspace({ state, actions }: { state: LoadbotState; actio
     </div>
     {state.bottomView === 'command' ? <CommandPane state={state} actions={actions} /> : <section className="lb-bottom-content lb-activity" role="tabpanel" aria-label="Activity">
       <h2>ACTIVITY / THIS SESSION</h2>
-      {!state.activity.length && <p className="lb-metadata">No activity yet.</p>}
-      <ol aria-live="polite">
-        {state.activity.map((entry) => <li key={entry.id} data-status={entry.status}>
-          <time dateTime={entry.timestamp}>{entry.timestamp.slice(11, 19)}</time>
-          <span>{description(entry)}</span>
-        </li>)}
+      {!groups.length && <p className="lb-metadata">No activity yet.</p>}
+      <ol className="lb-activity-groups" aria-live="polite">
+        {groups.map((group) => <ActivityGroupView group={group} key={group.id} />)}
       </ol>
     </section>}
   </>;

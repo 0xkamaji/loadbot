@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from 'vitest';
-import { COMMAND_HISTORY_LIMIT, createLoadbotApplication } from '../frontend/loadbot/application/controller';
+import { ACTIVITY_LOG_HISTORY_LIMIT, COMMAND_HISTORY_LIMIT, createLoadbotApplication } from '../frontend/loadbot/application/controller';
 import { fixtureAdapter } from '../frontend/loadbot/fixtures/adapter';
 import { fixtureSampleForms } from '../frontend/loadbot/fixtures/sampleForms';
 import { projectKey, shortcutKey } from '../frontend/loadbot/identity';
@@ -413,7 +413,9 @@ describe('headless capability and application boundary', () => {
     const managed = adapter(async () => [{ catalog: 'one', tool: 'project', entries: [] }]);
     managed.syncCatalog = vi.fn(async (_catalog, onActivity) => {
       onActivity?.({ stage: 'validating', catalog: 'one' });
-      throw new Error('remote unavailable');
+      onActivity?.({ kind: 'log', stream: 'command', text: 'git fetch origin' });
+      onActivity?.({ kind: 'log', stream: 'stderr', text: 'Permission denied (publickey).' });
+      throw new Error('Git command failed: Permission denied (publickey).');
     });
     const application = createLoadbotApplication(managed);
     application.start();
@@ -425,8 +427,50 @@ describe('headless capability and application boundary', () => {
       ['authoritative-reload', 'in-progress'], ['failed', 'error'],
     ]);
     expect(application.getSnapshot().management).toEqual({
-      status: 'error', kind: 'sync-catalog', message: 'remote unavailable',
+      status: 'error', kind: 'sync-catalog', message: 'Git command failed: Permission denied (publickey).',
     });
+    const operationId = application.getSnapshot().activity[0]!.operationId;
+    expect(application.getSnapshot().activity.every((entry) => entry.operationId === operationId)).toBe(true);
+    expect(application.getSnapshot().activityLogs).toEqual([
+      expect.objectContaining({ operationId, stream: 'command', text: 'git fetch origin' }),
+      expect.objectContaining({ operationId, stream: 'stderr', text: 'Permission denied (publickey).' }),
+    ]);
+  });
+
+  it('records cancellation as a distinct terminal outcome and keeps operation logs isolated and bounded', async () => {
+    let call = 0;
+    const managed = adapter(async () => [{ catalog: 'one', tool: 'project', entries: [] }]);
+    managed.syncCatalog = vi.fn(async (_catalog, onActivity) => {
+      call++;
+      if (call === 1) {
+        onActivity?.({ kind: 'log', stream: 'stderr', text: 'first operation' });
+        const error = Object.assign(new Error('operation cancelled'), { kind: 'cancelled' });
+        throw error;
+      }
+      for (let index = 0; index < ACTIVITY_LOG_HISTORY_LIMIT + 5; index++) {
+        onActivity?.({ kind: 'log', stream: 'stdout', text: `second operation ${index}` });
+      }
+    });
+    const application = createLoadbotApplication(managed);
+    application.start();
+    await vi.waitFor(() => expect(application.getSnapshot().inventory.status).toBe('ready'));
+
+    expect(await application.actions.syncCatalog()).toBe(false);
+    const cancelledGroup = application.getSnapshot().activity.filter((entry) => entry.operation === 'catalog-sync');
+    expect(cancelledGroup.at(-1)).toMatchObject({ stage: 'cancelled', status: 'cancelled', detail: 'operation cancelled' });
+    expect(application.getSnapshot().management).toEqual({
+      status: 'cancelled', kind: 'sync-catalog', message: 'operation cancelled',
+    });
+    const firstOperation = cancelledGroup[0]!.operationId;
+    expect(application.getSnapshot().activityLogs[0]).toMatchObject({ operationId: firstOperation, text: 'first operation' });
+
+    expect(await application.actions.syncCatalog()).toBe(true);
+    const syncStarts = application.getSnapshot().activity.filter((entry) => entry.operation === 'catalog-sync' && entry.stage === 'started');
+    const secondOperation = syncStarts.at(-1)!.operationId;
+    expect(secondOperation).not.toBe(firstOperation);
+    expect(application.getSnapshot().activityLogs).toHaveLength(ACTIVITY_LOG_HISTORY_LIMIT);
+    expect(application.getSnapshot().activityLogs.every((log) => log.operationId === secondOperation)).toBe(true);
+    expect(application.getSnapshot().activityLogs.at(-1)?.text).toBe(`second operation ${ACTIVITY_LOG_HISTORY_LIMIT + 4}`);
   });
 
   it('records reload and folder activity and bounds session history', async () => {

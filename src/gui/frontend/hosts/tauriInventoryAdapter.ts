@@ -3,7 +3,7 @@ import type {
   AddCatalogInput, AddProjectInput, AddShortcutInput, CatalogIdentity, LoadbotAdapter,
   CatalogSyncActivity, CatalogSyncActivitySink, LoadbotCatalog, LoadbotProject, LoadbotRecipe,
   LoadbotInterpreterRunner, LoadbotRecipeArgument, LoadbotRunner, LoadbotShortcut,
-  ProjectIdentity, ShortcutIdentity,
+  OperationLogActivity, ProjectIdentity, ShortcutIdentity,
   ProjectOperationActivity, ProjectOperationActivitySink, RecipeShortcutInput, ShortcutHelpRequest, ShortcutHelpResult,
 } from '../loadbot/contract';
 
@@ -98,7 +98,7 @@ const nativeManagementBridge: ManagementBridge = {
   async syncCatalog(catalog, onActivity) {
     requireTauri('Catalog synchronization');
     const channel = new Channel<unknown>();
-    channel.onmessage = (value) => onActivity?.(catalogSyncActivity(value));
+    channel.onmessage = (value) => onActivity?.(operationLogActivity(value) ?? catalogSyncActivity(value));
     return invoke('sync_loadbot_catalog', { catalog, onActivity: channel });
   },
 };
@@ -106,7 +106,7 @@ const nativeManagementBridge: ManagementBridge = {
 function invokeProjectOperation(command: string, project: ProjectIdentity, onActivity?: ProjectOperationActivitySink) {
   requireTauri('Project management');
   const channel = new Channel<unknown>();
-  channel.onmessage = (value) => onActivity?.(projectOperationActivity(value));
+  channel.onmessage = (value) => onActivity?.(operationLogActivity(value) ?? projectOperationActivity(value));
   return invoke(command, { ...project, onActivity: channel });
 }
 
@@ -242,6 +242,16 @@ function catalogSyncActivity(value: unknown): CatalogSyncActivity {
   return { stage: stage as CatalogSyncActivity['stage'], catalog: text(item.catalog), detail: optionalText(item.detail) };
 }
 
+function operationLogActivity(value: unknown): OperationLogActivity | undefined {
+  const item = record(value);
+  if (item.kind !== 'log') return undefined;
+  const stream = text(item.stream);
+  if (!['command', 'stdout', 'stderr', 'system'].includes(stream)) {
+    throw new Error('Invalid operation log stream.');
+  }
+  return { kind: 'log', stream: stream as OperationLogActivity['stream'], text: text(item.text) };
+}
+
 function projectOperationActivity(value: unknown): ProjectOperationActivity {
   const item = record(value);
   const stage = text(item.stage);
@@ -271,7 +281,9 @@ function nativeError(error: unknown, fallback: string): Error {
   const message = typeof error === 'string' ? error
     : error && typeof error === 'object' && 'message' in error && typeof error.message === 'string' ? error.message
       : fallback;
-  return new Error(message);
+  const result = new Error(message) as Error & { kind?: string };
+  if (error && typeof error === 'object' && 'kind' in error && typeof error.kind === 'string') result.kind = error.kind;
+  return result;
 }
 
 export function createTauriLoadbotAdapter(

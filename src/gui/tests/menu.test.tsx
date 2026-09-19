@@ -7,6 +7,12 @@ import { LoadbotMenu } from '../frontend/loadbot/LoadbotMenu';
 
 const projectRows = () => within(screen.getByRole('group', { name: 'Projects' }));
 const shortcutRows = () => within(screen.getByRole('group', { name: 'Shortcuts' }));
+const deferred = <T,>() => {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail; });
+  return { promise, resolve, reject };
+};
 
 describe('injected menu outside Tauri', () => {
   const adapter = (projects: readonly LoadbotProject[], open = vi.fn(async () => {})): LoadbotAdapter => ({
@@ -311,6 +317,106 @@ describe('injected menu outside Tauri', () => {
     await user.type(screen.getByLabelText('Git repository URL *'), 'https://example.test/catalog.git');
     await user.click(screen.getByRole('button', { name: 'ADD AND USE' }));
     expect(await screen.findByRole('button', { name: 'Catalog context: community' })).toBeInTheDocument();
+  });
+
+  it('shows catalog refresh progress and restores its label after completion', async () => {
+    const user = userEvent.setup();
+    const pending = deferred<void>();
+    const managed: LoadbotAdapter = {
+      ...adapter([{ catalog: 'personal', tool: 'demo', installed: true, entries: [] }]),
+      syncCatalog: vi.fn((_catalog, onActivity) => {
+        onActivity?.({ stage: 'repository-checked', catalog: 'personal' });
+        onActivity?.({ stage: 'updating-repository', catalog: 'personal' });
+        return pending.promise;
+      }),
+    };
+    render(<LoadbotMenu adapter={managed} />);
+    await projectRows().findByRole('button', { name: 'demo personal' });
+
+    await user.click(screen.getByRole('button', { name: 'Catalog context: personal' }));
+    await user.click(screen.getByRole('button', { name: 'REFRESH CATALOG' }));
+    const refreshing = screen.getByRole('button', { name: 'REFRESHING…' });
+    expect(refreshing).toBeDisabled();
+    expect(screen.getByRole('tabpanel', { name: 'Activity' })).toHaveTextContent('Refresh catalog started');
+    expect(screen.getByRole('tabpanel', { name: 'Activity' })).toHaveTextContent('Configured catalog repository verified');
+    expect(screen.getByRole('tabpanel', { name: 'Activity' })).toHaveTextContent('Updating catalog from its configured Git remote');
+    expect(document.body).not.toHaveTextContent(/\d+%/);
+
+    await act(async () => pending.resolve());
+    await user.click(screen.getByRole('button', { name: 'Catalog context: personal' }));
+    expect(screen.getByRole('button', { name: 'REFRESH CATALOG' })).toBeEnabled();
+    expect(screen.getByRole('tabpanel', { name: 'Activity' })).toHaveTextContent('Catalog personal refreshed.');
+  });
+
+  it('shows project lifecycle busy labels, real stages, completion, and failure', async () => {
+    const user = userEvent.setup();
+    let projects: LoadbotProject[] = [
+      { catalog: 'personal', tool: 'installed', installed: true, entries: [] },
+      { catalog: 'personal', tool: 'available', installed: false, entries: [] },
+    ];
+    const pull = deferred<{ catalog: string; tool: string }>();
+    const update = deferred<{ catalog: string; tool: string }>();
+    const reinstall = deferred<{ catalog: string; tool: string }>();
+    const remove = deferred<{ catalog: string; tool: string }>();
+    const managed: LoadbotAdapter = {
+      ...adapter(projects),
+      readInventory: async () => structuredClone(projects),
+      pullProject: vi.fn((identity, onActivity) => {
+        onActivity?.({ ...identity, stage: 'cloning-project' });
+        return pull.promise;
+      }),
+      updateProject: vi.fn((identity, onActivity) => {
+        onActivity?.({ ...identity, stage: 'validating-checkout' });
+        onActivity?.({ ...identity, stage: 'fetching-and-updating' });
+        return update.promise;
+      }),
+      reinstallProject: vi.fn((identity, onActivity) => {
+        onActivity?.({ ...identity, stage: 'cloning-project' });
+        onActivity?.({ ...identity, stage: 'replacing-checkout' });
+        return reinstall.promise;
+      }),
+      removeProject: vi.fn((identity, onActivity) => {
+        onActivity?.({ ...identity, stage: 'removing-checkout' });
+        return remove.promise;
+      }),
+    };
+    render(<LoadbotMenu adapter={managed} />);
+    await projectRows().findByRole('button', { name: 'installed personal' });
+
+    await user.click(screen.getByRole('button', { name: 'Not Installed' }));
+    await user.click(screen.getByRole('button', { name: 'PULL' }));
+    expect(screen.getByRole('button', { name: 'PULLING…' })).toBeDisabled();
+    expect(screen.getByRole('tabpanel', { name: 'Activity' })).toHaveTextContent('Cloning project: personal / available');
+    projects = projects.map((item) => item.tool === 'available' ? { ...item, installed: true } : item);
+    await act(async () => pull.resolve({ catalog: 'personal', tool: 'available' }));
+    expect(await screen.findByRole('button', { name: 'UPDATE' })).toBeEnabled();
+    expect(screen.getByRole('tabpanel', { name: 'Activity' })).toHaveTextContent('Project available pulled.');
+
+    await user.click(screen.getByRole('button', { name: 'UPDATE' }));
+    expect(screen.getByRole('button', { name: 'UPDATING…' })).toBeDisabled();
+    expect(screen.getByRole('tabpanel', { name: 'Activity' })).toHaveTextContent('Fetching remote and updating checkout');
+    await act(async () => update.reject(new Error('remote is unavailable')));
+    expect(await screen.findByRole('button', { name: 'UPDATE' })).toBeEnabled();
+    expect(screen.getByRole('tabpanel', { name: 'Activity' })).toHaveTextContent('Update project failed: remote is unavailable');
+
+    await user.click(screen.getByRole('button', { name: 'More project actions' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Reinstall' }));
+    await user.click(screen.getByRole('button', { name: 'REINSTALL' }));
+    expect(screen.getByRole('button', { name: 'REINSTALLING…' })).toBeDisabled();
+    expect(screen.getByRole('tabpanel', { name: 'Activity' })).toHaveTextContent('Replacing checkout: personal / available');
+    await act(async () => reinstall.resolve({ catalog: 'personal', tool: 'available' }));
+    await vi.waitFor(() => expect(screen.queryByRole('dialog', { name: 'Reinstall project' })).not.toBeInTheDocument());
+    expect(screen.getByRole('tabpanel', { name: 'Activity' })).toHaveTextContent('Project available reinstalled.');
+
+    await user.click(screen.getByRole('button', { name: 'More project actions' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Remove' }));
+    await user.click(screen.getByRole('button', { name: 'REMOVE CHECKOUT' }));
+    expect(screen.getByRole('button', { name: 'REMOVING…' })).toBeDisabled();
+    projects = projects.map((item) => item.tool === 'available' ? { ...item, installed: false } : item);
+    await act(async () => remove.resolve({ catalog: 'personal', tool: 'available' }));
+    expect(await screen.findByRole('button', { name: 'PULL' })).toBeEnabled();
+    expect(screen.getByRole('tabpanel', { name: 'Activity' })).toHaveTextContent('Project available removed.');
+    expect(document.body).not.toHaveTextContent(/\d+%/);
   });
 
   it('creates, inspects, reopens, and edits a structured Recipe without execution', async () => {

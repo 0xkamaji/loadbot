@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { projectKey, selectionKey, shortcutKey } from '../identity';
 import type { LoadbotActions, LoadbotState } from '../application/controller';
-import { ApplicationFrame, BottomDrawer, Button, Icon, IconButton, MenuList, MenuRow, Panel, StatusDisplay, type ShellCallbacks } from '../../ui/components';
+import { ApplicationFrame, BottomDrawer, BusyLabel, Button, Icon, IconButton, MenuList, MenuRow, Panel, StatusDisplay, type ShellCallbacks } from '../../ui/components';
 import { clampSplit, Splitter } from '../../ui/Splitter';
 import mascot from '../../../loadbot-gui-assets/assets/branding/loadbot-header.png';
 import { ShortcutDetails } from './ShortcutDetails';
@@ -107,7 +107,8 @@ export function LoadbotMenuView({ state, actions, host, mode, workspaceLayoutSto
           {mode === 'local' && <div className="lb-catalog-actions">
             <Button disabled={!currentCatalog || currentCatalog.state !== 'installed' || busy}
               title="Refresh catalog from its configured Git remote"
-              onClick={() => { setCatalogMenuOpen(false); void actions.syncCatalog(); }}>REFRESH CATALOG</Button>
+              onClick={() => { void actions.syncCatalog().then(() => setCatalogMenuOpen(false)); }}>{busy && state.management.kind === 'sync-catalog'
+                ? <BusyLabel text="REFRESHING…" /> : 'REFRESH CATALOG'}</Button>
             <Button disabled={busy} onClick={() => { setCatalogMenuOpen(false); actions.clearManagementStatus(); setManagementDialog('add-catalog'); }}>+ ADD CATALOG</Button>
           </div>}
         </div>}
@@ -214,14 +215,16 @@ function ProjectActions({ state, actions }: { state: LoadbotState; actions: Load
   const [overflow, setOverflow] = useState(false);
   if (project.installed === false) return <div className="lb-project-actions">
     <span className="lb-project-state">AVAILABLE</span>
-    <Button disabled={busy} onClick={() => void actions.pullProject()}>{busy && state.management.kind === 'pull-project' ? 'PULLING…' : 'PULL'}</Button>
+    <Button disabled={busy} onClick={() => void actions.pullProject()}>{busy && state.management.kind === 'pull-project'
+      ? <BusyLabel text="PULLING…" /> : 'PULL'}</Button>
     <span className="lb-metadata">Catalog metadata is available; pull to create the managed local checkout.</span>
   </div>;
   return <div className="lb-project-actions">
     <span className="lb-project-state">INSTALLED</span>
     <Button disabled={busy} onClick={() => actions.openProjectFolder(id)}>OPEN FOLDER</Button>
     <Button disabled={busy || state.projectTerminal.status === 'opening'} onClick={() => actions.openProjectTerminal(id)}>OPEN TERMINAL</Button>
-    <Button disabled={busy} onClick={() => void actions.updateProject()}>{busy && state.management.kind === 'update-project' ? 'UPDATING…' : 'UPDATE'}</Button>
+    <Button disabled={busy} onClick={() => void actions.updateProject()}>{busy && state.management.kind === 'update-project'
+      ? <BusyLabel text="UPDATING…" /> : 'UPDATE'}</Button>
     <div className="lb-project-overflow">
       <Button aria-label="More project actions" aria-expanded={overflow} disabled={busy} onClick={() => setOverflow((open) => !open)}>…</Button>
       {overflow && <div role="menu" aria-label="Project actions">

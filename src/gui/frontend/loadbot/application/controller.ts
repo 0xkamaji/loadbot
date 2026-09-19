@@ -1,7 +1,8 @@
 import type {
   AddCatalogInput, AddProjectInput, AddShortcutInput, CatalogSyncActivity, CatalogSyncStage, LoadbotAdapter, LoadbotCatalog,
   LoadbotProject, LoadbotShortcut,
-  LoadbotRecipe, LoadbotRecipeArgument, LoadbotRunner, ShortcutHelpResult, ShortcutIdentity,
+  LoadbotRecipe, LoadbotRecipeArgument, LoadbotRunner, ProjectOperationActivity, ProjectOperationStage,
+  ShortcutHelpResult, ShortcutIdentity,
 } from '../contract';
 import { projectKey, selectionKey, shortcutKey } from '../identity';
 import { completeLoadbotCommand, executeLoadbotCommand, type CommandCompletion, type CommandResult } from './command';
@@ -32,7 +33,7 @@ export type ManagementState =
 export type ActivityOperation = 'catalog-sync' | 'catalog-add' | 'project-add' | 'shortcut-add' | 'shortcut-update' | 'shortcut-delete' | 'local-reload'
   | 'project-folder-open' | 'project-terminal-open' | 'project-pull' | 'project-update' | 'project-remove' | 'project-reinstall';
 export type ActivityStatus = 'in-progress' | 'info' | 'success' | 'error';
-export type ActivityStage = CatalogSyncStage | 'started' | 'authoritative-reload' | 'catalog-state' | 'completed' | 'failed';
+export type ActivityStage = CatalogSyncStage | ProjectOperationStage | 'started' | 'authoritative-reload' | 'catalog-state' | 'completed' | 'failed';
 export interface ActivityEntry {
   readonly id: number;
   readonly timestamp: string;
@@ -182,6 +183,9 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
     publish({ ...state, activity, bottomView: reveal ? 'activity' : state.bottomView });
   };
   const errorMessage = (error: unknown, fallback: string) => error instanceof Error ? error.message : fallback;
+  const projectProgress = (operation: ActivityOperation) => (activity: ProjectOperationActivity) => appendActivity({
+    operation, stage: activity.stage, status: 'in-progress', catalog: activity.catalog, project: activity.tool,
+  });
 
   function changeSampleInput(id: string, value: string | boolean) {
     const field = state.fields.find((item) => item.id === id);
@@ -369,8 +373,8 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
     async pullProject() {
       const project = state.project;
       if (!project || project.installed !== false || !adapter.pullProject) return false;
-      return mutation('pull-project', 'project-pull', `Pulling ${project.tool}…`, `Project ${project.tool} installed.`, { catalog: project.catalog, project: project.tool }, async () => {
-        const installed = await adapter.pullProject!({ catalog: project.catalog, tool: project.tool });
+      return mutation('pull-project', 'project-pull', `Pulling ${project.tool}…`, `Project ${project.tool} pulled.`, { catalog: project.catalog, project: project.tool }, async () => {
+        const installed = await adapter.pullProject!({ catalog: project.catalog, tool: project.tool }, projectProgress('project-pull'));
         return { catalog: installed.catalog, projectId: projectKey(installed), projectFilter: 'installed' };
       });
     },
@@ -378,7 +382,7 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
       const project = state.project;
       if (!project || project.installed === false || !adapter.updateProject) return false;
       return mutation('update-project', 'project-update', `Updating ${project.tool}…`, `Project ${project.tool} updated.`, { catalog: project.catalog, project: project.tool }, async () => {
-        const updated = await adapter.updateProject!({ catalog: project.catalog, tool: project.tool });
+        const updated = await adapter.updateProject!({ catalog: project.catalog, tool: project.tool }, projectProgress('project-update'));
         return { catalog: updated.catalog, projectId: projectKey(updated) };
       });
     },
@@ -403,11 +407,12 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
         `Project ${project.tool} ${action === 'remove' ? 'removed' : 'reinstalled'}.`,
         { catalog: project.catalog, project: project.tool },
         async () => {
-          const changed = await capability.call(adapter, { catalog: project.catalog, tool: project.tool });
+          const changed = await capability.call(adapter, { catalog: project.catalog, tool: project.tool },
+            projectProgress(action === 'remove' ? 'project-remove' : 'project-reinstall'));
           return { catalog: changed.catalog, projectId: projectKey(changed), projectFilter: action === 'remove' ? 'not-installed' : 'installed' };
         },
       );
-      publish({ ...state, pendingProjectAction: undefined });
+      if (result) publish({ ...state, pendingProjectAction: undefined });
       return result;
     },
     async addCatalog(input) {

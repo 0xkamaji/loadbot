@@ -140,6 +140,13 @@ describe('one platform-neutral real read adapter', () => {
       if (command === 'add_loadbot_catalog') return { catalog: input?.name };
       if (command === 'add_loadbot_project') return { catalog: input?.catalog, tool: input?.name };
       if (['pull_loadbot_project', 'update_loadbot_project', 'remove_loadbot_project', 'reinstall_loadbot_project'].includes(command)) {
+        const channel = input?.onActivity as InstanceType<typeof tauri.Channel>;
+        channel.onmessage({
+          stage: command === 'update_loadbot_project' ? 'fetching-and-updating'
+            : command === 'remove_loadbot_project' ? 'removing-checkout' : 'cloning-project',
+          catalog: input?.catalog,
+          tool: input?.tool,
+        } as never);
         return { catalog: input?.catalog, tool: input?.tool };
       }
       if (command === 'add_loadbot_shortcut') return { catalog: input?.catalog, tool: input?.tool, name: input?.name, path: input?.path };
@@ -162,10 +169,11 @@ describe('one platform-neutral real read adapter', () => {
     await adapter.addCatalog({ name: 'other', url: 'other-repo', writable: false });
     await adapter.addProject({ catalog: 'personal', name: 'demo', url: 'tool-repo', commit: false, push: false });
     await adapter.openProjectTerminal?.({ catalog: 'personal', tool: 'demo' });
-    await adapter.pullProject?.({ catalog: 'personal', tool: 'demo' });
-    await adapter.updateProject?.({ catalog: 'personal', tool: 'demo' });
-    await adapter.removeProject?.({ catalog: 'personal', tool: 'demo' });
-    await adapter.reinstallProject?.({ catalog: 'personal', tool: 'demo' });
+    const projectActivity = vi.fn();
+    await adapter.pullProject?.({ catalog: 'personal', tool: 'demo' }, projectActivity);
+    await adapter.updateProject?.({ catalog: 'personal', tool: 'demo' }, projectActivity);
+    await adapter.removeProject?.({ catalog: 'personal', tool: 'demo' }, projectActivity);
+    await adapter.reinstallProject?.({ catalog: 'personal', tool: 'demo' }, projectActivity);
     await adapter.addShortcut({ catalog: 'personal', tool: 'demo', name: 'inspect', path: 'scripts/inspect.py', runner: 'python' });
     const recipe = { version: 1, behavior: 'run' as const, program: { type: 'executable' as const, name: 'cargo' }, working_directory: { type: 'project-root' as const }, arguments: [{ type: 'literal' as const, value: 'build' }] };
     await adapter.addRecipeShortcut({ catalog: 'personal', tool: 'demo', name: 'build', recipe });
@@ -180,15 +188,18 @@ describe('one platform-neutral real read adapter', () => {
     const activity = vi.fn();
     await adapter.syncCatalog('personal', activity);
     expect(activity).toHaveBeenCalledWith({ stage: 'repository-checked', catalog: 'personal', detail: undefined });
+    expect(projectActivity.mock.calls.map(([event]) => event.stage)).toEqual([
+      'cloning-project', 'fetching-and-updating', 'removing-checkout', 'cloning-project',
+    ]);
     expect(tauri.invoke.mock.calls.slice(1)).toEqual([
       ['add_loadbot_catalog', { name: 'other', url: 'other-repo', writable: false }],
-      ['add_loadbot_project', { catalog: 'personal', name: 'demo', url: 'tool-repo', commit: false, push: false }],
+      ['add_loadbot_project', { catalog: 'personal', name: 'demo', url: 'tool-repo', revision: undefined, commit: false, push: false }],
       ['open_loadbot_project_terminal', { catalog: 'personal', tool: 'demo' }],
-      ['pull_loadbot_project', { catalog: 'personal', tool: 'demo' }],
-      ['update_loadbot_project', { catalog: 'personal', tool: 'demo' }],
-      ['remove_loadbot_project', { catalog: 'personal', tool: 'demo' }],
-      ['reinstall_loadbot_project', { catalog: 'personal', tool: 'demo' }],
-      ['add_loadbot_shortcut', { catalog: 'personal', tool: 'demo', name: 'inspect', path: 'scripts/inspect.py', runner: 'python' }],
+      ['pull_loadbot_project', { catalog: 'personal', tool: 'demo', onActivity: expect.any(tauri.Channel) }],
+      ['update_loadbot_project', { catalog: 'personal', tool: 'demo', onActivity: expect.any(tauri.Channel) }],
+      ['remove_loadbot_project', { catalog: 'personal', tool: 'demo', onActivity: expect.any(tauri.Channel) }],
+      ['reinstall_loadbot_project', { catalog: 'personal', tool: 'demo', onActivity: expect.any(tauri.Channel) }],
+      ['add_loadbot_shortcut', { catalog: 'personal', tool: 'demo', name: 'inspect', path: 'scripts/inspect.py', description: undefined, runner: 'python' }],
       ['add_loadbot_recipe_shortcut', { catalog: 'personal', tool: 'demo', name: 'build', recipe }],
       ['update_loadbot_recipe_shortcut', { catalog: 'personal', tool: 'demo', name: 'build', description: 'Build it', recipe: { ...recipe, behavior: 'launch' } }],
       ['choose_loadbot_project_file', { catalog: 'personal', tool: 'demo' }],

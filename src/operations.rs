@@ -7,7 +7,9 @@ use anyhow::{Context, Result, bail};
 use crate::catalog::{self, CatalogFile, ResolvedTool, Runner, ToolConfig};
 use crate::config::{self, CatalogSource, LocalConfig};
 use crate::git;
-use crate::interaction::{Interaction, MutationOutcome, Notice, OperationContext};
+use crate::interaction::{
+    Interaction, MutationOutcome, Notice, OperationContext, ToolOperation, ToolOperationStage,
+};
 use crate::paths::{self, Paths};
 use crate::shortcuts::{self, Shortcut};
 
@@ -1064,6 +1066,12 @@ where
         }
         .into());
     }
+    context.record(Notice::ToolOperationStage {
+        operation: ToolOperation::Pull,
+        stage: ToolOperationStage::ValidatingCheckout,
+        name: tool.name.clone(),
+        catalog_name: tool.catalog.clone(),
+    });
     if path_exists(&destination) {
         if !git::is_repository(&destination)? {
             bail!("destination exists but is not a Git repository");
@@ -1105,6 +1113,12 @@ where
     fs::create_dir_all(parent).with_context(|| format!("could not create {}", parent.display()))?;
     fs::create_dir(&destination)
         .context("tool destination appeared before clone; nothing removed")?;
+    context.record(Notice::ToolOperationStage {
+        operation: ToolOperation::Pull,
+        stage: ToolOperationStage::CloningProject,
+        name: tool.name.clone(),
+        catalog_name: tool.catalog.clone(),
+    });
     if let Err(mut error) = clone_repository(
         &tool.definition.url,
         tool.definition.revision.as_deref(),
@@ -1114,6 +1128,12 @@ where
         error = cleanup_failed_clone(&destination, error);
         return Err(error).context(format!("could not clone tool '{name}'"));
     }
+    context.record(Notice::ToolOperationStage {
+        operation: ToolOperation::Pull,
+        stage: ToolOperationStage::ValidatingFreshCheckout,
+        name: tool.name.clone(),
+        catalog_name: tool.catalog.clone(),
+    });
     let validation = (|| -> Result<()> {
         context.process.cancellation.check()?;
         if !git::is_expected_repository(&destination, &tool.definition.url)? {
@@ -1255,6 +1275,12 @@ pub fn tool_update(
         }
         .into());
     }
+    context.record(Notice::ToolOperationStage {
+        operation: ToolOperation::Update,
+        stage: ToolOperationStage::ValidatingCheckout,
+        name: tool.name.clone(),
+        catalog_name: tool.catalog.clone(),
+    });
     if !path_exists(&destination) {
         bail!("tool '{name}' is not installed; run 'loadbot pull {name}' first");
     }
@@ -1270,6 +1296,12 @@ pub fn tool_update(
         bail!("destination is not the configured Git repository");
     }
 
+    context.record(Notice::ToolOperationStage {
+        operation: ToolOperation::Update,
+        stage: ToolOperationStage::FetchingAndUpdating,
+        name: tool.name.clone(),
+        catalog_name: tool.catalog.clone(),
+    });
     let (old_commit, new_commit) =
         git::update(&destination, tool.definition.revision.as_deref(), context)
             .with_context(|| format!("refusing to update '{name}'"))?;
@@ -1304,7 +1336,19 @@ pub fn tool_remove(
     let _repository_lease = context.lease(&destination)?;
     let _configuration_snapshot = context.watch(&paths.config())?;
     let _catalog_snapshot = context.watch(&paths.catalog_file(&tool.catalog))?;
+    context.record(Notice::ToolOperationStage {
+        operation: ToolOperation::Remove,
+        stage: ToolOperationStage::ValidatingCheckout,
+        name: tool.name.clone(),
+        catalog_name: tool.catalog.clone(),
+    });
     validate_destructive_checkout(paths, &tool, &destination, context)?;
+    context.record(Notice::ToolOperationStage {
+        operation: ToolOperation::Remove,
+        stage: ToolOperationStage::RemovingCheckout,
+        name: tool.name.clone(),
+        catalog_name: tool.catalog.clone(),
+    });
     let _completed_step = crate::process::critical_scope();
     fs::remove_dir_all(&destination).with_context(|| {
         format!(
@@ -1336,6 +1380,12 @@ pub fn tool_reinstall(
     let _repository_lease = context.lease(&destination)?;
     let _configuration_snapshot = context.watch(&paths.config())?;
     let _catalog_snapshot = context.watch(&paths.catalog_file(&tool.catalog))?;
+    context.record(Notice::ToolOperationStage {
+        operation: ToolOperation::Reinstall,
+        stage: ToolOperationStage::ValidatingCheckout,
+        name: tool.name.clone(),
+        catalog_name: tool.catalog.clone(),
+    });
     validate_destructive_checkout(paths, &tool, &destination, context)?;
 
     let parent = destination
@@ -1344,6 +1394,12 @@ pub fn tool_reinstall(
     let fresh = tempfile::Builder::new()
         .prefix(".loadbot-fresh-")
         .tempdir_in(parent)?;
+    context.record(Notice::ToolOperationStage {
+        operation: ToolOperation::Reinstall,
+        stage: ToolOperationStage::CloningProject,
+        name: tool.name.clone(),
+        catalog_name: tool.catalog.clone(),
+    });
     git::clone_repository(
         &tool.definition.url,
         tool.definition.revision.as_deref(),
@@ -1351,6 +1407,12 @@ pub fn tool_reinstall(
         context,
     )
     .with_context(|| format!("could not create a fresh checkout for '{name}'"))?;
+    context.record(Notice::ToolOperationStage {
+        operation: ToolOperation::Reinstall,
+        stage: ToolOperationStage::ValidatingFreshCheckout,
+        name: tool.name.clone(),
+        catalog_name: tool.catalog.clone(),
+    });
     if !git::is_expected_repository(fresh.path(), &tool.definition.url)? {
         bail!("fresh checkout is not the configured Git repository");
     }
@@ -1363,6 +1425,12 @@ pub fn tool_reinstall(
     let backup_path = backup.keep();
     fs::remove_dir(&backup_path)?;
     let fresh_path = fresh.keep();
+    context.record(Notice::ToolOperationStage {
+        operation: ToolOperation::Reinstall,
+        stage: ToolOperationStage::ReplacingCheckout,
+        name: tool.name.clone(),
+        catalog_name: tool.catalog.clone(),
+    });
     let _completed_step = crate::process::critical_scope();
     fs::rename(&destination, &backup_path).with_context(|| {
         format!(
@@ -2045,13 +2113,29 @@ mod tests {
     #[test]
     fn remove_retains_catalog_entry_and_reinstall_creates_a_fresh_managed_checkout() {
         let (_temporary, paths, destination) = lifecycle_fixture();
-        tool_reinstall(
+        let reinstalled = tool_reinstall(
             &paths,
             "demo",
             Some("personal"),
             &mut OperationContext::new(&mut crate::interaction::Unattended),
         )
         .unwrap();
+        assert!(reinstalled.notices.iter().any(|notice| matches!(
+            notice,
+            Notice::ToolOperationStage {
+                operation: ToolOperation::Reinstall,
+                stage: ToolOperationStage::CloningProject,
+                ..
+            }
+        )));
+        assert!(reinstalled.notices.iter().any(|notice| matches!(
+            notice,
+            Notice::ToolOperationStage {
+                operation: ToolOperation::Reinstall,
+                stage: ToolOperationStage::ReplacingCheckout,
+                ..
+            }
+        )));
         assert!(git::is_repository(&destination).unwrap());
         let installed_inventory = crate::launcher::read_project_inventory(
             &paths,
@@ -2059,13 +2143,29 @@ mod tests {
         )
         .unwrap();
         assert!(installed_inventory[0].installed);
-        tool_remove(
+        let removed = tool_remove(
             &paths,
             "demo",
             Some("personal"),
             &mut OperationContext::new(&mut crate::interaction::Unattended),
         )
         .unwrap();
+        assert!(removed.notices.iter().any(|notice| matches!(
+            notice,
+            Notice::ToolOperationStage {
+                operation: ToolOperation::Remove,
+                stage: ToolOperationStage::ValidatingCheckout,
+                ..
+            }
+        )));
+        assert!(removed.notices.iter().any(|notice| matches!(
+            notice,
+            Notice::ToolOperationStage {
+                operation: ToolOperation::Remove,
+                stage: ToolOperationStage::RemovingCheckout,
+                ..
+            }
+        )));
         assert!(!destination.exists());
         assert!(
             catalog::load(&paths.catalog_file("personal"))

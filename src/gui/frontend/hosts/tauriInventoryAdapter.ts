@@ -4,7 +4,7 @@ import type {
   CatalogSyncActivity, CatalogSyncActivitySink, LoadbotCatalog, LoadbotProject, LoadbotRecipe,
   LoadbotInterpreterRunner, LoadbotRecipeArgument, LoadbotRunner, LoadbotShortcut,
   ProjectIdentity, ShortcutIdentity,
-  RecipeShortcutInput, ShortcutHelpRequest, ShortcutHelpResult,
+  ProjectOperationActivity, ProjectOperationActivitySink, RecipeShortcutInput, ShortcutHelpRequest, ShortcutHelpResult,
 } from '../loadbot/contract';
 
 /** One query seam for tests/host composition, not a generic RPC interface. */
@@ -13,10 +13,10 @@ export type ProjectFolderOpen = (project: Pick<LoadbotProject, 'catalog' | 'tool
 export interface ManagementBridge {
   readCatalogs(): Promise<unknown>;
   openProjectTerminal?(project: ProjectIdentity): Promise<unknown>;
-  pullProject?(project: ProjectIdentity): Promise<unknown>;
-  updateProject?(project: ProjectIdentity): Promise<unknown>;
-  removeProject?(project: ProjectIdentity): Promise<unknown>;
-  reinstallProject?(project: ProjectIdentity): Promise<unknown>;
+  pullProject?(project: ProjectIdentity, onActivity?: ProjectOperationActivitySink): Promise<unknown>;
+  updateProject?(project: ProjectIdentity, onActivity?: ProjectOperationActivitySink): Promise<unknown>;
+  removeProject?(project: ProjectIdentity, onActivity?: ProjectOperationActivitySink): Promise<unknown>;
+  reinstallProject?(project: ProjectIdentity, onActivity?: ProjectOperationActivitySink): Promise<unknown>;
   addCatalog(input: AddCatalogInput): Promise<unknown>;
   addProject(input: AddProjectInput): Promise<unknown>;
   addShortcut(input: AddShortcutInput): Promise<unknown>;
@@ -49,10 +49,10 @@ const nativeManagementBridge: ManagementBridge = {
     requireTauri('Opening project terminals');
     return invoke('open_loadbot_project_terminal', { ...project });
   },
-  async pullProject(project) { requireTauri('Project management'); return invoke('pull_loadbot_project', { ...project }); },
-  async updateProject(project) { requireTauri('Project management'); return invoke('update_loadbot_project', { ...project }); },
-  async removeProject(project) { requireTauri('Project management'); return invoke('remove_loadbot_project', { ...project }); },
-  async reinstallProject(project) { requireTauri('Project management'); return invoke('reinstall_loadbot_project', { ...project }); },
+  async pullProject(project, onActivity) { return invokeProjectOperation('pull_loadbot_project', project, onActivity); },
+  async updateProject(project, onActivity) { return invokeProjectOperation('update_loadbot_project', project, onActivity); },
+  async removeProject(project, onActivity) { return invokeProjectOperation('remove_loadbot_project', project, onActivity); },
+  async reinstallProject(project, onActivity) { return invokeProjectOperation('reinstall_loadbot_project', project, onActivity); },
   async addCatalog(input) {
     requireTauri('Catalog management');
     return invoke('add_loadbot_catalog', { name: input.name, url: input.url, writable: input.writable });
@@ -102,6 +102,13 @@ const nativeManagementBridge: ManagementBridge = {
     return invoke('sync_loadbot_catalog', { catalog, onActivity: channel });
   },
 };
+
+function invokeProjectOperation(command: string, project: ProjectIdentity, onActivity?: ProjectOperationActivitySink) {
+  requireTauri('Project management');
+  const channel = new Channel<unknown>();
+  channel.onmessage = (value) => onActivity?.(projectOperationActivity(value));
+  return invoke(command, { ...project, onActivity: channel });
+}
 
 function record(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid inventory response: expected a record.');
@@ -235,6 +242,17 @@ function catalogSyncActivity(value: unknown): CatalogSyncActivity {
   return { stage: stage as CatalogSyncActivity['stage'], catalog: text(item.catalog), detail: optionalText(item.detail) };
 }
 
+function projectOperationActivity(value: unknown): ProjectOperationActivity {
+  const item = record(value);
+  const stage = text(item.stage);
+  if (!['validating-checkout', 'cloning-project', 'validating-fresh-checkout', 'fetching-and-updating', 'removing-checkout', 'replacing-checkout'].includes(stage)) {
+    throw new Error('Invalid project operation activity stage.');
+  }
+  return {
+    stage: stage as ProjectOperationActivity['stage'], catalog: text(item.catalog), tool: text(item.tool),
+  };
+}
+
 function catalogIdentity(value: unknown): CatalogIdentity {
   const item = record(value);
   return { catalog: text(item.catalog) };
@@ -285,20 +303,20 @@ export function createTauriLoadbotAdapter(
       try { await management.openProjectTerminal?.(project); }
       catch (error: unknown) { throw nativeError(error, 'Could not open a terminal for the project.'); }
     },
-    async pullProject(project) {
-      try { return projectIdentity(await management.pullProject?.(project)); }
+    async pullProject(project, onActivity) {
+      try { return projectIdentity(await management.pullProject?.(project, onActivity)); }
       catch (error: unknown) { throw nativeError(error, 'Could not pull the project.'); }
     },
-    async updateProject(project) {
-      try { return projectIdentity(await management.updateProject?.(project)); }
+    async updateProject(project, onActivity) {
+      try { return projectIdentity(await management.updateProject?.(project, onActivity)); }
       catch (error: unknown) { throw nativeError(error, 'Could not update the project.'); }
     },
-    async removeProject(project) {
-      try { return projectIdentity(await management.removeProject?.(project)); }
+    async removeProject(project, onActivity) {
+      try { return projectIdentity(await management.removeProject?.(project, onActivity)); }
       catch (error: unknown) { throw nativeError(error, 'Could not remove the project.'); }
     },
-    async reinstallProject(project) {
-      try { return projectIdentity(await management.reinstallProject?.(project)); }
+    async reinstallProject(project, onActivity) {
+      try { return projectIdentity(await management.reinstallProject?.(project, onActivity)); }
       catch (error: unknown) { throw nativeError(error, 'Could not reinstall the project.'); }
     },
     async addCatalog(input) {

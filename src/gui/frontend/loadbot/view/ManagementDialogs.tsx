@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import type { LoadbotActions, LoadbotState, ManagementKind } from '../application/controller';
-import { Button, Checkbox, Dialog, InputControl, StatusDisplay } from '../../ui/components';
+import { BusyLabel, Button, Checkbox, Dialog, InputControl, StatusDisplay } from '../../ui/components';
 import { RecipeBuilder } from './RecipeBuilder';
 
 export type ManagementDialog = Extract<ManagementKind, 'add-catalog' | 'add-project'> | 'recipe-editor';
@@ -51,7 +51,7 @@ function ProjectActionConfirmation({ state, actions }: { state: LoadbotState; ac
       && <StatusDisplay>{state.management.message}</StatusDisplay>}
     <div className="lb-dialog-actions"><Button onClick={actions.cancelProjectAction} disabled={busy}>CANCEL</Button>
       <Button className="lb-danger-action" onClick={() => void actions.confirmProjectAction()} disabled={busy}>
-        {busy ? (reinstall ? 'REINSTALLING…' : 'REMOVING…') : reinstall ? 'REINSTALL' : 'REMOVE CHECKOUT'}
+        {busy ? <BusyLabel text={reinstall ? 'REINSTALLING…' : 'REMOVING…'} /> : reinstall ? 'REINSTALL' : 'REMOVE CHECKOUT'}
       </Button></div>
   </Dialog>;
 }

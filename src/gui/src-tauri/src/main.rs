@@ -3,7 +3,7 @@
 use anyhow::Context;
 use loadbot::{
     catalog::Runner,
-    interaction::{Interaction, Notice, OperationContext, Unattended},
+    interaction::{Interaction, Notice, OperationContext, ToolOperationStage, Unattended},
     launcher::{self, Project},
     operations::{self, CatalogState, ShortcutHelpRequest, ShortcutIdentity},
     paths::Paths,
@@ -54,6 +54,8 @@ struct CatalogIdentity {
 struct BackendActivity {
     stage: &'static str,
     catalog: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool: Option<String>,
     detail: Option<String>,
 }
 
@@ -74,21 +76,25 @@ fn backend_activity(notice: &Notice) -> Option<BackendActivity> {
         Notice::CatalogSyncStarted { name } => BackendActivity {
             stage: "validating",
             catalog: name.clone(),
+            tool: None,
             detail: None,
         },
         Notice::CatalogSyncRepositoryChecked { name } => BackendActivity {
             stage: "repository-checked",
             catalog: name.clone(),
+            tool: None,
             detail: None,
         },
         Notice::CatalogSyncUpdateStarted { name } => BackendActivity {
             stage: "updating-repository",
             catalog: name.clone(),
+            tool: None,
             detail: None,
         },
         Notice::CatalogCurrent { name, new_commit } => BackendActivity {
             stage: "current",
             catalog: name.clone(),
+            tool: None,
             detail: Some(new_commit.clone()),
         },
         Notice::CatalogSynced {
@@ -98,7 +104,26 @@ fn backend_activity(notice: &Notice) -> Option<BackendActivity> {
         } => BackendActivity {
             stage: "updated",
             catalog: name.clone(),
+            tool: None,
             detail: Some(format!("{old_commit} → {new_commit}")),
+        },
+        Notice::ToolOperationStage {
+            operation: _,
+            stage,
+            name,
+            catalog_name,
+        } => BackendActivity {
+            stage: match stage {
+                ToolOperationStage::ValidatingCheckout => "validating-checkout",
+                ToolOperationStage::CloningProject => "cloning-project",
+                ToolOperationStage::ValidatingFreshCheckout => "validating-fresh-checkout",
+                ToolOperationStage::FetchingAndUpdating => "fetching-and-updating",
+                ToolOperationStage::RemovingCheckout => "removing-checkout",
+                ToolOperationStage::ReplacingCheckout => "replacing-checkout",
+            },
+            catalog: catalog_name.clone(),
+            tool: Some(name.clone()),
+            detail: None,
         },
         _ => return None,
     })
@@ -221,6 +246,7 @@ async fn project_operation(
     label: &'static str,
     catalog: String,
     tool: String,
+    activity: Channel<BackendActivity>,
     operation: fn(
         &Paths,
         &str,
@@ -232,7 +258,7 @@ async fn project_operation(
         catalog: catalog.clone(),
         tool: tool.clone(),
     };
-    run_loadbot_worker(label, move |paths, context| {
+    run_loadbot_worker_with_activity(label, Some(activity), move |paths, context| {
         operation(paths, &tool, Some(&catalog), context)?;
         Ok(identity)
     })
@@ -243,35 +269,61 @@ async fn project_operation(
 async fn pull_loadbot_project(
     catalog: String,
     tool: String,
+    on_activity: Channel<BackendActivity>,
 ) -> Result<ProjectIdentity, DesktopError> {
-    project_operation("project pull", catalog, tool, operations::tool_pull).await
+    project_operation(
+        "project pull",
+        catalog,
+        tool,
+        on_activity,
+        operations::tool_pull,
+    )
+    .await
 }
 
 #[tauri::command]
 async fn update_loadbot_project(
     catalog: String,
     tool: String,
+    on_activity: Channel<BackendActivity>,
 ) -> Result<ProjectIdentity, DesktopError> {
-    project_operation("project update", catalog, tool, operations::tool_update).await
+    project_operation(
+        "project update",
+        catalog,
+        tool,
+        on_activity,
+        operations::tool_update,
+    )
+    .await
 }
 
 #[tauri::command]
 async fn remove_loadbot_project(
     catalog: String,
     tool: String,
+    on_activity: Channel<BackendActivity>,
 ) -> Result<ProjectIdentity, DesktopError> {
-    project_operation("project remove", catalog, tool, operations::tool_remove).await
+    project_operation(
+        "project remove",
+        catalog,
+        tool,
+        on_activity,
+        operations::tool_remove,
+    )
+    .await
 }
 
 #[tauri::command]
 async fn reinstall_loadbot_project(
     catalog: String,
     tool: String,
+    on_activity: Channel<BackendActivity>,
 ) -> Result<ProjectIdentity, DesktopError> {
     project_operation(
         "project reinstall",
         catalog,
         tool,
+        on_activity,
         operations::tool_reinstall,
     )
     .await
@@ -696,6 +748,18 @@ mod tests {
         .unwrap();
         assert_eq!(updated.stage, "updated");
         assert_eq!(updated.detail.as_deref(), Some("abc → def"));
+
+        let project = backend_activity(&Notice::ToolOperationStage {
+            operation: loadbot::interaction::ToolOperation::Reinstall,
+            stage: ToolOperationStage::ReplacingCheckout,
+            name: "demo".into(),
+            catalog_name: "personal".into(),
+        })
+        .unwrap();
+        assert_eq!(project.stage, "replacing-checkout");
+        assert_eq!(project.catalog, "personal");
+        assert_eq!(project.tool.as_deref(), Some("demo"));
+        assert!(project.detail.is_none());
     }
 
     #[test]

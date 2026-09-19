@@ -30,6 +30,12 @@ function description(entry: ActivityEntry): string {
     case 'updating-repository': return `Updating catalog from its configured Git remote: ${entry.catalog}`;
     case 'current': return `Catalog is already current: ${entry.catalog}${entry.detail ? ` (${entry.detail})` : ''}`;
     case 'updated': return `Catalog updated: ${entry.catalog}${entry.detail ? ` (${entry.detail})` : ''}`;
+    case 'validating-checkout': return `Validating existing checkout: ${target}`;
+    case 'cloning-project': return `${entry.operation === 'project-reinstall' ? 'Cloning fresh checkout' : 'Cloning project'}: ${target}`;
+    case 'validating-fresh-checkout': return `Validating fresh checkout: ${target}`;
+    case 'fetching-and-updating': return `Fetching remote and updating checkout: ${target}`;
+    case 'removing-checkout': return `Removing local checkout: ${target}`;
+    case 'replacing-checkout': return `Replacing checkout: ${target}`;
     case 'authoritative-reload': return 'Rereading authoritative local inventory and catalog state';
     case 'catalog-state': return `Catalog state: ${entry.catalog} · ${entry.detail}`;
     case 'completed': return entry.detail ?? `${operationLabels[entry.operation]} completed`;

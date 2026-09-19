@@ -62,6 +62,7 @@ impl Renderer {
                     revision.as_deref().unwrap_or("(default)")
                 );
             }
+            Notice::ToolOperationStage { .. } => {}
             Notice::RepositoryInspected(value) => repository(value.as_ref()),
             Notice::CatalogFileInspected(value) => match value {
                 CatalogValidity::Unmanaged => {

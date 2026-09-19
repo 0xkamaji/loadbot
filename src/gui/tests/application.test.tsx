@@ -225,16 +225,28 @@ describe('headless capability and application boundary', () => {
     ];
     const readInventory = vi.fn(async () => structuredClone(projects));
     const openProjectTerminal = vi.fn(async () => {});
-    const pullProject = vi.fn(async (identity) => {
+    const pullProject: NonNullable<LoadbotAdapter['pullProject']> = vi.fn(async (identity, onActivity) => {
+      onActivity?.({ ...identity, stage: 'cloning-project' });
+      onActivity?.({ ...identity, stage: 'validating-fresh-checkout' });
       projects = projects.map((project) => project.tool === identity.tool ? { ...project, installed: true } : project);
       return identity;
     });
-    const updateProject = vi.fn(async (identity) => identity);
-    const removeProject = vi.fn(async (identity) => {
+    const updateProject: NonNullable<LoadbotAdapter['updateProject']> = vi.fn(async (identity, onActivity) => {
+      onActivity?.({ ...identity, stage: 'validating-checkout' });
+      onActivity?.({ ...identity, stage: 'fetching-and-updating' });
+      return identity;
+    });
+    const removeProject: NonNullable<LoadbotAdapter['removeProject']> = vi.fn(async (identity, onActivity) => {
+      onActivity?.({ ...identity, stage: 'validating-checkout' });
+      onActivity?.({ ...identity, stage: 'removing-checkout' });
       projects = projects.map((project) => project.tool === identity.tool ? { ...project, installed: false } : project);
       return identity;
     });
-    const reinstallProject = vi.fn(async (identity) => identity);
+    const reinstallProject: NonNullable<LoadbotAdapter['reinstallProject']> = vi.fn(async (identity, onActivity) => {
+      onActivity?.({ ...identity, stage: 'cloning-project' });
+      onActivity?.({ ...identity, stage: 'replacing-checkout' });
+      return identity;
+    });
     const managed: LoadbotAdapter = {
       ...adapter(readInventory), openProjectTerminal, pullProject, updateProject, removeProject, reinstallProject,
     };
@@ -251,10 +263,10 @@ describe('headless capability and application boundary', () => {
     expect(application.getSnapshot().shortcut?.name).toBe('catalog command');
 
     expect(await application.actions.pullProject()).toBe(true);
-    expect(pullProject).toHaveBeenCalledWith({ catalog: 'one', tool: 'available' });
+    expect(pullProject).toHaveBeenCalledWith({ catalog: 'one', tool: 'available' }, expect.any(Function));
     expect(application.getSnapshot()).toMatchObject({ projectFilter: 'installed', project: { tool: 'available', installed: true } });
     expect(await application.actions.updateProject()).toBe(true);
-    expect(updateProject).toHaveBeenCalledWith({ catalog: 'one', tool: 'available' });
+    expect(updateProject).toHaveBeenCalledWith({ catalog: 'one', tool: 'available' }, expect.any(Function));
     application.actions.openProjectTerminal(projectKey(application.getSnapshot().project!));
     await vi.waitFor(() => expect(openProjectTerminal).toHaveBeenCalledWith({ catalog: 'one', tool: 'available' }));
 
@@ -262,7 +274,7 @@ describe('headless capability and application boundary', () => {
     expect(reinstallProject).not.toHaveBeenCalled();
     expect(application.getSnapshot().pendingProjectAction?.action).toBe('reinstall');
     expect(await application.actions.confirmProjectAction()).toBe(true);
-    expect(reinstallProject).toHaveBeenCalledWith({ catalog: 'one', tool: 'available' });
+    expect(reinstallProject).toHaveBeenCalledWith({ catalog: 'one', tool: 'available' }, expect.any(Function));
     expect(application.getSnapshot().project?.tool).toBe('available');
 
     application.actions.requestProjectAction('remove');
@@ -271,17 +283,25 @@ describe('headless capability and application boundary', () => {
     expect(removeProject).not.toHaveBeenCalled();
     application.actions.requestProjectAction('remove');
     expect(await application.actions.confirmProjectAction()).toBe(true);
+    expect(removeProject).toHaveBeenCalledWith({ catalog: 'one', tool: 'available' }, expect.any(Function));
     expect(application.getSnapshot()).toMatchObject({ projectFilter: 'not-installed', project: { tool: 'available', installed: false } });
     expect(readInventory).toHaveBeenCalledTimes(5);
     expect(application.getSnapshot().activity.map((entry) => entry.operation)).toEqual(expect.arrayContaining([
       'project-pull', 'project-update', 'project-terminal-open', 'project-reinstall', 'project-remove',
+    ]));
+    expect(application.getSnapshot().activity.map((entry) => entry.stage)).toEqual(expect.arrayContaining([
+      'cloning-project', 'validating-fresh-checkout', 'validating-checkout', 'fetching-and-updating',
+      'removing-checkout', 'replacing-checkout', 'authoritative-reload', 'completed',
     ]));
   });
 
   it('records project lifecycle failures and Reload performs reads without mutations', async () => {
     const readInventory = vi.fn(async () => [{ catalog: 'one', tool: 'installed', installed: true, entries: [] }]);
     const managed = adapter(readInventory);
-    managed.updateProject = vi.fn(async () => { throw new Error('working tree has local changes'); });
+    managed.updateProject = vi.fn(async (identity, onActivity) => {
+      onActivity?.({ ...identity, stage: 'validating-checkout' });
+      throw new Error('working tree has local changes');
+    });
     managed.pullProject = vi.fn();
     managed.removeProject = vi.fn();
     managed.reinstallProject = vi.fn();
@@ -292,6 +312,11 @@ describe('headless capability and application boundary', () => {
     expect(application.getSnapshot().activity.at(-1)).toMatchObject({
       operation: 'project-update', stage: 'failed', status: 'error', detail: 'working tree has local changes',
     });
+    expect(application.getSnapshot().activity).toEqual(expect.arrayContaining([
+      expect.objectContaining({ operation: 'project-update', stage: 'started', status: 'in-progress' }),
+      expect.objectContaining({ operation: 'project-update', stage: 'validating-checkout', status: 'in-progress' }),
+      expect.objectContaining({ operation: 'project-update', stage: 'authoritative-reload', status: 'in-progress' }),
+    ]));
     const reads = readInventory.mock.calls.length;
     application.actions.reloadInventory();
     await vi.waitFor(() => expect(readInventory.mock.calls.length).toBe(reads + 1));

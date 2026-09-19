@@ -23,6 +23,10 @@ export function Button({ className = '', children, ...props }: ButtonHTMLAttribu
   return <button type="button" className={`lb-button ${className}`} {...props}>{children}</button>;
 }
 
+export function BusyLabel({ text }: { text: string }) {
+  return <span className="lb-busy-label"><span className="lb-busy-indicator" aria-hidden="true" />{text}</span>;
+}
+
 export function IconButton({ icon, label, className = '', title = label, ...props }: Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'children'> & { icon: IconName; label: string }) {
   return <Button {...props} className={`lb-icon-button ${className}`} aria-label={label} title={title}><Icon name={icon} /></Button>;
 }

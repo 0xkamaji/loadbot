@@ -39,6 +39,10 @@
 .lb-section-title h2 { min-width: 0; }
 .lb-subtle-action { min-width: 0; min-height: 30px; padding: 2px 8px; font-size: 10px; opacity: .78; }
 .lb-subtle-action:hover:not(:disabled), .lb-subtle-action:focus-visible { opacity: 1; }
+.lb-busy-label { display: inline-flex; align-items: center; justify-content: center; gap: 5px; }
+.lb-busy-indicator { width: 9px; height: 9px; border: 1px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: lb-spin .75s linear infinite; }
+@keyframes lb-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .lb-busy-indicator { animation-duration: 1.8s; } }
 .lb-project-row { display: grid; grid-template-columns: minmax(0, 1fr) 34px; align-items: stretch; }
 .lb-project-filters { display: grid; grid-template-columns: repeat(3, 1fr); gap: 2px; }
 .lb-project-filters button { min-width: 0; border: 0; padding: 5px 3px; background: transparent; color: var(--lb-disabled-text); font: inherit; font-size: 9px; cursor: pointer; }

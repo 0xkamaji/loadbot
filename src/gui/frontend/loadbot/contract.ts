@@ -95,6 +95,12 @@ export interface CatalogSyncActivity {
   readonly detail?: string;
 }
 export type CatalogSyncActivitySink = (activity: CatalogSyncActivity) => void;
+export type ProjectOperationStage = 'validating-checkout' | 'cloning-project' | 'validating-fresh-checkout'
+  | 'fetching-and-updating' | 'removing-checkout' | 'replacing-checkout';
+export interface ProjectOperationActivity extends ProjectIdentity {
+  readonly stage: ProjectOperationStage;
+}
+export type ProjectOperationActivitySink = (activity: ProjectOperationActivity) => void;
 
 /** Backend capabilities are semantic and qualified; native paths never cross this seam.
  * Each read returns a complete, caller-owned inventory snapshot, or rejects.
@@ -104,10 +110,10 @@ export interface LoadbotAdapter {
   readCatalogs(): Promise<readonly LoadbotCatalog[]>;
   openProjectFolder(project: Pick<LoadbotProject, 'catalog' | 'tool'>): Promise<void>;
   openProjectTerminal?(project: ProjectIdentity): Promise<void>;
-  pullProject?(project: ProjectIdentity): Promise<ProjectIdentity>;
-  updateProject?(project: ProjectIdentity): Promise<ProjectIdentity>;
-  removeProject?(project: ProjectIdentity): Promise<ProjectIdentity>;
-  reinstallProject?(project: ProjectIdentity): Promise<ProjectIdentity>;
+  pullProject?(project: ProjectIdentity, onActivity?: ProjectOperationActivitySink): Promise<ProjectIdentity>;
+  updateProject?(project: ProjectIdentity, onActivity?: ProjectOperationActivitySink): Promise<ProjectIdentity>;
+  removeProject?(project: ProjectIdentity, onActivity?: ProjectOperationActivitySink): Promise<ProjectIdentity>;
+  reinstallProject?(project: ProjectIdentity, onActivity?: ProjectOperationActivitySink): Promise<ProjectIdentity>;
   addCatalog(input: AddCatalogInput): Promise<CatalogIdentity>;
   addProject(input: AddProjectInput): Promise<ProjectIdentity>;
   addShortcut(input: AddShortcutInput): Promise<ShortcutIdentity>;

@@ -176,6 +176,12 @@ pub enum Notice {
         url: String,
         revision: Option<String>,
     },
+    ToolOperationStage {
+        operation: ToolOperation,
+        stage: ToolOperationStage,
+        name: String,
+        catalog_name: String,
+    },
     ToolRemoved {
         name: String,
         catalog_name: String,
@@ -277,6 +283,24 @@ pub enum Notice {
         name: String,
         diagnostic: String,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolOperation {
+    Pull,
+    Update,
+    Remove,
+    Reinstall,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolOperationStage {
+    ValidatingCheckout,
+    CloningProject,
+    ValidatingFreshCheckout,
+    FetchingAndUpdating,
+    RemovingCheckout,
+    ReplacingCheckout,
 }
 
 #[derive(Debug)]

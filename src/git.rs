@@ -53,16 +53,28 @@ pub fn clone_repository(
     destination: &Path,
     interaction: &mut dyn Interaction,
 ) -> Result<()> {
+    let (arguments, read_url) = clone_arguments(url, revision, destination);
+    checked_network_output(arguments, &read_url, interaction)?;
+    configure_read_remote(destination, url)?;
+    Ok(())
+}
+
+fn clone_arguments(
+    configured_url: &str,
+    revision: Option<&str>,
+    destination: &Path,
+) -> (Vec<OsString>, String) {
+    let read_url =
+        github_https_read_url(configured_url).unwrap_or_else(|| configured_url.to_owned());
     let mut arguments = vec![OsString::from("clone")];
     if let Some(revision) = revision {
         arguments.push(OsString::from("--branch"));
         arguments.push(OsString::from(revision));
     }
     arguments.push(OsString::from("--"));
-    arguments.push(OsString::from(url));
+    arguments.push(OsString::from(&read_url));
     arguments.push(destination.as_os_str().to_owned());
-    checked_network_output(arguments, url, interaction)?;
-    Ok(())
+    (arguments, read_url)
 }
 
 pub fn is_expected_repository(path: &Path, configured_url: &str) -> Result<bool> {
@@ -184,6 +196,9 @@ pub fn origin_refs(
     path: &Path,
     interaction: &mut dyn Interaction,
 ) -> Result<Vec<(String, String)>> {
+    if let Some(configured_url) = fetch_url(path)? {
+        configure_read_remote(path, &configured_url)?;
+    }
     network_query(
         path,
         &["ls-remote", "--refs", "origin"],
@@ -206,6 +221,7 @@ pub fn origin_has_refs(path: &Path, interaction: &mut dyn Interaction) -> Result
 
 pub fn update(
     path: &Path,
+    configured_url: &str,
     configured_revision: Option<&str>,
     interaction: &mut dyn Interaction,
 ) -> Result<(String, String)> {
@@ -223,6 +239,8 @@ pub fn update(
             "configured revision '{revision}' is not the checked-out branch '{branch}'; this version only updates branches"
         );
     }
+
+    configure_read_remote(path, configured_url)?;
 
     network_query(
         path,
@@ -337,19 +355,29 @@ pub fn repository_match(
     let Some(actual_url) = fetch_url(path)? else {
         return Ok(RepositoryMatch::Mismatch);
     };
-    if urls_match(&actual_url, configured_url) {
+    if normalize_url(&actual_url) == normalize_url(configured_url) {
         return Ok(RepositoryMatch::Exact);
     }
-    let Some(configured) = github_https_repository(configured_url) else {
+    let configured_ssh = github_ssh_repository(configured_url, &[]);
+    let configured_https = github_https_repository(configured_url);
+    let configured = configured_https.as_ref().or(configured_ssh.as_ref());
+    let Some(configured) = configured else {
         return Ok(RepositoryMatch::Mismatch);
     };
-    let Some(actual) = github_ssh_repository(&actual_url, verified_aliases) else {
+    let actual_https = github_https_repository(&actual_url);
+    let actual_ssh = github_ssh_repository(&actual_url, verified_aliases);
+    let actual = actual_https.as_ref().or(actual_ssh.as_ref());
+    let Some(actual) = actual else {
         return Ok(RepositoryMatch::Mismatch);
     };
     if actual.owner.eq_ignore_ascii_case(&configured.owner)
         && actual.name.eq_ignore_ascii_case(&configured.name)
     {
-        Ok(RepositoryMatch::EquivalentGithub)
+        if configured_ssh.is_some() && actual_https.is_some() {
+            Ok(RepositoryMatch::Exact)
+        } else {
+            Ok(RepositoryMatch::EquivalentGithub)
+        }
     } else {
         Ok(RepositoryMatch::Mismatch)
     }
@@ -535,6 +563,44 @@ fn restore_remote_url(path: &Path, key: &str, urls: &[String]) -> Result<()> {
 
 fn github_https_repository(url: &str) -> Option<GithubRepository> {
     github_repository_path(url.strip_prefix("https://github.com/")?)
+}
+
+fn github_https_read_url(url: &str) -> Option<String> {
+    let repository = github_ssh_repository(url, &[])?;
+    if !repository
+        .owner
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        || !repository
+            .name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+    {
+        return None;
+    }
+    Some(format!(
+        "https://github.com/{}/{}.git",
+        repository.owner, repository.name
+    ))
+}
+
+fn configure_read_remote(path: &Path, configured_url: &str) -> Result<()> {
+    let Some(read_url) = github_https_read_url(configured_url) else {
+        return Ok(());
+    };
+    let actual = fetch_url(path)?.context("repository has no origin URL")?;
+    if !urls_match(&actual, configured_url) {
+        bail!("repository origin is not the configured Git repository");
+    }
+    let configured_push = push_url(path)?;
+    let push = configured_push
+        .as_deref()
+        .unwrap_or(configured_url)
+        .to_owned();
+    if normalize_url(&actual) != normalize_url(&read_url) || configured_push.is_none() {
+        reconcile_remote(path, &read_url, &push)?;
+    }
+    Ok(())
 }
 
 fn github_ssh_repository(url: &str, verified_aliases: &[String]) -> Option<GithubRepository> {
@@ -887,9 +953,16 @@ fn stdout_text(output: &Output) -> String {
     String::from_utf8_lossy(&output.stdout).trim().to_owned()
 }
 
-// Keep URL equivalence deliberately narrow until real-world cases require more.
 fn urls_match(actual: &str, configured: &str) -> bool {
-    normalize_url(actual) == normalize_url(configured)
+    if normalize_url(actual) == normalize_url(configured) {
+        return true;
+    }
+    let actual = github_https_repository(actual).or_else(|| github_ssh_repository(actual, &[]));
+    let configured =
+        github_https_repository(configured).or_else(|| github_ssh_repository(configured, &[]));
+    matches!((actual, configured), (Some(actual), Some(configured))
+        if actual.owner.eq_ignore_ascii_case(&configured.owner)
+            && actual.name.eq_ignore_ascii_case(&configured.name))
 }
 
 fn normalize_url(url: &str) -> String {
@@ -960,15 +1033,62 @@ mod tests {
     }
 
     #[test]
-    fn url_comparison_ignores_git_suffix_and_trailing_slash() {
+    fn url_comparison_uses_canonical_github_identity_across_read_transports() {
         assert!(urls_match(
             "https://github.com/owner/repo.git/",
             "https://github.com/owner/repo"
         ));
-        assert!(!urls_match(
+        assert!(urls_match(
             "https://github.com/owner/repo",
             "git@github.com:owner/repo"
         ));
+        assert!(urls_match(
+            "ssh://git@github.com/OWNER/REPO.git",
+            "https://github.com/owner/repo.git"
+        ));
+        assert!(!urls_match(
+            "https://github.com/other/repo.git",
+            "git@github.com:owner/repo.git"
+        ));
+        assert!(!urls_match(
+            "git@gitlab.com:owner/repo.git",
+            "https://github.com/owner/repo.git"
+        ));
+    }
+
+    #[test]
+    fn github_ssh_read_urls_are_narrowly_converted_to_https() {
+        assert_eq!(
+            github_https_read_url("git@github.com:OWNER/REPO.git").as_deref(),
+            Some("https://github.com/OWNER/REPO.git")
+        );
+        assert_eq!(
+            github_https_read_url("ssh://git@github.com/OWNER/REPO.git").as_deref(),
+            Some("https://github.com/OWNER/REPO.git")
+        );
+        for unchanged in [
+            "https://github.com/OWNER/REPO.git",
+            "git@gitlab.com:OWNER/REPO.git",
+            "git@github.example.com:OWNER/REPO.git",
+            "ssh://git@github.com:2222/OWNER/REPO.git",
+            "git@github.com:OWNER/nested/REPO.git",
+            "git@github.com:OWNER/REPO.git?token=secret",
+        ] {
+            assert_eq!(github_https_read_url(unchanged), None, "{unchanged}");
+        }
+    }
+
+    #[test]
+    fn clone_arguments_use_the_derived_https_read_url() {
+        let configured = "git@github.com:owner/repo.git";
+        let destination = Path::new("checkout");
+        let (arguments, read_url) = clone_arguments(configured, Some("main"), destination);
+
+        assert_eq!(
+            arguments,
+            ["clone", "--branch", "main", "--", &read_url, "checkout"].map(OsString::from)
+        );
+        assert!(!arguments.iter().any(|argument| argument == configured));
     }
 
     #[test]
@@ -1061,6 +1181,33 @@ mod tests {
     }
 
     #[test]
+    fn repository_match_accepts_https_fetch_for_configured_github_ssh() {
+        if raw_output([OsStr::new("--version")]).is_err() {
+            return;
+        }
+        let temporary = tempfile::tempdir().unwrap();
+        let repository = temporary.path();
+        checked_output([
+            OsStr::new("init"),
+            OsStr::new("--quiet"),
+            repository.as_os_str(),
+        ])
+        .unwrap();
+        set_remote_url(
+            repository,
+            "remote.origin.url",
+            "https://github.com/owner/repo.git",
+        )
+        .unwrap();
+
+        assert_eq!(
+            repository_match(repository, "git@github.com:OWNER/REPO.git", &[]).unwrap(),
+            RepositoryMatch::Exact
+        );
+        assert!(is_expected_repository(repository, "ssh://git@github.com/owner/repo.git").unwrap());
+    }
+
+    #[test]
     fn remote_reconciliation_changes_only_fetch_and_push_configuration() {
         if raw_output([OsStr::new("--version")]).is_err() {
             return;
@@ -1101,6 +1248,66 @@ mod tests {
         assert_eq!(
             fs::read_to_string(repository.join("dirty.txt")).unwrap(),
             "preserve\n"
+        );
+    }
+
+    #[test]
+    fn github_ssh_remote_is_configured_for_https_reads_and_original_ssh_pushes() {
+        if raw_output([OsStr::new("--version")]).is_err() {
+            return;
+        }
+        let temporary = tempfile::tempdir().unwrap();
+        let repository = temporary.path();
+        checked_output([
+            OsStr::new("init"),
+            OsStr::new("--quiet"),
+            repository.as_os_str(),
+        ])
+        .unwrap();
+        let configured = "ssh://git@github.com/owner/repo.git";
+        set_remote_url(repository, "remote.origin.url", configured).unwrap();
+
+        configure_read_remote(repository, configured).unwrap();
+
+        assert_eq!(
+            fetch_url(repository).unwrap().as_deref(),
+            Some("https://github.com/owner/repo.git")
+        );
+        assert_eq!(push_url(repository).unwrap().as_deref(), Some(configured));
+        assert!(is_expected_repository(repository, configured).unwrap());
+    }
+
+    #[test]
+    fn github_read_transport_preserves_an_existing_authenticated_push_url() {
+        if raw_output([OsStr::new("--version")]).is_err() {
+            return;
+        }
+        let temporary = tempfile::tempdir().unwrap();
+        let repository = temporary.path();
+        checked_output([
+            OsStr::new("init"),
+            OsStr::new("--quiet"),
+            repository.as_os_str(),
+        ])
+        .unwrap();
+        let configured = "git@github.com:owner/repo.git";
+        set_remote_url(repository, "remote.origin.url", configured).unwrap();
+        set_remote_url(
+            repository,
+            "remote.origin.pushurl",
+            "git@github-work:owner/repo.git",
+        )
+        .unwrap();
+
+        configure_read_remote(repository, configured).unwrap();
+
+        assert_eq!(
+            fetch_url(repository).unwrap().as_deref(),
+            Some("https://github.com/owner/repo.git")
+        );
+        assert_eq!(
+            push_url(repository).unwrap().as_deref(),
+            Some("git@github-work:owner/repo.git")
         );
     }
 
@@ -1319,16 +1526,21 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn https_auth_failure_never_queries_rot() {
+    fn derived_https_auth_failure_propagates_without_querying_rot() {
         let mut prompt = TestPrompt::new(None);
         let mut identity_queries = 0;
+        let (_, read_url) = clone_arguments(
+            "git@github.com:owner/private.git",
+            None,
+            Path::new("checkout"),
+        );
         let error = checked_network_output_with(
             vec![OsString::from("clone")],
-            "https://github.com/owner/private.git",
+            &read_url,
             |_| {
                 Ok(command_output(
                     false,
-                    "git@github.com: Permission denied (publickey).",
+                    "remote: Repository not found.\nfatal: repository 'https://github.com/owner/private.git/' not found",
                 ))
             },
             || {
@@ -1340,7 +1552,9 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(error.to_string().contains("Permission denied"));
+        assert_eq!(read_url, "https://github.com/owner/private.git");
+        assert!(error.to_string().contains("Repository not found"));
+        assert!(error.to_string().contains("fatal: repository"));
         assert_eq!(identity_queries, 0);
     }
 

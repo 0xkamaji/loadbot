@@ -761,7 +761,7 @@ pub fn catalog_sync(
     context.record(Notice::CatalogSyncUpdateStarted {
         name: name.to_owned(),
     });
-    let (old_commit, new_commit) = git::update(&destination, None, context)
+    let (old_commit, new_commit) = git::update(&destination, &source.url, None, context)
         .with_context(|| format!("refusing to sync catalog '{name}'"))?;
     if old_commit == new_commit {
         context.record(Notice::CatalogCurrent {
@@ -1302,9 +1302,13 @@ pub fn tool_update(
         name: tool.name.clone(),
         catalog_name: tool.catalog.clone(),
     });
-    let (old_commit, new_commit) =
-        git::update(&destination, tool.definition.revision.as_deref(), context)
-            .with_context(|| format!("refusing to update '{name}'"))?;
+    let (old_commit, new_commit) = git::update(
+        &destination,
+        &tool.definition.url,
+        tool.definition.revision.as_deref(),
+        context,
+    )
+    .with_context(|| format!("refusing to update '{name}'"))?;
     if old_commit == new_commit {
         context.record(Notice::ToolCurrent {
             name: name.to_owned(),
@@ -2688,7 +2692,7 @@ mod tests {
     }
 
     #[test]
-    fn launcher_validation_points_equivalent_checkouts_to_interactive_pull() {
+    fn launcher_validation_accepts_transport_equivalent_github_checkouts() {
         let temporary = TempDir::new().unwrap();
         let paths = Paths::with_root(temporary.path().join("loadbot"));
         let catalog_remote = valid_catalog_remote(temporary.path(), "launcher-catalog");
@@ -2712,19 +2716,15 @@ mod tests {
         );
         fs::rename(checkout, paths.tool("personal", "demo").unwrap()).unwrap();
 
-        let error = installed_tool_path(
+        let installed = installed_tool_path(
             &paths,
             "demo",
             "personal",
             &mut OperationContext::new(&mut crate::interaction::Unattended),
         )
-        .unwrap_err();
+        .unwrap();
 
-        assert!(
-            error
-                .to_string()
-                .contains("Run 'loadbot pull demo' interactively")
-        );
+        assert_eq!(installed, paths.tool("personal", "demo").unwrap());
         assert_eq!(
             git::fetch_url(&paths.tool("personal", "demo").unwrap())
                 .unwrap()
@@ -2967,6 +2967,70 @@ mod tests {
         assert!(
             catalog.source.writable,
             "sync must not change management eligibility"
+        );
+    }
+
+    #[test]
+    fn catalog_sync_reads_a_configured_github_ssh_remote_over_https() {
+        let temporary = TempDir::new().unwrap();
+        let paths = Paths::with_root(temporary.path().join("loadbot"));
+        let remote = valid_catalog_remote(temporary.path(), "github-transport-catalog");
+        let configured = "git@github.com:0xkamaji/loadbot-catalog.git";
+        let read_url = "https://github.com/0xkamaji/loadbot-catalog.git";
+        let mut policy = crate::interaction::Unattended;
+        let mut context = OperationContext::new(&mut policy);
+        context.process.terminal = false;
+        catalog_add(
+            &paths,
+            "personal",
+            remote.display().to_string(),
+            true,
+            &mut context,
+        )
+        .unwrap();
+        config::update(&paths.config(), |local| {
+            local.catalogs.get_mut("personal").unwrap().url = configured.to_owned();
+            Ok(())
+        })
+        .unwrap();
+        let checkout = paths.catalog("personal");
+        git(["remote", "set-url", "origin", configured], Some(&checkout));
+        let rewrite = format!("url.{}.insteadOf", remote.display());
+        git(
+            vec![
+                "config".to_owned(),
+                "--local".to_owned(),
+                rewrite,
+                read_url.to_owned(),
+            ],
+            Some(&checkout),
+        );
+
+        let source = temporary.path().join("github-transport-catalog-source");
+        fs::write(
+            source.join("catalog.toml"),
+            "version = 1\n\n[tools.radio-configs]\ntype = \"git\"\nurl = \"https://github.com/0xkamaji/radio-configs.git\"\n",
+        )
+        .unwrap();
+        git(["add", "catalog.toml"], Some(&source));
+        git(["commit", "-m", "add radio configs"], Some(&source));
+        git(["push", "origin", "main"], Some(&source));
+
+        catalog_sync(&paths, "personal", &mut context).unwrap();
+
+        assert!(
+            catalog::load(&paths.catalog_file("personal"))
+                .unwrap()
+                .tools
+                .contains_key("radio-configs")
+        );
+        assert_eq!(
+            git::fetch_url(&checkout).unwrap().as_deref(),
+            Some(read_url)
+        );
+        assert_eq!(
+            git::push_url(&checkout).unwrap().as_deref(),
+            Some(configured)
         );
     }
 

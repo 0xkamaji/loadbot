@@ -11,5 +11,6 @@ commands.allow = [
   "delete_loadbot_shortcuts",
   "choose_loadbot_project_file",
   "choose_loadbot_project_directory",
+  "view_loadbot_shortcut_help",
   "sync_loadbot_catalog",
 ]

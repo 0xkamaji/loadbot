@@ -12,6 +12,7 @@ fn main() {
             "delete_loadbot_shortcuts",
             "choose_loadbot_project_file",
             "choose_loadbot_project_directory",
+            "view_loadbot_shortcut_help",
             "sync_loadbot_catalog",
             "read_loadbot_workspace_layout",
             "write_loadbot_workspace_layout",

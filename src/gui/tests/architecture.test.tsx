@@ -61,6 +61,27 @@ it('keeps command candidates horizontally wrapping and vertically bounded', () =
   expect(field).not.toMatch(/grid-template-columns|white-space:\s*nowrap/);
 });
 
+it('keeps every registered custom Tauri command in the app manifest and an ACL allowlist', () => {
+  const tauriRoot = join(guiRoot, 'src-tauri');
+  const tauriMain = readFileSync(join(tauriRoot, 'src/main.rs'), 'utf8');
+  const tauriBuild = readFileSync(join(tauriRoot, 'build.rs'), 'utf8');
+  const handler = tauriMain.match(/generate_handler!\[([\s\S]*?)\]\)/)?.[1] ?? '';
+  const manifest = tauriBuild.match(/\.commands\(&\[([\s\S]*?)\]\)/)?.[1] ?? '';
+  const allowed = readdirSync(join(tauriRoot, 'permissions'))
+    .filter((name) => name.endsWith('.toml'))
+    .map((name) => readFileSync(join(tauriRoot, 'permissions', name), 'utf8'))
+    .join('\n');
+  const rustIdentifiers = (source: string) => [...source.matchAll(/^\s*([a-z][a-z0-9_]*)\s*,?\s*$/gm)]
+    .map((match) => match[1]).sort();
+  const quotedCommands = (source: string) => [...source.matchAll(/"([a-z][a-z0-9_]*)"/g)]
+    .map((match) => match[1]).sort();
+
+  const registered = rustIdentifiers(handler);
+  expect(registered).toContain('view_loadbot_shortcut_help');
+  expect(quotedCommands(manifest)).toEqual(registered);
+  expect(quotedCommands(allowed)).toEqual(registered);
+});
+
 it('pins native/default and fixture entry points to distinct compositions', () => {
   const packageJson = JSON.parse(readFileSync(join(guiRoot, 'package.json'), 'utf8'));
   const tauri = JSON.parse(readFileSync(join(guiRoot, 'src-tauri/tauri.conf.json'), 'utf8'));

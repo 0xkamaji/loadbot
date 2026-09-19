@@ -87,11 +87,12 @@ describe('injected menu outside Tauri', () => {
     await user.click(await projectRows().findByRole('button', { name: 'rotbot personal' }));
     await user.click(shortcutRows().getByRole('button', { name: 'Build report' }));
     expect(screen.getByText('Run Recipe')).toBeInTheDocument();
-    expect(screen.getByText('Interpreter · python')).toBeInTheDocument();
+    expect(screen.getByText('scripts/report.py')).toBeInTheDocument();
+    expect(screen.getByText('python')).toBeInTheDocument();
     await user.click(shortcutRows().getByRole('button', { name: 'Open dashboard' }));
     expect(screen.getByText('Launch Application')).toBeInTheDocument();
-    expect(screen.getByText('Shared catalog Recipes are read-only here.')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'EDIT RECIPE' })).not.toBeInTheDocument();
+    expect(screen.getByText('Shared catalog shortcuts are read-only here.')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'EDIT' })).not.toBeInTheDocument();
     await user.click(shortcutRows().getByRole('button', { name: 'Inspect workspace' }));
     expect(screen.getByText(/scripts\/inspect.py/)).toBeInTheDocument();
   });
@@ -261,13 +262,13 @@ describe('injected menu outside Tauri', () => {
       projects = [...projects, { catalog: input.catalog, tool: input.name, entries: [] }];
       return { catalog: input.catalog, tool: input.name };
     });
-    const addShortcut = vi.fn(async (input) => {
-      projects = projects.map((project) => project.tool === input.tool ? { ...project, entries: [{ name: input.name, path: input.path, source: 'personal' as const }] } : project);
-      return { catalog: input.catalog, tool: input.tool, name: input.name, path: input.path };
+    const addRecipeShortcut = vi.fn(async (input) => {
+      projects = projects.map((project) => project.tool === input.tool ? { ...project, entries: [{ name: input.name, recipe: input.recipe, source: 'personal' as const }] } : project);
+      return { catalog: input.catalog, tool: input.tool, name: input.name };
     });
     const managed: LoadbotAdapter = {
       ...adapter(projects), readInventory: async () => projects, readCatalogs: async () => catalogs,
-      addProject, addShortcut,
+      addProject, addRecipeShortcut,
       addCatalog: vi.fn(async (input) => {
         catalogs = [...catalogs, { name: input.name, url: input.url, writable: input.writable, state: 'installed', default: false }];
         return { catalog: input.name };
@@ -288,14 +289,16 @@ describe('injected menu outside Tauri', () => {
     expect(await projectRows().findByRole('button', { name: 'new-project personal' })).toHaveAttribute('aria-pressed', 'true');
 
     await user.click(screen.getByRole('button', { name: '+ ADD SHORTCUT' }));
-    expect(screen.getByRole('heading', { name: 'ADD SHORTCUT / new-project' })).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: /SIMPLE LEGACY SHORTCUT/ }));
-    await user.type(screen.getByLabelText('Shortcut name *'), 'inspect');
-    await user.type(screen.getByLabelText('Repository-relative path *'), 'scripts/inspect.py');
-    await user.selectOptions(screen.getByLabelText('Runner (optional)'), 'python');
-    await user.click(screen.getByRole('button', { name: 'ADD SHORTCUT' }));
+    expect(screen.getByRole('heading', { name: 'CREATE SHORTCUT' })).toBeInTheDocument();
+    expect(screen.queryByText(/Legacy|Launch Application|Run Recipe/)).not.toBeInTheDocument();
+    await user.type(screen.getByLabelText('Name *'), 'inspect');
+    await user.type(screen.getByLabelText('Target *'), 'scripts/inspect.py');
+    expect(screen.getByLabelText('Run with')).toHaveValue('python');
+    await user.click(screen.getByRole('button', { name: 'CREATE SHORTCUT' }));
     expect(await shortcutRows().findByRole('button', { name: 'inspect' })).toHaveAttribute('aria-pressed', 'true');
-    expect(addShortcut).toHaveBeenCalledWith(expect.objectContaining({ catalog: 'personal', tool: 'new-project', runner: 'python' }));
+    expect(addRecipeShortcut).toHaveBeenCalledWith(expect.objectContaining({
+      catalog: 'personal', tool: 'new-project', recipe: expect.objectContaining({ behavior: 'run', program: { type: 'interpreter', runner: 'python' } }),
+    }));
 
     await user.click(screen.getByRole('button', { name: 'Catalog context: personal' }));
     await user.click(screen.getByRole('button', { name: 'SYNC CATALOG' }));
@@ -328,37 +331,44 @@ describe('injected menu outside Tauri', () => {
     await projectRows().findByRole('button', { name: 'demo personal' });
 
     await user.click(screen.getByRole('button', { name: '+ ADD SHORTCUT' }));
-    await user.click(screen.getByRole('button', { name: /RUN RECIPE/ }));
-    expect(screen.getByRole('dialog', { name: 'Create Recipe shortcut' })).toBeInTheDocument();
-    await user.type(screen.getByLabelText('Shortcut name *'), 'build');
+    expect(screen.getByRole('dialog', { name: 'Create shortcut' })).toBeInTheDocument();
+    expect(screen.queryByText('LAUNCH APPLICATION')).not.toBeInTheDocument();
+    expect(screen.queryByText(/LEGACY/)).not.toBeInTheDocument();
+    await user.type(screen.getByLabelText('Name *'), 'build');
     await user.type(screen.getByLabelText('Description (optional)'), 'Build project');
-    await user.type(screen.getByLabelText('Program *'), 'cargo');
-    await user.click(screen.getByRole('button', { name: '+ ADD OPTION' }));
-    await user.clear(screen.getByLabelText('Name *'));
-    await user.type(screen.getByLabelText('Name *'), 'Profile');
+    await user.type(screen.getByLabelText('Target *'), 'scripts/build.py');
+    expect(screen.getByLabelText('Run with')).toHaveValue('python');
+    await user.selectOptions(screen.getByLabelText('Run with'), 'bash');
+    await user.click(screen.getByRole('button', { name: '+ ADD PARAMETER' }));
+    const parameterName = screen.getAllByLabelText('Name *')[1]!;
+    await user.clear(parameterName);
+    await user.type(parameterName, 'Profile');
     expect(screen.queryByLabelText('Parameter ID *')).not.toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'ADVANCED' }));
+    await user.click(screen.getAllByRole('button', { name: 'ADVANCED' })[0]!);
     expect(screen.getByLabelText('Parameter ID *')).toHaveValue('profile');
     await user.clear(screen.getByLabelText('Parameter ID *'));
     await user.type(screen.getByLabelText('Parameter ID *'), 'build-profile');
-    await user.clear(screen.getByLabelText('Name *'));
-    await user.type(screen.getByLabelText('Name *'), 'Mode');
+    await user.clear(parameterName);
+    await user.type(parameterName, 'Mode');
     expect(screen.getByLabelText('Parameter ID *')).toHaveValue('build-profile');
-    expect(screen.getByRole('region', { name: 'Recipe preview' })).toHaveTextContent('cargo {Mode}');
-    await user.click(screen.getByRole('button', { name: 'CREATE RECIPE' }));
+    expect(screen.getByRole('region', { name: 'Shortcut preview' })).toHaveTextContent('bash scripts/build.py {Mode}');
+    await user.click(screen.getByRole('button', { name: 'CREATE SHORTCUT' }));
 
     expect(addRecipeShortcut).toHaveBeenCalledWith(expect.objectContaining({
-      name: 'build', recipe: expect.objectContaining({ behavior: 'run', program: { type: 'executable', name: 'cargo' } }),
+      name: 'build', recipe: expect.objectContaining({
+        behavior: 'run', program: { type: 'interpreter', runner: 'bash' },
+        arguments: [{ type: 'project-path', path: 'scripts/build.py' }, expect.objectContaining({ id: 'build-profile' })],
+      }),
     }));
     expect(await screen.findByRole('heading', { name: 'build' })).toBeInTheDocument();
     expect(screen.getByText('Run Recipe')).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'EDIT RECIPE' }));
-    expect(screen.getByRole('dialog', { name: 'Edit Recipe shortcut' })).toBeInTheDocument();
-    expect(screen.getByLabelText('Shortcut name *')).toBeDisabled();
-    await user.click(screen.getByRole('button', { name: 'LAUNCH APPLICATION' }));
-    await user.click(screen.getByRole('button', { name: 'SAVE RECIPE' }));
-    expect(updateRecipeShortcut).toHaveBeenCalledWith(expect.objectContaining({ recipe: expect.objectContaining({ behavior: 'launch' }) }));
-    expect(await screen.findByText('Launch Application')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'EDIT' }));
+    expect(screen.getByRole('dialog', { name: 'Edit shortcut' })).toBeInTheDocument();
+    expect(screen.getAllByLabelText('Name *')[0]).toBeDisabled();
+    expect(screen.getByLabelText('Target *')).toHaveValue('scripts/build.py');
+    await user.click(screen.getByRole('button', { name: 'SAVE SHORTCUT' }));
+    expect(updateRecipeShortcut).toHaveBeenCalledWith(expect.objectContaining({ recipe: expect.objectContaining({ behavior: 'run' }) }));
+    expect(await screen.findByText('Run Recipe')).toBeInTheDocument();
     expect(screen.queryByText(/output/i)).not.toBeInTheDocument();
   });
 
@@ -371,7 +381,6 @@ describe('injected menu outside Tauri', () => {
     ] }];
     const chooseProjectFile = vi.fn()
       .mockResolvedValueOnce('scripts/tool.py')
-      .mockResolvedValueOnce('config/default.toml')
       .mockResolvedValueOnce(undefined);
     const chooseProjectDirectory = vi.fn(async () => 'scripts/tools');
     const deleteShortcuts = vi.fn(async (identities: readonly ShortcutIdentity[]) => {
@@ -386,29 +395,25 @@ describe('injected menu outside Tauri', () => {
     await projectRows().findByRole('button', { name: 'demo personal' });
 
     await user.click(screen.getByRole('button', { name: '+ ADD SHORTCUT' }));
-    await user.click(screen.getByRole('button', { name: /RUN RECIPE/ }));
-    await user.selectOptions(screen.getByLabelText('Run with'), 'project-file');
     await user.click(screen.getAllByRole('button', { name: 'BROWSE' })[0]!);
-    expect(screen.getByLabelText('File *')).toHaveValue('scripts/tool.py');
+    expect(screen.getByLabelText('Target *')).toHaveValue('scripts/tool.py');
+    expect(screen.getByLabelText('Run with')).toHaveValue('python');
+    await user.click(screen.getByRole('button', { name: 'ADVANCED' }));
     await user.selectOptions(screen.getByLabelText('Location'), 'project-relative');
     await user.click(screen.getAllByRole('button', { name: 'BROWSE' })[1]!);
     expect(screen.getByLabelText('Folder *')).toHaveValue('scripts/tools');
-    await user.selectOptions(screen.getByLabelText('Option type'), 'project-path');
-    await user.click(screen.getByRole('button', { name: '+ ADD OPTION' }));
-    await user.click(screen.getAllByRole('button', { name: 'BROWSE' })[2]!);
-    expect(screen.getAllByLabelText('File *')[1]).toHaveValue('config/default.toml');
     await user.click(screen.getAllByRole('button', { name: 'BROWSE' })[0]!);
-    expect(screen.getAllByLabelText('File *')[0]).toHaveValue('scripts/tool.py');
+    expect(screen.getByLabelText('Target *')).toHaveValue('scripts/tool.py');
     expect(screen.queryByText(/Could not choose/)).not.toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'CANCEL' }));
 
-    expect(screen.getByRole('button', { name: 'DELETE SHORTCUT' })).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'DELETE SHORTCUT' }));
+    expect(screen.getByRole('button', { name: 'DELETE' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'DELETE' }));
     expect(screen.getByRole('dialog', { name: 'Delete shortcut' })).toHaveTextContent('does not delete the tool or any files');
     await user.click(screen.getByRole('button', { name: 'CANCEL' }));
     expect(deleteShortcuts).not.toHaveBeenCalled();
     await user.click(shortcutRows().getByRole('button', { name: 'Shared command' }));
-    expect(screen.queryByRole('button', { name: 'DELETE SHORTCUT' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'DELETE' })).not.toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: 'MANAGE' }));
     expect(screen.getByRole('checkbox', { name: /Shared command/ })).toBeDisabled();

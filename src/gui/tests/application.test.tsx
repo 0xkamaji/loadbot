@@ -375,9 +375,9 @@ describe('headless capability and application boundary', () => {
     application.start();
     await vi.waitFor(() => expect(application.getSnapshot().inventory.status).toBe('ready'));
 
-    application.actions.openRecipeCreator('run');
+    application.actions.openRecipeCreator();
     application.actions.updateRecipeDetails({ name: 'build', description: 'Build it' });
-    application.actions.setRecipeProgram({ type: 'executable', name: 'cargo' });
+    application.actions.setRecipeTarget('scripts/build.py');
     application.actions.addRecipeParameter('literal');
     const literal = application.getSnapshot().recipeEditor!.draft.arguments[0]!;
     application.actions.updateRecipeParameter(literal.key, { type: 'literal', value: 'build' });
@@ -389,17 +389,18 @@ describe('headless capability and application boundary', () => {
     expect(await application.actions.saveRecipe()).toBe(true);
     expect(managed.addRecipeShortcut).toHaveBeenCalledWith(expect.objectContaining({
       catalog: 'one', tool: 'demo', name: 'build', recipe: expect.objectContaining({
-        behavior: 'run', arguments: [expect.objectContaining({ id: 'release' }), { type: 'literal', value: 'build' }],
+        behavior: 'run', program: { type: 'interpreter', runner: 'python' },
+        arguments: [{ type: 'project-path', path: 'scripts/build.py' }, expect.objectContaining({ id: 'release' }), { type: 'literal', value: 'build' }],
       }),
     }));
     expect(application.getSnapshot().shortcut).toMatchObject({ name: 'build', recipe: { behavior: 'run' } });
     expect(application.getSnapshot().recipeEditor).toBeUndefined();
 
     expect(application.actions.openSelectedRecipeEditor()).toBe(true);
-    application.actions.setRecipeBehavior('launch');
+    application.actions.setRecipeRunner('bash');
     expect(await application.actions.saveRecipe()).toBe(true);
-    expect(managed.updateRecipeShortcut).toHaveBeenCalledWith(expect.objectContaining({ name: 'build', recipe: expect.objectContaining({ behavior: 'launch' }) }));
-    expect(application.getSnapshot().shortcut).toMatchObject({ recipe: { behavior: 'launch' } });
+    expect(managed.updateRecipeShortcut).toHaveBeenCalledWith(expect.objectContaining({ name: 'build', recipe: expect.objectContaining({ behavior: 'run', program: { type: 'interpreter', runner: 'bash' } }) }));
+    expect(application.getSnapshot().shortcut).toMatchObject({ recipe: { behavior: 'run' } });
     expect(application.getSnapshot().activity.map((entry) => entry.operation)).toContain('shortcut-update');
   });
 
@@ -408,7 +409,7 @@ describe('headless capability and application boundary', () => {
     const application = createLoadbotApplication(managed);
     application.start();
     await vi.waitFor(() => expect(application.getSnapshot().inventory.status).toBe('ready'));
-    application.actions.openRecipeCreator('run');
+    application.actions.openRecipeCreator();
     expect(await application.actions.saveRecipe()).toBe(false);
     expect(application.getSnapshot().recipeEditor?.errors).toContain('Shortcut name is required.');
     expect(managed.addRecipeShortcut).not.toHaveBeenCalled();
@@ -420,27 +421,23 @@ describe('headless capability and application boundary', () => {
     const managed = adapter(async () => [{ catalog: 'one', tool: 'demo', entries: [] }]);
     managed.chooseProjectFile = vi.fn()
       .mockResolvedValueOnce('scripts/tool.py')
-      .mockResolvedValueOnce('config/default.toml')
       .mockResolvedValueOnce(undefined);
     managed.chooseProjectDirectory = vi.fn(async () => 'scripts/tools');
     const application = createLoadbotApplication(managed);
     application.start();
     await vi.waitFor(() => expect(application.getSnapshot().inventory.status).toBe('ready'));
-    application.actions.openRecipeCreator('run');
-    application.actions.setRecipeProgram({ type: 'project-file', path: 'old.py' });
-    expect(await application.actions.chooseRecipeProgramFile()).toBe(true);
-    expect(application.getSnapshot().recipeEditor?.draft.recipe.program).toEqual({ type: 'project-file', path: 'scripts/tool.py' });
-    application.actions.addRecipeParameter('project-path');
-    const argument = application.getSnapshot().recipeEditor!.draft.arguments[0]!;
-    expect(await application.actions.chooseRecipeArgumentPath(argument.key)).toBe(true);
-    expect(application.getSnapshot().recipeEditor?.draft.arguments[0]?.value).toEqual({ type: 'project-path', path: 'config/default.toml' });
+    application.actions.openRecipeCreator();
+    application.actions.setRecipeTarget('old.py');
+    expect(await application.actions.chooseRecipeTarget()).toBe(true);
+    expect(application.getSnapshot().recipeEditor?.draft.target).toBe('scripts/tool.py');
+    expect(application.getSnapshot().recipeEditor?.draft.runner).toBe('python');
     expect(await application.actions.chooseRecipeWorkingDirectory()).toBe(true);
-    expect(application.getSnapshot().recipeEditor?.draft.recipe.working_directory).toEqual({ type: 'project-relative', path: 'scripts/tools' });
-    expect(await application.actions.chooseRecipeProgramFile()).toBe(false);
-    expect(application.getSnapshot().recipeEditor?.draft.recipe.program).toEqual({ type: 'project-file', path: 'scripts/tool.py' });
+    expect(application.getSnapshot().recipeEditor?.draft.workingDirectory).toEqual({ type: 'project-relative', path: 'scripts/tools' });
+    expect(await application.actions.chooseRecipeTarget()).toBe(false);
+    expect(application.getSnapshot().recipeEditor?.draft.target).toBe('scripts/tool.py');
     application.actions.addRecipeParameter('file');
-    expect(managed.chooseProjectFile).toHaveBeenCalledTimes(3);
-    expect(application.getSnapshot().recipeEditor?.draft.arguments[1]?.value).toMatchObject({ type: 'input', kind: 'file' });
+    expect(managed.chooseProjectFile).toHaveBeenCalledTimes(2);
+    expect(application.getSnapshot().recipeEditor?.draft.arguments[0]?.value).toMatchObject({ type: 'input', kind: 'file' });
     expect(application.getSnapshot().activity).toEqual([]);
   });
 

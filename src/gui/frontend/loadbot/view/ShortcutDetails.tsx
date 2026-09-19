@@ -1,5 +1,6 @@
 import { useId } from 'react';
 import type { LoadbotActions, LoadbotState } from '../application/controller';
+import { recipeDraftFromShortcut } from '../application/recipeEditor';
 import { Button, Checkbox, InputControl, PathSelector, StatusDisplay } from '../../ui/components';
 
 /** Chooses widgets and wording. Application state supplies values and validation. */
@@ -7,6 +8,7 @@ export function ShortcutDetails({ state, actions, mode }: { state: LoadbotState;
   const statusId = useId();
   const { project, shortcut, fields, values, missingInputIds } = state;
   if (!shortcut) return <div className="lb-details"><p>Select a shortcut to see its details.</p></div>;
+  const editableDraft = recipeDraftFromShortcut(shortcut);
   if (mode === 'local' || shortcut.recipe) return <div className="lb-details">
     <h3>{shortcut.name}</h3>
     {shortcut.description && <p>{shortcut.description}</p>}
@@ -18,18 +20,25 @@ export function ShortcutDetails({ state, actions, mode }: { state: LoadbotState;
         <dt>Target</dt><dd title={shortcut.path}>{shortcut.path}</dd></>}
       {shortcut.recipe && <><dt>Invocation</dt><dd>Recipe version {shortcut.recipe.version}</dd>
         <dt>Behavior</dt><dd>{shortcut.recipe.behavior === 'run' ? 'Run Recipe' : 'Launch Application'}</dd>
-        <dt>Runs with</dt><dd>{shortcut.recipe.program.type === 'project-file' ? `File in tool · ${shortcut.recipe.program.path}`
+        {editableDraft && <><dt>Target</dt><dd title={editableDraft.target}>{editableDraft.target}</dd>
+          <dt>Run with</dt><dd>{editableDraft.runner === 'direct' ? 'Direct / Program' : editableDraft.runner}</dd></>}
+        {!editableDraft && <><dt>Runs with</dt><dd>{shortcut.recipe.program.type === 'project-file' ? `File in tool · ${shortcut.recipe.program.path}`
           : shortcut.recipe.program.type === 'interpreter' ? `Interpreter · ${shortcut.recipe.program.runner}`
-            : `Program · ${shortcut.recipe.program.name}`}</dd>
+            : `Program · ${shortcut.recipe.program.name}`}</dd></>}
         <dt>Runs from</dt><dd>{shortcut.recipe.working_directory.type === 'project-relative'
           ? `Folder inside tool · ${shortcut.recipe.working_directory.path}` : shortcut.recipe.working_directory.type === 'target-parent' ? "File's folder" : 'Tool folder'}</dd>
-        <dt>Options</dt><dd>{shortcut.recipe.arguments.length || 'None'}</dd></>}
+        <dt>Parameters</dt><dd>{(editableDraft?.arguments.length ?? shortcut.recipe.arguments.length) || 'None'}</dd></>}
     </dl>
-    {mode === 'local' && shortcut.source === 'personal' && <div className="lb-shortcut-actions">
-      {shortcut.recipe && <Button className="lb-edit-recipe" onClick={() => actions.openSelectedRecipeEditor()}>EDIT RECIPE</Button>}
-      <Button className="lb-danger-action" onClick={actions.requestCurrentShortcutDeletion}>DELETE SHORTCUT</Button>
-    </div>}
-    {shortcut.recipe && shortcut.source === 'catalog' && <p className="lb-note">Shared catalog Recipes are read-only here.</p>}
+    {mode === 'local' && shortcut.source === 'personal' && <>
+      <div className="lb-shortcut-actions">
+        <Button className="lb-edit-recipe" disabled={!editableDraft}
+          title={!editableDraft ? 'This shortcut is preserved but cannot be safely edited in the simplified editor.' : undefined}
+          onClick={() => actions.openSelectedRecipeEditor()}>EDIT</Button>
+        <Button className="lb-danger-action" onClick={actions.requestCurrentShortcutDeletion}>DELETE</Button>
+      </div>
+      {!editableDraft && <p className="lb-note">This {shortcut.recipe?.behavior === 'launch' ? 'Launch shortcut' : shortcut.recipe ? 'advanced Recipe' : 'Legacy shortcut'} is preserved and read-only in the simplified editor.</p>}
+    </>}
+    {shortcut.source === 'catalog' && <p className="lb-note">Shared catalog shortcuts are read-only here.</p>}
     <p className="lb-note">Inventory details. Execution is not connected.</p>
   </div>;
   const missing = fields.filter((field) => missingInputIds.includes(field.id));

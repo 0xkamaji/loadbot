@@ -122,7 +122,7 @@ not an invented partial-health state or silent empty success.
 - `reloadInventory()` (local reread only; no fetch, pull, or synchronization)
 - `openProjectFolder(id)` (qualified identity to adapter; controlled result state)
 - `selectCatalog(name)` (session context only; no persistent default change or sync)
-- `addCatalog`, `addProject`, Legacy `addShortcut`, Recipe create/update, `syncCatalog` (centralized operation state)
+- `addCatalog`, `addProject`, compatibility `addShortcut`, structured shortcut create/update, `syncCatalog` (centralized operation state)
 - `selectBottomView(view)` (presentation-only Command/Activity choice)
 - `submitCommand(input)` (registered Loadbot read-only command over current application state)
 - `changeSampleInput(id, value)` / `useSamplePath(id)`

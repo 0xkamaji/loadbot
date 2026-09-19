@@ -1,10 +1,9 @@
 import { useEffect, useState, type FormEvent } from 'react';
-import type { LoadbotRunner } from '../contract';
 import type { LoadbotActions, LoadbotState, ManagementKind } from '../application/controller';
-import { Button, Checkbox, Dialog, InputControl, SelectControl, StatusDisplay, TextareaControl } from '../../ui/components';
+import { Button, Checkbox, Dialog, InputControl, StatusDisplay } from '../../ui/components';
 import { RecipeBuilder } from './RecipeBuilder';
 
-export type ManagementDialog = Extract<ManagementKind, 'add-catalog' | 'add-project' | 'add-shortcut'> | 'recipe-editor';
+export type ManagementDialog = Extract<ManagementKind, 'add-catalog' | 'add-project'> | 'recipe-editor';
 
 export function ManagementDialogs({ dialog, state, actions, onClose }: {
   dialog?: ManagementDialog; state: LoadbotState; actions: LoadbotActions; onClose(): void;
@@ -30,7 +29,7 @@ export function ManagementDialogs({ dialog, state, actions, onClose }: {
   if (dialog === 'recipe-editor' || state.recipeEditor) return <RecipeBuilder state={state} actions={actions} onClose={close} onDone={onClose} />;
   if (dialog === 'add-catalog') return <AddCatalogForm state={state} actions={actions} onClose={close} onDone={onClose} />;
   if (dialog === 'add-project') return <AddProjectForm state={state} actions={actions} onClose={close} onDone={onClose} />;
-  return <AddShortcutForm state={state} actions={actions} onClose={close} onDone={onClose} />;
+  return null;
 }
 
 function DeleteShortcutConfirmation({ state, actions }: { state: LoadbotState; actions: LoadbotActions }) {
@@ -96,43 +95,6 @@ function AddProjectForm({ state, actions, onClose, onDone }: FormProps) {
       <FormStatus state={state} kind="add-project" />
       <div className="lb-dialog-actions"><Button onClick={onClose} disabled={busy}>CANCEL</Button><Button type="submit" disabled={busy}>{busy ? 'ADDING…' : 'ADD PROJECT'}</Button></div>
     </form>
-  </Dialog>;
-}
-
-function AddShortcutForm({ state, actions, onClose, onDone }: FormProps) {
-  const [kind, setKind] = useState<'choose' | 'legacy'>('choose');
-  const [name, setName] = useState('');
-  const [path, setPath] = useState('');
-  const [description, setDescription] = useState('');
-  const [runner, setRunner] = useState<LoadbotRunner | ''>('');
-  const busy = state.management.status === 'submitting';
-  async function submit(event: FormEvent) {
-    event.preventDefault();
-    if (await actions.addShortcut({
-      name: name.trim(), path: path.trim(), description: description.trim() || undefined,
-      runner: runner || undefined,
-    })) onDone();
-  }
-  return <Dialog label="Add shortcut" onClose={onClose}>
-    <h2>ADD SHORTCUT / {state.project?.tool}</h2>
-    {kind === 'choose' ? <div className="lb-shortcut-kind">
-      <p>Tell Loadbot how you normally use this tool.</p>
-      <Button onClick={() => actions.openRecipeCreator('run')}>RUN RECIPE<span>Structured tool invocation with future observed output.</span></Button>
-      <Button onClick={() => actions.openRecipeCreator('launch')}>LAUNCH APPLICATION<span>Start an application and hand off its lifecycle.</span></Button>
-      <Button onClick={() => setKind('legacy')}>SIMPLE LEGACY SHORTCUT<span>Keep the existing path and optional runner workflow.</span></Button>
-      <div className="lb-dialog-actions"><Button onClick={onClose}>CANCEL</Button></div>
-    </div> :
-    <form onSubmit={submit}>
-      <InputControl autoFocus label="Shortcut name" value={name} onChange={(event) => setName(event.target.value)} required disabled={busy} />
-      <InputControl label="Repository-relative path" value={path} onChange={(event) => setPath(event.target.value)} required disabled={busy} placeholder="scripts/example.py" />
-      <TextareaControl label="Description (optional)" value={description} onChange={(event) => setDescription(event.target.value)} disabled={busy} />
-      <SelectControl label="Runner (optional)" value={runner} onChange={(event) => setRunner(event.target.value as LoadbotRunner | '')} disabled={busy}>
-        <option value="">Use file association</option><option value="direct">Direct</option><option value="bash">Bash</option>
-        <option value="sh">sh</option><option value="python">Python</option><option value="powershell">PowerShell</option>
-      </SelectControl>
-      <FormStatus state={state} kind="add-shortcut" />
-      <div className="lb-dialog-actions"><Button onClick={onClose} disabled={busy}>CANCEL</Button><Button type="submit" disabled={busy}>{busy ? 'ADDING…' : 'ADD SHORTCUT'}</Button></div>
-    </form>}
   </Dialog>;
 }
 

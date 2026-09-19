@@ -1,14 +1,15 @@
 import type {
   AddCatalogInput, AddProjectInput, AddShortcutInput, CatalogSyncActivity, CatalogSyncStage, LoadbotAdapter, LoadbotCatalog,
   LoadbotProject, LoadbotShortcut,
-  LoadbotRecipe, LoadbotRecipeArgument, ShortcutIdentity,
+  LoadbotRecipe, LoadbotRecipeArgument, LoadbotRunner, ShortcutIdentity,
 } from '../contract';
 import { projectKey, selectionKey, shortcutKey } from '../identity';
 import { completeLoadbotCommand, executeLoadbotCommand, type CommandCompletion, type CommandResult } from './command';
 import { initialValues, missingInputs, noSampleForms, type SampleField, type SampleForms, type SampleValues } from './sampleForms';
 import {
   addDraftArgument, draftValidation, moveDraftArgument, newRecipeDraft, recipeDraftFromShortcut,
-  recipeFromDraft, removeDraftArgument, updateDraftArgument, type RecipeDraft, type RecipeParameterKind,
+  recipeFromDraft, removeDraftArgument, updateDraftArgument, updateDraftRunner, updateDraftTarget,
+  type RecipeDraft, type RecipeParameterKind,
 } from './recipeEditor';
 
 export type InventoryState =
@@ -87,18 +88,18 @@ export interface LoadbotActions {
   addCatalog(input: AddCatalogInput): Promise<boolean>;
   addProject(input: Omit<AddProjectInput, 'catalog'>): Promise<boolean>;
   addShortcut(input: Omit<AddShortcutInput, 'catalog' | 'tool'>): Promise<boolean>;
-  openRecipeCreator(behavior: LoadbotRecipe['behavior']): void;
+  openRecipeCreator(): void;
   openSelectedRecipeEditor(): boolean;
   closeRecipeEditor(): void;
   updateRecipeDetails(values: Partial<Pick<RecipeDraft, 'name' | 'description'>>): void;
-  setRecipeBehavior(behavior: LoadbotRecipe['behavior']): void;
-  setRecipeProgram(program: LoadbotRecipe['program']): void;
+  setRecipeTarget(target: string): void;
+  setRecipeRunner(runner: LoadbotRunner): void;
   setRecipeWorkingDirectory(workingDirectory: LoadbotRecipe['working_directory']): void;
   addRecipeParameter(kind: RecipeParameterKind): void;
   updateRecipeParameter(key: number, value: LoadbotRecipeArgument, idManuallyEdited?: boolean): void;
   removeRecipeParameter(key: number): void;
   moveRecipeParameter(key: number, direction: -1 | 1): void;
-  chooseRecipeProgramFile(): Promise<boolean>;
+  chooseRecipeTarget(): Promise<boolean>;
   chooseRecipeArgumentPath(key: number): Promise<boolean>;
   chooseRecipeWorkingDirectory(): Promise<boolean>;
   saveRecipe(): Promise<boolean>;
@@ -323,8 +324,8 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
         return { catalog: created.catalog, projectId: projectKey(created), shortcutName: created.name };
       });
     },
-    openRecipeCreator(behavior) {
-      publish({ ...state, recipeEditor: { draft: newRecipeDraft(behavior), errors: [] } });
+    openRecipeCreator() {
+      publish({ ...state, recipeEditor: { draft: newRecipeDraft(), errors: [] } });
     },
     openSelectedRecipeEditor() {
       const draft = state.shortcut && recipeDraftFromShortcut(state.shortcut);
@@ -339,19 +340,17 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
       if (!state.recipeEditor) return;
       publish({ ...state, recipeEditor: { draft: { ...state.recipeEditor.draft, ...values }, errors: [] } });
     },
-    setRecipeBehavior(behavior) {
+    setRecipeTarget(target) {
       if (!state.recipeEditor) return;
-      publish({ ...state, recipeEditor: { draft: { ...state.recipeEditor.draft, recipe: { ...state.recipeEditor.draft.recipe, behavior } }, errors: [] } });
+      publish({ ...state, recipeEditor: { draft: updateDraftTarget(state.recipeEditor.draft, target), errors: [] } });
     },
-    setRecipeProgram(program) {
+    setRecipeRunner(runner) {
       if (!state.recipeEditor) return;
-      let working_directory = state.recipeEditor.draft.recipe.working_directory;
-      if (working_directory.type === 'target-parent' && program.type !== 'project-file') working_directory = { type: 'project-root' };
-      publish({ ...state, recipeEditor: { draft: { ...state.recipeEditor.draft, recipe: { ...state.recipeEditor.draft.recipe, program, working_directory } }, errors: [] } });
+      publish({ ...state, recipeEditor: { draft: updateDraftRunner(state.recipeEditor.draft, runner), errors: [] } });
     },
     setRecipeWorkingDirectory(working_directory) {
       if (!state.recipeEditor) return;
-      publish({ ...state, recipeEditor: { draft: { ...state.recipeEditor.draft, recipe: { ...state.recipeEditor.draft.recipe, working_directory } }, errors: [] } });
+      publish({ ...state, recipeEditor: { draft: { ...state.recipeEditor.draft, workingDirectory: working_directory }, errors: [] } });
     },
     addRecipeParameter(kind) {
       if (!state.recipeEditor) return;
@@ -369,14 +368,14 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
       if (!state.recipeEditor) return;
       publish({ ...state, recipeEditor: { draft: moveDraftArgument(state.recipeEditor.draft, key, direction), errors: [] } });
     },
-    async chooseRecipeProgramFile() {
+    async chooseRecipeTarget() {
       const editor = state.recipeEditor;
       const project = state.project;
       if (!editor || !project) return false;
       try {
         const path = await adapter.chooseProjectFile({ catalog: project.catalog, tool: project.tool });
         if (path === undefined) return false;
-        actions.setRecipeProgram({ type: 'project-file', path });
+        actions.setRecipeTarget(path);
         return true;
       } catch (error: unknown) {
         publish({ ...state, recipeEditor: { ...editor, errors: [errorMessage(error, 'Could not choose a project file.')] } });
@@ -429,7 +428,7 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
       const operation = editor.draft.mode === 'create' ? 'shortcut-add' : 'shortcut-update';
       const verb = editor.draft.mode === 'create' ? 'Creating' : 'Updating';
       const completed = editor.draft.mode === 'create' ? 'created' : 'updated';
-      const result = await mutation(kind, operation, `${verb} Recipe ${input.name}…`, `Recipe ${input.name} ${completed}.`, {
+      const result = await mutation(kind, operation, `${verb} shortcut ${input.name}…`, `Shortcut ${input.name} ${completed}.`, {
         catalog: project.catalog, project: project.tool, shortcut: input.name,
       }, async () => {
         const saved = editor.draft.mode === 'create'

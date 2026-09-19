@@ -50,26 +50,32 @@ inventory even with zero shortcuts, so the confirmed result can be selected afte
 the authoritative reread. Adding a definition does not silently pull/install its
 repository.
 
-`ADD SHORTCUT` targets the selected catalog-qualified installed project. Users may
-retain the compact Legacy path/runner workflow or author a structured Run Recipe or
-Launch Application Recipe. The Recipe builder edits the Phase 2 behavior, program,
-working-directory policy, and ordered argument primitives directly through the
-controller and adapter; it has no GUI-only persistence schema. Rust validates the
-installed project and fixed project-owned paths before atomically saving
-`shortcuts.toml`.
+`ADD SHORTCUT` targets the selected catalog-qualified installed project and opens
+one target-first workflow: name, project-owned target, runner, optional description,
+and ordered parameters. New GUI shortcuts are structured Run Recipes. Legacy is a
+compatibility format rather than a creation choice, and Launch remains a supported
+core behavior but is intentionally not offered for new GUI shortcuts yet. The form
+projects directly onto the Phase 2 Recipe model; it has no GUI-only persistence
+schema. Rust validates the installed project and fixed project-owned paths before
+atomically saving `shortcuts.toml`.
 
-Personal Recipes can be reopened and edited in place. Name/identity changes are
-deliberately deferred; updates preserve unrelated entries and unknown metadata and
-fail on a concurrent definition change. Legacy entries are not converted by opening
-them, and shared catalog Recipes remain read-only because their authority is the
-Git-backed `catalog.toml`. The preview of an incomplete draft is presentation-only
-and never becomes an execution command.
+Personal Run Recipes that map losslessly to target + runner + parameters can be
+reopened in the same editor. Direct targets use `ProjectFile`; interpreted targets
+use `Interpreter` with a leading fixed `ProjectPath`, which the form presents as the
+target rather than a parameter. Name/identity changes are deliberately deferred;
+updates preserve unrelated entries and unknown metadata and fail on a concurrent
+definition change. Launch, Executable, and other Recipes outside this safe editor
+subset remain inspectable and read-only instead of being normalized destructively.
+Legacy entries are likewise never converted, and shared catalog Recipes remain
+read-only because their authority is Git-backed `catalog.toml`. The preview of an
+incomplete draft is presentation-only and never becomes an execution command.
 
-The authoring UI translates the precise Recipe domain into task-oriented labels:
-users choose what runs the tool, where it runs from, and ordered options such as
-Ask for file, On/off flag, Flag + value, Fixed text, and File in tool. Stable
-parameter IDs are generated from their labels and remain under an Advanced
-disclosure; once edited explicitly, later label changes do not replace them.
+The authoring UI speaks in shortcut terms: Target, Run with, Parameters, and an
+Advanced `Run from` setting (Tool folder by default). Parameter choices are Value,
+File, Directory, Flag, Flag + Value, and Fixed Argument. These map to `Input`,
+`Switch`, and `Literal` without changing persistence. Stable parameter IDs are
+generated from their labels and remain under an Advanced disclosure; once edited
+explicitly, later label changes do not replace them.
 
 Project-owned files and folders use the official native Tauri dialog plugin through
 semantic `chooseProjectFile` and `chooseProjectDirectory` adapter capabilities. The

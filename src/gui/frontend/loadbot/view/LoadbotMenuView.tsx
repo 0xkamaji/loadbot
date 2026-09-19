@@ -153,7 +153,9 @@ export function LoadbotMenuView({ state, actions, host, mode, workspaceLayoutSto
             <div className="lb-section-title"><h2>SHORTCUTS <span>/ {project?.tool ?? 'Select a project'}</span></h2>{mode === 'local' && <div className="lb-shortcut-heading-actions">
               {state.shortcutManagement.active ? <Button className="lb-subtle-action" disabled={busy} onClick={actions.exitShortcutManagement}>DONE</Button>
                 : project?.entries.some((item) => item.source === 'personal') && <Button className="lb-subtle-action" disabled={busy} onClick={actions.enterShortcutManagement}>MANAGE</Button>}
-              {!state.shortcutManagement.active && <Button className="lb-subtle-action" disabled={!project || busy} onClick={() => { actions.clearManagementStatus(); setManagementDialog('add-shortcut'); }}>+ ADD SHORTCUT</Button>}
+              {!state.shortcutManagement.active && <Button className="lb-subtle-action" disabled={!project || busy} onClick={() => {
+                actions.clearManagementStatus(); actions.openRecipeCreator(); setManagementDialog('recipe-editor');
+              }}>+ ADD SHORTCUT</Button>}
             </div>}</div>
             <MenuList label="Shortcuts">
               {project?.entries.map((item) => state.shortcutManagement.active

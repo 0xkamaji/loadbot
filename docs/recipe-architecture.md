@@ -315,7 +315,7 @@ details. Tauri remains a thin structured bridge. The application/controller owns
 form/run state and bounded output. GUI buttons, Command actions and CLI rendering
 delegate to these same operations.
 
-## Implemented in Phases 2, 3, and 3B
+## Implemented in Phases 2, 3, 3B, and 3C
 
 Phase 2 implements the shared versioned model, backward-compatible loader,
 validation, semantic inventory inspection, typed runtime inputs, and pure resolution
@@ -345,6 +345,20 @@ machine paths never enter the Recipe. Runtime file/folder inputs remain definiti
 and are not selected while authoring. Phase 3B also adds leased, atomic personal
 shortcut deletion, including validate-all/save-once bulk deletion. Catalog commands
 remain read-only and no tool or target file is deleted.
+
+Phase 3C narrows the normal GUI creation surface without changing this domain model.
+The one Create Shortcut form requires a project-owned target, suggests an overridable
+runner from known filename extensions, and creates `behavior = run`. A direct target
+maps to `ProjectFile`; an interpreted target maps to `Interpreter` plus a leading
+`ProjectPath`. The remaining ordered GUI Parameters map to the existing `Input`,
+`Switch`, and `Literal` variants. Working directory and stable parameter IDs remain
+available under Advanced disclosure.
+
+Legacy creation and Launch creation are hidden from the ordinary GUI, but both
+formats remain supported by the core and are not migrated. The simplified editor
+opens only personal Run Recipes that it can round-trip losslessly. Launch Recipes,
+Executable-based Recipes, target-less interpreter Recipes, Legacy shortcuts, and
+shared catalog commands remain inspectable and read-only rather than being rewritten.
 
 ## Future phases
 

@@ -2120,7 +2120,6 @@ mod tests {
         let mut policy = crate::interaction::Unattended;
         let mut context = OperationContext::background(&mut policy);
         let reinstalled = tool_reinstall(&paths, "demo", Some("personal"), &mut context).unwrap();
-        eprintln!("Reinstalled notices: {:?}", reinstalled.notices);
         assert!(reinstalled.notices.iter().any(|notice| matches!(
             notice,
             Notice::ToolOperationStage {

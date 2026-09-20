@@ -144,6 +144,7 @@ fn backend_process_activity(event: loadbot::process::Event) -> Option<BackendAct
             program,
             arguments,
             directory,
+            ..
         } => {
             let command = std::iter::once(program)
                 .chain(arguments)
@@ -155,7 +156,7 @@ fn backend_process_activity(event: loadbot::process::Event) -> Option<BackendAct
             });
             log("command", text)
         }
-        Event::Output { stream, bytes } => log(
+        Event::Output { stream, bytes, .. } => log(
             match stream {
                 Stream::Stdout => "stdout",
                 Stream::Stderr => "stderr",
@@ -164,8 +165,10 @@ fn backend_process_activity(event: loadbot::process::Event) -> Option<BackendAct
         ),
         Event::Exited { status, .. } => log("system", format!("process exited with {status}")),
         Event::Cancelled { .. } => log("system", "process cancelled".into()),
-        Event::Failed { diagnostic } => log("system", diagnostic),
-        Event::OperationStarted | Event::OperationFinished { .. } | Event::Started { .. } => {
+        Event::Failed { diagnostic, .. } => log("system", diagnostic),
+        Event::OperationStarted { .. }
+        | Event::OperationFinished { .. }
+        | Event::Started { .. } => {
             return None;
         }
     })

@@ -33,7 +33,7 @@ describe('Loadbot command parser and registry', () => {
   it('generates help from the registered working commands', () => {
     const result = executeLoadbotCommand('help', context);
     expect(result).toEqual({ kind: 'help', commands: commandDefinitions });
-    expect(commandDefinitions.map((command) => command.name)).toEqual(['help', 'projects', 'shortcuts', 'inspect']);
+    expect(commandDefinitions.map((command) => command.name)).toEqual(['help', 'projects', 'shortcuts', 'inspect', 'pull', 'update', 'push', 'remove', 'reinstall', 'status']);
     expect(executeLoadbotCommand('help extra', context)).toMatchObject({ kind: 'error', code: 'usage', usage: 'help' });
   });
 

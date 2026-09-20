@@ -43,6 +43,12 @@ pub enum Commands {
         #[arg(long)]
         catalog: Option<String>,
     },
+    /// Push local commits to the configured remote for an installed tool.
+    Push {
+        name: Option<String>,
+        #[arg(long)]
+        catalog: Option<String>,
+    },
     /// Remove a managed local checkout while retaining its catalog entry.
     Remove {
         name: Option<String>,
@@ -187,12 +193,21 @@ mod tests {
 
     #[test]
     fn direct_tool_arguments_are_preserved() {
-        for command in ["pull", "update", "remove", "reinstall", "path", "status"] {
+        for command in [
+            "pull",
+            "update",
+            "push",
+            "remove",
+            "reinstall",
+            "path",
+            "status",
+        ] {
             let parsed =
                 Cli::try_parse_from(["loadbot", command, "demo", "--catalog", "personal"]).unwrap();
             let (name, catalog) = match parsed.command.unwrap() {
                 Commands::Pull { name, catalog }
                 | Commands::Update { name, catalog }
+                | Commands::Push { name, catalog }
                 | Commands::Remove { name, catalog }
                 | Commands::Reinstall { name, catalog }
                 | Commands::Path { name, catalog }

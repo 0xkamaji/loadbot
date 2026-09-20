@@ -75,6 +75,10 @@ fn collect_main_command<P: Prompt>(prompt: &mut P) -> Result<Option<Commands>> {
             name: None,
             catalog: None,
         }),
+        Some(MainMenuAction::Push) => Some(Commands::Push {
+            name: None,
+            catalog: None,
+        }),
         Some(MainMenuAction::List) => Some(Commands::List),
         Some(MainMenuAction::Path) => Some(Commands::Path {
             name: None,
@@ -105,6 +109,9 @@ fn dispatch_command(paths: &Paths, command: Commands) -> Result<()> {
         }
         Commands::Update { name, catalog } => {
             run_tool_named(paths, name, catalog, "update", operations::tool_update)
+        }
+        Commands::Push { name, catalog } => {
+            run_tool_named(paths, name, catalog, "push", operations::tool_push)
         }
         Commands::Remove { name, catalog } => {
             run_tool_named(paths, name, catalog, "remove", operations::tool_remove)
@@ -499,6 +506,7 @@ mod tests {
                     "Add a tool",
                     "Pull/install a tool",
                     "Update a tool",
+                    "Push a tool",
                     "List tools",
                     "Show tool path",
                     "Show tool status",
@@ -518,6 +526,7 @@ mod tests {
             vec!["add"],
             vec!["pull"],
             vec!["update"],
+            vec!["push"],
             vec!["list"],
             vec!["path"],
             vec!["status"],
@@ -533,7 +542,7 @@ mod tests {
 
     #[test]
     fn main_menu_exit_and_cancellation_do_not_dispatch() {
-        for selection in [Some(9), None] {
+        for selection in [Some(10), None] {
             assert!(
                 collect_main_command(&mut MenuPrompt(selection))
                     .unwrap()

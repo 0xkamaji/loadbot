@@ -1166,6 +1166,7 @@ path = "triage.py"
             "list",
             "path",
             "pull",
+            "push",
             "reinstall",
             "remove",
             "run",
@@ -1175,7 +1176,7 @@ path = "triage.py"
             "update"
         ]
     );
-    assert_eq!(complete(&["p"]), ["path", "pull"]);
+    assert_eq!(complete(&["p"]), ["path", "pull", "push"]);
     assert_eq!(
         complete(&["catalog", ""]),
         ["add", "list", "migrate", "path", "status", "sync"]
@@ -1454,6 +1455,7 @@ fn dynamic_completion_preserves_root_and_nested_commands() {
                 "list",
                 "path",
                 "pull",
+                "push",
                 "reinstall",
                 "remove",
                 "run",

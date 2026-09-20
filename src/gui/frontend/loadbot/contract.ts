@@ -119,6 +119,7 @@ export interface LoadbotAdapter {
   openProjectFolder(project: Pick<LoadbotProject, 'catalog' | 'tool'>): Promise<void>;
   openProjectTerminal?(project: ProjectIdentity): Promise<void>;
   pullProject?(project: ProjectIdentity, onActivity?: ProjectOperationActivitySink): Promise<ProjectIdentity>;
+  pushProject?(project: ProjectIdentity, onActivity?: ProjectOperationActivitySink): Promise<ProjectIdentity>;
   updateProject?(project: ProjectIdentity, onActivity?: ProjectOperationActivitySink): Promise<ProjectIdentity>;
   removeProject?(project: ProjectIdentity, onActivity?: ProjectOperationActivitySink): Promise<ProjectIdentity>;
   reinstallProject?(project: ProjectIdentity, onActivity?: ProjectOperationActivitySink): Promise<ProjectIdentity>;

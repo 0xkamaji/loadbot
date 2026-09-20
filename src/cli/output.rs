@@ -155,6 +155,9 @@ impl Renderer {
             Notice::ToolReinstalled { name, catalog_name } => {
                 println!("reinstalled tool '{name}' from catalog '{catalog_name}'")
             }
+            Notice::ToolPushed { name, catalog_name } => {
+                println!("pushed tool '{name}' from catalog '{catalog_name}'")
+            }
             Notice::SkippedCatalog { name, diagnostic } => eprintln!(
                 "warning: skipping catalog '{name}': {diagnostic}; run 'loadbot catalog status {name}' for details"
             ),

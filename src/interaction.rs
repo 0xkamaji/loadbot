@@ -316,6 +316,10 @@ pub enum Notice {
         old_commit: String,
         new_commit: String,
     },
+    ToolPushed {
+        name: String,
+        catalog_name: String,
+    },
     SkippedCatalog {
         name: String,
         diagnostic: String,
@@ -326,6 +330,7 @@ pub enum Notice {
 pub enum ToolOperation {
     Pull,
     Update,
+    Push,
     Remove,
     Reinstall,
 }
@@ -336,6 +341,7 @@ pub enum ToolOperationStage {
     CloningProject,
     ValidatingFreshCheckout,
     FetchingAndUpdating,
+    PushingCommits,
     RemovingCheckout,
     ReplacingCheckout,
 }
@@ -403,6 +409,7 @@ impl Notice {
                 | Self::PushUrlConfigured { .. }
                 | Self::ToolReconciled { .. }
                 | Self::ToolUpdated { .. }
+                | Self::ToolPushed { .. }
         )
     }
 }

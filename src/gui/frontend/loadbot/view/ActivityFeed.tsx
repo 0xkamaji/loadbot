@@ -13,6 +13,7 @@ const operationLabels: Record<ActivityEntry['operation'], string> = {
   'project-folder-open': 'Open Project Folder',
   'project-terminal-open': 'Open Project Terminal',
   'project-pull': 'Pull Project',
+  'project-push': 'Push Project',
   'project-update': 'Update Project',
   'project-remove': 'Remove Project',
   'project-reinstall': 'Reinstall Project',

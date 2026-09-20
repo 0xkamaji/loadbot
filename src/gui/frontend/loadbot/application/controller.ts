@@ -5,7 +5,7 @@ import type {
   ShortcutHelpResult, ShortcutIdentity,
 } from '../contract';
 import { projectKey, selectionKey, shortcutKey } from '../identity';
-import { completeLoadbotCommand, executeLoadbotCommand, type CommandCompletion, type CommandResult } from './command';
+import { completeLoadbotCommand, executeLoadbotCommand, parseCommandLine, resolveProject, type CommandCompletion, type CommandResult } from './command';
 import { initialValues, missingInputs, noSampleForms, type SampleField, type SampleForms, type SampleValues } from './sampleForms';
 import {
   addDraftArgument, draftValidation, moveDraftArgument, newRecipeDraft, recipeDraftFromShortcut,
@@ -24,7 +24,7 @@ export type CatalogState =
 export type ProjectFilter = 'installed' | 'all' | 'not-installed';
 export type ProjectLifecycleAction = 'remove' | 'reinstall';
 export type ManagementKind = 'add-catalog' | 'add-project' | 'add-shortcut' | 'update-shortcut' | 'delete-shortcut' | 'sync-catalog'
-  | 'pull-project' | 'update-project' | 'remove-project' | 'reinstall-project';
+  | 'pull-project' | 'push-project' | 'update-project' | 'remove-project' | 'reinstall-project';
 export type ManagementState =
   | { readonly status: 'idle' }
   | { readonly status: 'submitting'; readonly kind: ManagementKind; readonly message: string }
@@ -32,7 +32,7 @@ export type ManagementState =
   | { readonly status: 'cancelled'; readonly kind: ManagementKind; readonly message: string }
   | { readonly status: 'error'; readonly kind: ManagementKind; readonly message: string };
 export type ActivityOperation = 'catalog-sync' | 'catalog-add' | 'project-add' | 'shortcut-add' | 'shortcut-update' | 'shortcut-delete' | 'local-reload'
-  | 'project-folder-open' | 'project-terminal-open' | 'project-pull' | 'project-update' | 'project-remove' | 'project-reinstall';
+  | 'project-folder-open' | 'project-terminal-open' | 'project-pull' | 'project-push' | 'project-update' | 'project-remove' | 'project-reinstall';
 export type ActivityStatus = 'in-progress' | 'info' | 'success' | 'error' | 'cancelled';
 export type ActivityStage = CatalogSyncStage | ProjectOperationStage | 'started' | 'authoritative-reload' | 'catalog-state' | 'completed' | 'failed' | 'cancelled';
 export interface ActivityEntry {
@@ -115,7 +115,10 @@ export interface LoadbotActions {
   openProjectFolder(id: string): void;
   openProjectTerminal(id: string): void;
   pullProject(): Promise<boolean>;
+  pushProject(): Promise<boolean>;
   updateProject(): Promise<boolean>;
+  removeProject(): Promise<boolean>;
+  reinstallProject(): Promise<boolean>;
   requestProjectAction(action: ProjectLifecycleAction): void;
   cancelProjectAction(): void;
   confirmProjectAction(): Promise<boolean>;
@@ -421,6 +424,30 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
         return { catalog: updated.catalog, projectId: projectKey(updated) };
       });
     },
+    async pushProject() {
+      const project = state.project;
+      if (!project || project.installed === false || !adapter.pushProject) return false;
+      return mutation('push-project', 'project-push', `Pushing ${project.tool}…`, `Project ${project.tool} pushed.`, { catalog: project.catalog, project: project.tool }, async (operation) => {
+        const pushed = await adapter.pushProject!({ catalog: project.catalog, tool: project.tool }, projectProgress(operation, 'project-push'));
+        return { catalog: pushed.catalog, projectId: projectKey(pushed) };
+      });
+    },
+    async removeProject() {
+      const project = state.project;
+      if (!project || project.installed === false || !adapter.removeProject) return false;
+      return mutation('remove-project', 'project-remove', `Removing ${project.tool}…`, `Project ${project.tool} removed.`, { catalog: project.catalog, project: project.tool }, async (operation) => {
+        const removed = await adapter.removeProject!({ catalog: project.catalog, tool: project.tool }, projectProgress(operation, 'project-remove'));
+        return { catalog: removed.catalog, projectId: projectKey(removed), projectFilter: 'not-installed' };
+      });
+    },
+    async reinstallProject() {
+      const project = state.project;
+      if (!project || project.installed === false || !adapter.reinstallProject) return false;
+      return mutation('reinstall-project', 'project-reinstall', `Reinstalling ${project.tool}…`, `Project ${project.tool} reinstalled.`, { catalog: project.catalog, project: project.tool }, async (operation) => {
+        const reinstalled = await adapter.reinstallProject!({ catalog: project.catalog, tool: project.tool }, projectProgress(operation, 'project-reinstall'));
+        return { catalog: reinstalled.catalog, projectId: projectKey(reinstalled), projectFilter: 'installed' };
+      });
+    },
     requestProjectAction(action) {
       const project = state.project;
       if (!project || project.installed === false || state.management.status === 'submitting') return;
@@ -714,6 +741,36 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
         currentCatalog: state.currentCatalog,
         selectedProject: state.project,
       });
+      // Execute lifecycle commands via the corresponding actions
+      const parsed = parseCommandLine(submitted);
+      if (!('kind' in parsed) && parsed.tokens.length > 0) {
+        const [commandName, ...args] = parsed.tokens;
+        const project = args[0] ? resolveProject(args[0], {
+          inventoryStatus: state.inventory.status,
+          projects,
+          currentCatalog: state.currentCatalog,
+          selectedProject: state.project,
+        }) : state.project;
+        if (project && !('kind' in project)) {
+          switch (commandName) {
+            case 'pull':
+              actions.pullProject();
+              break;
+            case 'push':
+              actions.pushProject();
+              break;
+            case 'update':
+              actions.updateProject();
+              break;
+            case 'remove':
+              actions.removeProject();
+              break;
+            case 'reinstall':
+              actions.reinstallProject();
+              break;
+          }
+        }
+      }
       publish({
         ...state,
         command: {

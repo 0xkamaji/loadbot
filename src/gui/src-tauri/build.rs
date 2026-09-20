@@ -9,6 +9,7 @@ fn main() {
             "add_loadbot_project",
             "pull_loadbot_project",
             "update_loadbot_project",
+            "push_loadbot_project",
             "remove_loadbot_project",
             "reinstall_loadbot_project",
             "add_loadbot_shortcut",

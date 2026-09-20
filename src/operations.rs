@@ -1326,6 +1326,45 @@ pub fn tool_update(
 
 /// Remove an installed managed checkout while retaining its catalog entry.
 /// Both uncommitted changes and commits not present on `origin` fail closed.
+
+/// Push local commits to the configured remote for an installed managed tool.
+/// The repository must be a valid managed checkout with a clean working tree.
+/// Uses the configured push URL if present, otherwise falls back to the origin URL.
+pub fn tool_push(
+    paths: &Paths,
+    name: &str,
+    catalog_name: Option<&str>,
+    context: &mut OperationContext<'_>,
+) -> Result<MutationOutcome> {
+    let _process_scope = crate::process::scope(&context.process);
+    context.process.cancellation.check()?;
+    let notice_start = context.notices.len();
+    let tool = resolve_tool(paths, name, catalog_name, context)?;
+    let destination = paths.tool(&tool.catalog, &tool.name)?;
+    let _repository_lease = context.lease(&destination)?;
+    let _configuration_snapshot = context.watch(&paths.config())?;
+    let _catalog_snapshot = context.watch(&paths.catalog_file(&tool.catalog))?;
+    context.record(Notice::ToolOperationStage {
+        operation: ToolOperation::Push,
+        stage: ToolOperationStage::ValidatingCheckout,
+        name: tool.name.clone(),
+        catalog_name: tool.catalog.clone(),
+    });
+    validate_destructive_checkout(paths, &tool, &destination, context)?;
+    context.record(Notice::ToolOperationStage {
+        operation: ToolOperation::Push,
+        stage: ToolOperationStage::PushingCommits,
+        name: tool.name.clone(),
+        catalog_name: tool.catalog.clone(),
+    });
+    git::push_origin(&destination, context)
+        .with_context(|| format!("could not push tool '{name}'"))?;
+    context.record(Notice::ToolPushed {
+        name: tool.name,
+        catalog_name: tool.catalog,
+    });
+    Ok(context.outcome_since(notice_start))
+}
 pub fn tool_remove(
     paths: &Paths,
     name: &str,

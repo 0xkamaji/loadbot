@@ -672,27 +672,27 @@ fn menus_delegate_and_cancel_without_changing_saved_definitions() {
         child.wait_with_output().unwrap()
     };
     let before = fs::read(&file).unwrap();
-    let listing = terminal(b"8\n2\n");
+    let listing = terminal(b"9\n2\n");
     assert!(listing.status.success());
     let text = String::from_utf8(listing.stdout)
         .unwrap()
         .replace("\r\n", "\n");
-    assert!(text.contains("8. Manage shortcuts"));
+    assert!(text.contains("9. Manage shortcuts"));
     assert!(text.contains("Shortcuts:"));
     assert!(
         text.ends_with(&String::from_utf8(cli(&fixture, &["shortcut", "list"]).stdout).unwrap())
     );
     for input in [
-        b"10\n".as_slice(),
+        b"11\n".as_slice(),
         b"q\n",
-        b"8\n4\n",
-        b"8\n3\nq\n",
-        b"8\n3\n1\nn\n",
+        b"9\n4\n",
+        b"9\n3\nq\n",
+        b"9\n3\n1\nn\n",
     ] {
         assert!(terminal(input).status.success());
         assert_eq!(fs::read(&file).unwrap(), before);
     }
-    let removed = terminal(b"8\n3\n1\ny\n");
+    let removed = terminal(b"9\n3\n1\ny\n");
     assert!(removed.status.success());
     assert!(shortcuts::load(&file).unwrap().shortcuts.is_empty());
     assert!(!fixture.0.join("data").exists());

@@ -14,6 +14,7 @@ export interface ManagementBridge {
   readCatalogs(): Promise<unknown>;
   openProjectTerminal?(project: ProjectIdentity): Promise<unknown>;
   pullProject?(project: ProjectIdentity, onActivity?: ProjectOperationActivitySink): Promise<unknown>;
+  pushProject?(project: ProjectIdentity, onActivity?: ProjectOperationActivitySink): Promise<unknown>;
   updateProject?(project: ProjectIdentity, onActivity?: ProjectOperationActivitySink): Promise<unknown>;
   removeProject?(project: ProjectIdentity, onActivity?: ProjectOperationActivitySink): Promise<unknown>;
   reinstallProject?(project: ProjectIdentity, onActivity?: ProjectOperationActivitySink): Promise<unknown>;
@@ -50,6 +51,7 @@ const nativeManagementBridge: ManagementBridge = {
     return invoke('open_loadbot_project_terminal', { ...project });
   },
   async pullProject(project, onActivity) { return invokeProjectOperation('pull_loadbot_project', project, onActivity); },
+  async pushProject(project, onActivity) { return invokeProjectOperation('push_loadbot_project', project, onActivity); },
   async updateProject(project, onActivity) { return invokeProjectOperation('update_loadbot_project', project, onActivity); },
   async removeProject(project, onActivity) { return invokeProjectOperation('remove_loadbot_project', project, onActivity); },
   async reinstallProject(project, onActivity) { return invokeProjectOperation('reinstall_loadbot_project', project, onActivity); },
@@ -322,6 +324,10 @@ export function createTauriLoadbotAdapter(
     async updateProject(project, onActivity) {
       try { return projectIdentity(await management.updateProject?.(project, onActivity)); }
       catch (error: unknown) { throw nativeError(error, 'Could not update the project.'); }
+    },
+    async pushProject(project, onActivity) {
+      try { return projectIdentity(await management.pushProject?.(project, onActivity)); }
+      catch (error: unknown) { throw nativeError(error, 'Could not push the project.'); }
     },
     async removeProject(project, onActivity) {
       try { return projectIdentity(await management.removeProject?.(project, onActivity)); }

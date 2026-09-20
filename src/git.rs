@@ -41,10 +41,10 @@ pub enum RepositoryMatch {
     Mismatch,
 }
 
-#[derive(Debug, PartialEq, Eq)]
-struct GithubRepository {
-    owner: String,
-    name: String,
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct GitHubRepository {
+    pub owner: String,
+    pub name: String,
 }
 
 pub fn clone_repository(
@@ -413,22 +413,26 @@ pub fn repository_match(
     if normalize_url(&actual_url) == normalize_url(configured_url) {
         return Ok(RepositoryMatch::Exact);
     }
-    let configured_ssh = github_ssh_repository(configured_url, &[]);
-    let configured_https = github_https_repository(configured_url);
-    let configured = configured_https.as_ref().or(configured_ssh.as_ref());
+    let configured = github_repository_identity(configured_url, verified_aliases);
     let Some(configured) = configured else {
         return Ok(RepositoryMatch::Mismatch);
     };
-    let actual_https = github_https_repository(&actual_url);
-    let actual_ssh = github_ssh_repository(&actual_url, verified_aliases);
-    let actual = actual_https.as_ref().or(actual_ssh.as_ref());
+    let actual = github_repository_identity(&actual_url, verified_aliases);
     let Some(actual) = actual else {
         return Ok(RepositoryMatch::Mismatch);
     };
     if actual.owner.eq_ignore_ascii_case(&configured.owner)
         && actual.name.eq_ignore_ascii_case(&configured.name)
     {
-        if configured_ssh.is_some() && actual_https.is_some() {
+        // If both are canonical GitHub HTTPS, it's an exact match.
+        // If actual is HTTPS and configured is SSH, it's exact (legacy behavior:
+        // accepting HTTPS fetch for a configured SSH remote).
+        // Otherwise (actual SSH, configured HTTPS, or both SSH with aliases), it's equivalent.
+        let actual_is_canonical_https = actual_url.starts_with("https://github.com/");
+        let configured_is_canonical_https = configured_url.starts_with("https://github.com/");
+        if actual_is_canonical_https && configured_is_canonical_https {
+            Ok(RepositoryMatch::Exact)
+        } else if actual_is_canonical_https && !configured_is_canonical_https {
             Ok(RepositoryMatch::Exact)
         } else {
             Ok(RepositoryMatch::EquivalentGithub)
@@ -616,11 +620,55 @@ fn restore_remote_url(path: &Path, key: &str, urls: &[String]) -> Result<()> {
     Ok(())
 }
 
-fn github_https_repository(url: &str) -> Option<GithubRepository> {
+/// Canonical GitHub repository identity (owner/repo).
+/// Used for equivalence checks across different transport forms.
+pub fn github_repository_identity(
+    url: &str,
+    verified_aliases: &[String],
+) -> Option<GitHubRepository> {
+    // Try HTTPS github.com
+    if let Some(path) = url.strip_prefix("https://github.com/") {
+        return github_repository_path(path);
+    }
+    // Try SSH git@github.com:
+    if let Some(path) = url.strip_prefix("git@github.com:") {
+        return github_repository_path(path);
+    }
+    // Try SSH ssh://git@github.com/ (without port)
+    if let Some(path) = url.strip_prefix("ssh://git@github.com/") {
+        // Reject URLs with port (e.g., ssh://git@github.com:2222/...)
+        if path.contains(':') {
+            return None;
+        }
+        return github_repository_path(path);
+    }
+    // Try Rot-managed SSH aliases
+    if let Some(path) = url.strip_prefix("git@") {
+        let (host, path) = path.split_once(':')?;
+        if verified_aliases.iter().any(|alias| alias == host) {
+            return github_repository_path(path);
+        }
+    }
+    None
+}
+
+/// Extract GitHub repository identity using only canonical github.com hosts (no aliases).
+/// Used for read-only operations where we don't want to trust unverified aliases.
+pub fn github_repository_identity_canonical(url: &str) -> Option<GitHubRepository> {
+    github_repository_identity(url, &[])
+}
+
+fn github_https_repository(url: &str) -> Option<GitHubRepository> {
     github_repository_path(url.strip_prefix("https://github.com/")?)
 }
 
 fn github_https_read_url(url: &str) -> Option<String> {
+    // Convert SSH GitHub URLs to HTTPS read URLs
+    // Only accepts canonical github.com SSH forms (no aliases)
+    // Rejects already-HTTPS URLs (they don't need conversion)
+    if url.starts_with("https://github.com/") {
+        return None;
+    }
     let repository = github_ssh_repository(url, &[])?;
     if !repository
         .owner
@@ -658,29 +706,18 @@ fn configure_read_remote(path: &Path, configured_url: &str) -> Result<()> {
     Ok(())
 }
 
-fn github_ssh_repository(url: &str, verified_aliases: &[String]) -> Option<GithubRepository> {
-    if let Some(path) = url.strip_prefix("git@github.com:") {
-        return github_repository_path(path);
-    }
-    if let Some(path) = url.strip_prefix("ssh://git@github.com/") {
-        return github_repository_path(path);
-    }
-    let path = url.strip_prefix("git@")?;
-    let (host, path) = path.split_once(':')?;
-    verified_aliases
-        .iter()
-        .any(|alias| alias == host)
-        .then(|| github_repository_path(path))?
+fn github_ssh_repository(url: &str, verified_aliases: &[String]) -> Option<GitHubRepository> {
+    github_repository_identity(url, verified_aliases)
 }
 
-fn github_repository_path(path: &str) -> Option<GithubRepository> {
+fn github_repository_path(path: &str) -> Option<GitHubRepository> {
     let path = path.trim_end_matches('/');
     let path = path.strip_suffix(".git").unwrap_or(path);
     let (owner, name) = path.split_once('/')?;
     if owner.is_empty() || name.is_empty() || name.contains('/') {
         return None;
     }
-    Some(GithubRepository {
+    Some(GitHubRepository {
         owner: owner.to_owned(),
         name: name.to_owned(),
     })
@@ -1102,9 +1139,8 @@ fn urls_match(actual: &str, configured: &str) -> bool {
     if normalize_url(actual) == normalize_url(configured) {
         return true;
     }
-    let actual = github_https_repository(actual).or_else(|| github_ssh_repository(actual, &[]));
-    let configured =
-        github_https_repository(configured).or_else(|| github_ssh_repository(configured, &[]));
+    let actual = github_repository_identity_canonical(actual);
+    let configured = github_repository_identity_canonical(configured);
     matches!((actual, configured), (Some(actual), Some(configured))
         if actual.owner.eq_ignore_ascii_case(&configured.owner)
             && actual.name.eq_ignore_ascii_case(&configured.name))

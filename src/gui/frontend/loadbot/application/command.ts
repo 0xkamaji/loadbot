@@ -137,7 +137,7 @@ function projectCompletionCandidates(context: CommandContext): readonly CommandC
   return candidates;
 }
 
-function resolveProject(reference: string, context: CommandContext): LoadbotProject | CommandResult {
+export function resolveProject(reference: string, context: CommandContext): LoadbotProject | CommandResult {
   const separator = reference.indexOf('/');
   if (separator > 0 && separator < reference.length - 1) {
     const catalog = reference.slice(0, separator);
@@ -234,6 +234,90 @@ const definitions: readonly CommandDefinition[] = [
       if (!arguments_[1]) return { kind: 'project', project };
       const shortcut = resolveShortcut(arguments_[1], project);
       return 'kind' in shortcut ? shortcut : { kind: 'shortcut', project, shortcut };
+    },
+  },
+  {
+    name: 'pull', usage: 'pull <project>', summary: 'Pull/install a managed tool.',
+    complete(argumentIndex, _argumentsBefore, context) {
+      return argumentIndex === 0 ? projectCompletionCandidates(context) : [];
+    },
+    dispatch(arguments_, context) {
+      if (arguments_.length !== 1) return usage(this);
+      const unavailableResult = unavailable(context);
+      if (unavailableResult) return unavailableResult;
+      const project = resolveProject(arguments_[0], context);
+      if ('kind' in project) return project;
+      return { kind: 'error', code: 'unsupported-syntax', input: arguments_.join(' '), subject: 'pull requires Tauri backend' };
+    },
+  },
+  {
+    name: 'update', usage: 'update <project>', summary: 'Update a managed tool.',
+    complete(argumentIndex, _argumentsBefore, context) {
+      return argumentIndex === 0 ? projectCompletionCandidates(context) : [];
+    },
+    dispatch(arguments_, context) {
+      if (arguments_.length !== 1) return usage(this);
+      const unavailableResult = unavailable(context);
+      if (unavailableResult) return unavailableResult;
+      const project = resolveProject(arguments_[0], context);
+      if ('kind' in project) return project;
+      return { kind: 'error', code: 'unsupported-syntax', input: arguments_.join(' '), subject: 'update requires Tauri backend' };
+    },
+  },
+  {
+    name: 'push', usage: 'push <project>', summary: 'Push local commits for a managed tool.',
+    complete(argumentIndex, _argumentsBefore, context) {
+      return argumentIndex === 0 ? projectCompletionCandidates(context) : [];
+    },
+    dispatch(arguments_, context) {
+      if (arguments_.length !== 1) return usage(this);
+      const unavailableResult = unavailable(context);
+      if (unavailableResult) return unavailableResult;
+      const project = resolveProject(arguments_[0], context);
+      if ('kind' in project) return project;
+      return { kind: 'error', code: 'unsupported-syntax', input: arguments_.join(' '), subject: 'push requires Tauri backend' };
+    },
+  },
+  {
+    name: 'remove', usage: 'remove <project>', summary: 'Remove a managed tool checkout.',
+    complete(argumentIndex, _argumentsBefore, context) {
+      return argumentIndex === 0 ? projectCompletionCandidates(context) : [];
+    },
+    dispatch(arguments_, context) {
+      if (arguments_.length !== 1) return usage(this);
+      const unavailableResult = unavailable(context);
+      if (unavailableResult) return unavailableResult;
+      const project = resolveProject(arguments_[0], context);
+      if ('kind' in project) return project;
+      return { kind: 'error', code: 'unsupported-syntax', input: arguments_.join(' '), subject: 'remove requires Tauri backend' };
+    },
+  },
+  {
+    name: 'reinstall', usage: 'reinstall <project>', summary: 'Reinstall a managed tool.',
+    complete(argumentIndex, _argumentsBefore, context) {
+      return argumentIndex === 0 ? projectCompletionCandidates(context) : [];
+    },
+    dispatch(arguments_, context) {
+      if (arguments_.length !== 1) return usage(this);
+      const unavailableResult = unavailable(context);
+      if (unavailableResult) return unavailableResult;
+      const project = resolveProject(arguments_[0], context);
+      if ('kind' in project) return project;
+      return { kind: 'error', code: 'unsupported-syntax', input: arguments_.join(' '), subject: 'reinstall requires Tauri backend' };
+    },
+  },
+  {
+    name: 'status', usage: 'status <project>', summary: 'Show status of a managed tool.',
+    complete(argumentIndex, _argumentsBefore, context) {
+      return argumentIndex === 0 ? projectCompletionCandidates(context) : [];
+    },
+    dispatch(arguments_, context) {
+      if (arguments_.length !== 1) return usage(this);
+      const unavailableResult = unavailable(context);
+      if (unavailableResult) return unavailableResult;
+      const project = resolveProject(arguments_[0], context);
+      if ('kind' in project) return project;
+      return { kind: 'error', code: 'unsupported-syntax', input: arguments_.join(' '), subject: 'status requires Tauri backend' };
     },
   },
 ];

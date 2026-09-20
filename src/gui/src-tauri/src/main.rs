@@ -125,6 +125,7 @@ fn backend_activity(notice: &Notice) -> Option<BackendActivity> {
                 ToolOperationStage::CloningProject => "cloning-project",
                 ToolOperationStage::ValidatingFreshCheckout => "validating-fresh-checkout",
                 ToolOperationStage::FetchingAndUpdating => "fetching-and-updating",
+                ToolOperationStage::PushingCommits => "pushing-commits",
                 ToolOperationStage::RemovingCheckout => "removing-checkout",
                 ToolOperationStage::ReplacingCheckout => "replacing-checkout",
             },
@@ -348,6 +349,22 @@ async fn update_loadbot_project(
         tool,
         on_activity,
         operations::tool_update,
+    )
+    .await
+}
+
+#[tauri::command]
+async fn push_loadbot_project(
+    catalog: String,
+    tool: String,
+    on_activity: Channel<BackendActivity>,
+) -> Result<ProjectIdentity, DesktopError> {
+    project_operation(
+        "project push",
+        catalog,
+        tool,
+        on_activity,
+        operations::tool_push,
     )
     .await
 }
@@ -736,6 +753,7 @@ fn main() {
             add_loadbot_project,
             pull_loadbot_project,
             update_loadbot_project,
+            push_loadbot_project,
             remove_loadbot_project,
             reinstall_loadbot_project,
             add_loadbot_shortcut,

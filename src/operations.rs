@@ -2117,13 +2117,10 @@ mod tests {
     #[test]
     fn remove_retains_catalog_entry_and_reinstall_creates_a_fresh_managed_checkout() {
         let (_temporary, paths, destination) = lifecycle_fixture();
-        let reinstalled = tool_reinstall(
-            &paths,
-            "demo",
-            Some("personal"),
-            &mut OperationContext::new(&mut crate::interaction::Unattended),
-        )
-        .unwrap();
+        let mut policy = crate::interaction::Unattended;
+        let mut context = OperationContext::background(&mut policy);
+        let reinstalled = tool_reinstall(&paths, "demo", Some("personal"), &mut context).unwrap();
+        eprintln!("Reinstalled notices: {:?}", reinstalled.notices);
         assert!(reinstalled.notices.iter().any(|notice| matches!(
             notice,
             Notice::ToolOperationStage {
@@ -2143,15 +2140,19 @@ mod tests {
         assert!(git::is_repository(&destination).unwrap());
         let installed_inventory = crate::launcher::read_project_inventory(
             &paths,
-            &mut OperationContext::new(&mut crate::interaction::Unattended),
+            &mut OperationContext::background(&mut crate::interaction::Unattended),
         )
         .unwrap();
-        assert!(installed_inventory[0].installed);
+        let demo_project = installed_inventory
+            .iter()
+            .find(|p| p.tool == "demo" && p.catalog == "personal")
+            .expect("demo project not found");
+        assert!(demo_project.installed);
         let removed = tool_remove(
             &paths,
             "demo",
             Some("personal"),
-            &mut OperationContext::new(&mut crate::interaction::Unattended),
+            &mut OperationContext::background(&mut crate::interaction::Unattended),
         )
         .unwrap();
         assert!(removed.notices.iter().any(|notice| matches!(
@@ -2179,17 +2180,21 @@ mod tests {
         );
         let listed = tool_list(
             &paths,
-            &mut OperationContext::new(&mut crate::interaction::Unattended),
+            &mut OperationContext::background(&mut crate::interaction::Unattended),
         )
         .unwrap();
         assert_eq!(listed.len(), 1);
         assert!(!listed[0].installed);
         let available_inventory = crate::launcher::read_project_inventory(
             &paths,
-            &mut OperationContext::new(&mut crate::interaction::Unattended),
+            &mut OperationContext::background(&mut crate::interaction::Unattended),
         )
         .unwrap();
-        assert!(!available_inventory[0].installed);
+        let demo_project = available_inventory
+            .iter()
+            .find(|p| p.tool == "demo" && p.catalog == "personal")
+            .expect("demo project not found");
+        assert!(!demo_project.installed);
     }
 
     #[test]
@@ -2978,8 +2983,7 @@ mod tests {
         let configured = "git@github.com:0xkamaji/loadbot-catalog.git";
         let read_url = "https://github.com/0xkamaji/loadbot-catalog.git";
         let mut policy = crate::interaction::Unattended;
-        let mut context = OperationContext::new(&mut policy);
-        context.process.terminal = false;
+        let mut context = OperationContext::background(&mut policy);
         catalog_add(
             &paths,
             "personal",

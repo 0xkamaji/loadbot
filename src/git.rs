@@ -898,10 +898,12 @@ fn authentication_context(error: anyhow::Error, original: &str) -> anyhow::Error
 }
 
 fn query_rot_identities() -> Result<Vec<RotIdentity>> {
+    let operation_id = crate::process::OperationId(rand::random());
     let output = crate::process::execute(
         Command::new("rot").args(["ssh", "identities", "--json"]),
         crate::process::Mode::Capture { limit: 1024 * 1024 },
         &crate::process::current_control(),
+        operation_id,
     )
     .map_err(|error| {
         if error
@@ -1033,12 +1035,14 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
+    let operation_id = crate::process::OperationId(rand::random());
     crate::process::execute(
         Command::new("git").args(arguments),
         crate::process::Mode::Capture {
             limit: 4 * 1024 * 1024,
         },
         control,
+        operation_id,
     )
     .context("could not execute Git (ensure Git is available in PATH)")
 }
@@ -1051,14 +1055,22 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
-    let mut command = network_git_command(arguments, !control.terminal);
+    let noninteractive = matches!(control.policy, crate::process::ExecutionPolicy::Background);
+    let mut command = network_git_command(arguments, noninteractive);
     let mode = crate::process::Mode::Capture {
         limit: 4 * 1024 * 1024,
     };
-    let output = if control.terminal {
-        crate::process::execute(&mut command, mode, control)
+    let operation_id = crate::process::OperationId(rand::random());
+    let output = if noninteractive {
+        crate::process::execute_with_timeout(
+            &mut command,
+            mode,
+            control,
+            NETWORK_GIT_TIMEOUT,
+            operation_id,
+        )
     } else {
-        crate::process::execute_with_timeout(&mut command, mode, control, NETWORK_GIT_TIMEOUT)
+        crate::process::execute(&mut command, mode, control, operation_id)
     };
     output.context(
         "could not execute network Git operation (ensure Git and SSH are available in PATH)",
@@ -1642,7 +1654,7 @@ mod tests {
     #[test]
     fn noninteractive_network_executor_preserves_success_and_real_stderr() {
         let control = crate::process::Control {
-            terminal: false,
+            policy: crate::process::ExecutionPolicy::Background,
             ..crate::process::Control::default()
         };
         let success = raw_network_output_control(["--version"], &control).unwrap();

@@ -101,7 +101,7 @@ pub fn safe_target(root: &Path, relative: &Path) -> Result<PathBuf> {
 pub fn launch_file(target: &Path) -> Result<()> {
     launch_file_in(
         target,
-        &mut OperationContext::new(&mut crate::interaction::Unattended),
+        &mut OperationContext::background(&mut crate::interaction::Unattended),
     )
 }
 
@@ -151,7 +151,7 @@ pub fn launch_with_runner(target: &Path, working_directory: &Path, runner: Runne
         target,
         working_directory,
         runner,
-        &mut OperationContext::new(&mut crate::interaction::Unattended),
+        &mut OperationContext::background(&mut crate::interaction::Unattended),
     )
 }
 
@@ -288,6 +288,7 @@ fn run_help_attempt(
         let mut command = Command::new(target);
         command.arg(flag).current_dir(working_directory);
         let attempted = rendered_command(&command);
+        let operation_id = crate::process::OperationId(rand::random());
         let output = crate::process::execute_with_timeout(
             &mut command,
             crate::process::Mode::Capture {
@@ -295,6 +296,7 @@ fn run_help_attempt(
             },
             &context.process,
             timeout,
+            operation_id,
         )
         .with_context(|| format!("could not inspect help for {}", target.display()))?;
         return Ok((output, attempted));
@@ -305,6 +307,7 @@ fn run_help_attempt(
         script_argument(&mut command, target, working_directory, executable)?;
         command.arg(flag).current_dir(working_directory);
         let attempted = rendered_command(&command);
+        let operation_id = crate::process::OperationId(rand::random());
         match crate::process::execute_with_timeout(
             &mut command,
             crate::process::Mode::Capture {
@@ -312,6 +315,7 @@ fn run_help_attempt(
             },
             &context.process,
             timeout,
+            operation_id,
         ) {
             Err(error)
                 if error
@@ -380,13 +384,19 @@ fn run_command_in(
     context: &mut OperationContext<'_>,
 ) -> Result<()> {
     command.current_dir(working_directory);
-    let output = crate::process::execute(&mut command, context.tool_mode, &context.process)
-        .with_context(|| {
-            format!(
-                "could not launch {}; the required executable may not be available",
-                target.display()
-            )
-        })?;
+    let operation_id = crate::process::OperationId(rand::random());
+    let output = crate::process::execute(
+        &mut command,
+        context.tool_mode,
+        &context.process,
+        operation_id,
+    )
+    .with_context(|| {
+        format!(
+            "could not launch {}; the required executable may not be available",
+            target.display()
+        )
+    })?;
     successful_status(output.status, target)
 }
 

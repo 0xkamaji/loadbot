@@ -199,8 +199,7 @@ async fn open_loadbot_project(catalog: String, tool: String) -> Result<(), Deskt
         let result = (|| -> anyhow::Result<()> {
             let paths = Paths::discover()?;
             let mut policy = Unattended;
-            let mut context = OperationContext::new(&mut policy);
-            context.process.terminal = false;
+            let mut context = OperationContext::background(&mut policy);
             let directory =
                 launcher::resolve_project_directory(&paths, &catalog, &tool, &mut context)?;
             open_directory(&directory)
@@ -223,8 +222,7 @@ async fn open_loadbot_project_terminal(catalog: String, tool: String) -> Result<
         let result = (|| -> anyhow::Result<()> {
             let paths = Paths::discover()?;
             let mut policy = Unattended;
-            let mut context = OperationContext::new(&mut policy);
-            context.process.terminal = false;
+            let mut context = OperationContext::background(&mut policy);
             let directory =
                 launcher::resolve_project_directory(&paths, &catalog, &tool, &mut context)?;
             open_terminal(&directory)
@@ -556,8 +554,7 @@ where
             let paths = Paths::discover()?;
             let process_activity = activity.clone();
             let mut policy = DesktopInteraction { activity };
-            let mut context = OperationContext::new(&mut policy);
-            context.process.terminal = false;
+            let mut context = OperationContext::background(&mut policy);
             if let Some(channel) = process_activity {
                 context.process.observer = Some(Arc::new(move |event| {
                     if let Some(activity) = backend_process_activity(event) {

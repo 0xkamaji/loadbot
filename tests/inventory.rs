@@ -12,7 +12,7 @@ use loadbot::{
     launcher::{self, EntrySource},
     operations,
     paths::Paths,
-    process::Event,
+    process::{Event, ExecutionPolicy},
     recipe::{
         InvocationBehavior, RecipeArgument, RecipeDefinition, RecipeProgram, StoredInvocation,
         WorkingDirectory,
@@ -124,7 +124,7 @@ fn help_request(target: &str) -> operations::ShortcutHelpRequest {
 }
 
 fn observe(context: &mut OperationContext<'_>) -> Arc<Mutex<Vec<Vec<String>>>> {
-    context.process.terminal = false;
+    context.process.policy = ExecutionPolicy::Background;
     let commands = Arc::new(Mutex::new(Vec::new()));
     let received = commands.clone();
     context.process.observer = Some(Arc::new(move |event| {
@@ -157,7 +157,7 @@ fn missing_optional_files_are_empty_and_create_nothing() {
     let root = tempfile::tempdir().unwrap();
     let before = snapshot(root.path());
     let mut policy = Unattended;
-    let mut context = OperationContext::new(&mut policy);
+    let mut context = OperationContext::background(&mut policy);
     let commands = observe(&mut context);
     assert!(
         launcher::read_project_inventory(&paths(root.path()), &mut context)
@@ -205,7 +205,7 @@ runner = "powershell"
     fs::write(&shortcuts, "version = 1\n[shortcuts.inspect]\ncatalog = 'alpha'\ntool = 'demo'\npath = 'recipes/inspect file.py'\n").unwrap();
     let before = snapshot(root.path());
     let mut policy = Unattended;
-    let mut context = OperationContext::new(&mut policy);
+    let mut context = OperationContext::background(&mut policy);
     let commands = observe(&mut context);
     let actual = launcher::read_project_inventory(&paths, &mut context).unwrap();
     let tools = operations::all_tools(&paths, &mut context).unwrap();
@@ -252,7 +252,7 @@ path = "triage.py"
 "#,
     );
     let mut policy = Unattended;
-    let mut context = OperationContext::new(&mut policy);
+    let mut context = OperationContext::background(&mut policy);
     let projects = launcher::read_project_inventory(&paths, &mut context).unwrap();
     let value = serde_json::to_value(&projects[0].entries[0]).unwrap();
     assert!(value.get("path").is_none());
@@ -295,7 +295,7 @@ fn existing_execution_entry_points_refuse_both_recipe_behaviors_without_spawning
         .unwrap();
     }
     let mut policy = Unattended;
-    let mut context = OperationContext::new(&mut policy);
+    let mut context = OperationContext::background(&mut policy);
     let starts = Arc::new(Mutex::new(Vec::new()));
     let received = starts.clone();
     context.process.observer = Some(Arc::new(move |event| {
@@ -341,7 +341,7 @@ runner = "sh"
 
     let before = snapshot(root.path());
     let mut policy = Unattended;
-    let mut context = OperationContext::new(&mut policy);
+    let mut context = OperationContext::background(&mut policy);
     let catalogs = operations::catalog_list(&paths, &mut context).unwrap();
     let inventory = launcher::read_project_inventory(&paths, &mut context).unwrap();
 
@@ -374,7 +374,7 @@ fn shared_shortcut_add_validates_project_target_duplicates_and_persists_atomical
     fs::create_dir_all(project.join("scripts")).unwrap();
     fs::write(project.join("scripts/run.py"), "print('safe')\n").unwrap();
     let mut policy = Unattended;
-    let mut context = OperationContext::new(&mut policy);
+    let mut context = OperationContext::background(&mut policy);
 
     let created = operations::shortcut_add(
         &paths,
@@ -434,7 +434,7 @@ fn recipe_shortcut_create_and_update_are_atomic_and_never_migrate_legacy_entries
     fs::create_dir_all(project.join("scripts")).unwrap();
     fs::write(project.join("scripts/tool.py"), "print('safe')\n").unwrap();
     let mut policy = Unattended;
-    let mut context = OperationContext::new(&mut policy);
+    let mut context = OperationContext::background(&mut policy);
     let recipe = RecipeDefinition {
         version: 1,
         behavior: InvocationBehavior::Run,
@@ -662,7 +662,7 @@ fn qualified_project_identity_resolves_the_existing_managed_directory_without_wr
     }
     let before = snapshot(root.path());
     let mut policy = Unattended;
-    let mut context = OperationContext::new(&mut policy);
+    let mut context = OperationContext::background(&mut policy);
 
     assert_eq!(
         launcher::resolve_project_directory(&paths, "alpha", "demo", &mut context).unwrap(),
@@ -688,7 +688,7 @@ fn project_picker_paths_are_portable_contained_and_type_checked() {
     let outside = root.path().join("outside.txt");
     fs::write(&outside, "outside").unwrap();
     let mut policy = Unattended;
-    let mut context = OperationContext::new(&mut policy);
+    let mut context = OperationContext::background(&mut policy);
 
     assert_eq!(
         operations::portable_project_path(
@@ -748,8 +748,7 @@ fn shortcut_help_uses_help_flag_captures_stdout_and_preserves_spaced_arguments()
     let (_temporary, paths, _project) =
         help_fixture("test -f help-marker || exit 7\nprintf 'Usage: help tool [options]\\n'\n");
     let mut policy = Unattended;
-    let mut context = OperationContext::new(&mut policy);
-    context.process.terminal = false;
+    let mut context = OperationContext::background(&mut policy);
     let result = operations::shortcut_help(
         &paths,
         &help_request("scripts with spaces/help tool.sh"),
@@ -773,8 +772,7 @@ fn shortcut_help_falls_back_to_short_flag_only_after_empty_long_help() {
     let (_temporary, paths, _project) =
         help_fixture("if [ \"$1\" = '-h' ]; then printf 'short help\\n'; else exit 2; fi\n");
     let mut policy = Unattended;
-    let mut context = OperationContext::new(&mut policy);
-    context.process.terminal = false;
+    let mut context = OperationContext::background(&mut policy);
     let result = operations::shortcut_help(
         &paths,
         &help_request("scripts with spaces/help tool.sh"),
@@ -795,8 +793,7 @@ fn shortcut_help_falls_back_to_short_flag_only_after_empty_long_help() {
 fn shortcut_help_accepts_useful_stderr_from_a_nonzero_exit() {
     let (_temporary, paths, _project) = help_fixture("printf 'usage from stderr\\n' >&2\nexit 9\n");
     let mut policy = Unattended;
-    let mut context = OperationContext::new(&mut policy);
-    context.process.terminal = false;
+    let mut context = OperationContext::background(&mut policy);
     let result = operations::shortcut_help(
         &paths,
         &help_request("scripts with spaces/help tool.sh"),
@@ -814,8 +811,7 @@ fn shortcut_help_accepts_useful_stderr_from_a_nonzero_exit() {
 fn shortcut_help_reports_empty_output_after_both_conservative_attempts() {
     let (_temporary, paths, _project) = help_fixture("exit 4\n");
     let mut policy = Unattended;
-    let mut context = OperationContext::new(&mut policy);
-    context.process.terminal = false;
+    let mut context = OperationContext::background(&mut policy);
     let result = operations::shortcut_help(
         &paths,
         &help_request("scripts with spaces/help tool.sh"),
@@ -838,8 +834,7 @@ fn shortcut_help_reports_empty_output_after_both_conservative_attempts() {
 fn shortcut_help_rejects_a_missing_project_target_without_spawning() {
     let (_temporary, paths, _project) = help_fixture("exit 0\n");
     let mut policy = Unattended;
-    let mut context = OperationContext::new(&mut policy);
-    context.process.terminal = false;
+    let mut context = OperationContext::background(&mut policy);
     let error =
         operations::shortcut_help(&paths, &help_request("scripts/missing.sh"), &mut context)
             .unwrap_err();
@@ -875,7 +870,7 @@ fn personal_bulk_delete_is_atomic_and_preserves_unrelated_metadata() {
     config::save_toml(&path, &file).unwrap();
     let before = fs::read(&path).unwrap();
     let mut policy = Unattended;
-    let mut context = OperationContext::new(&mut policy);
+    let mut context = OperationContext::background(&mut policy);
     let invalid = vec![
         operations::ShortcutIdentity {
             name: "first".into(),
@@ -954,7 +949,7 @@ fn skipped_catalog_is_an_explicit_failure_not_a_partial_or_empty_success() {
     fs::write(paths.config(), toml::to_string(&local).unwrap()).unwrap();
     let before = snapshot(root.path());
     let mut policy = Unattended;
-    let mut context = OperationContext::new(&mut policy);
+    let mut context = OperationContext::background(&mut policy);
     observe(&mut context);
     // This is the existing library's meaningful partial-result behavior.
     assert_eq!(
@@ -993,7 +988,7 @@ fn malformed_config_shortcuts_and_catalogs_fail_without_repair_or_fallback() {
     let paths = paths(root.path());
     fs::create_dir_all(paths.config().parent().unwrap()).unwrap();
     let mut policy = Unattended;
-    let mut context = OperationContext::new(&mut policy);
+    let mut context = OperationContext::background(&mut policy);
     observe(&mut context);
     fs::write(paths.config(), "not toml").unwrap();
     let before = snapshot(root.path());
@@ -1040,7 +1035,7 @@ fn broken_personal_references_remain_inventory_without_claiming_launchability() 
     fs::write(&file, "version = 1\n[shortcuts.orphan]\ncatalog = 'unregistered'\ntool = 'missing'\npath = 'missing.sh'\nrunner = 'bash'\n").unwrap();
     let before = snapshot(root.path());
     let mut policy = Unattended;
-    let mut context = OperationContext::new(&mut policy);
+    let mut context = OperationContext::background(&mut policy);
     let commands = observe(&mut context);
     let inventory = launcher::read_project_inventory(&paths, &mut context).unwrap();
     assert_eq!(inventory[0].catalog, "unregistered");

@@ -92,52 +92,99 @@ pub enum Stream {
     Stdout,
     Stderr,
 }
+
+/// Stable logical identity for a process execution within an operation.
+/// Allows correlating events across observers and the GUI without relying on OS PIDs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct ProcessId(pub u64);
+impl ProcessId {
+    pub fn random() -> Self {
+        Self(rand::random())
+    }
+}
+
+/// Stable logical identity for an operation.
+/// Allows correlating events across multiple processes and observers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct OperationId(pub u64);
+impl OperationId {
+    pub fn random() -> Self {
+        Self(rand::random())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Event {
-    OperationStarted,
+    OperationStarted {
+        operation_id: OperationId,
+    },
     OperationFinished {
+        operation_id: OperationId,
         outcome: crate::interaction::OperationStatus,
         partial: bool,
     },
     Starting {
+        operation_id: OperationId,
+        process_id: ProcessId,
         program: std::ffi::OsString,
         arguments: Vec<std::ffi::OsString>,
         directory: Option<std::path::PathBuf>,
     },
     Started {
+        operation_id: OperationId,
+        process_id: ProcessId,
         pid: u32,
     },
     Output {
+        operation_id: OperationId,
+        process_id: ProcessId,
         stream: Stream,
         bytes: Vec<u8>,
     },
     Exited {
+        operation_id: OperationId,
+        process_id: ProcessId,
         pid: u32,
         status: ExitStatus,
     },
     Cancelled {
+        operation_id: OperationId,
+        process_id: ProcessId,
         pid: u32,
     },
     Failed {
+        operation_id: OperationId,
+        process_id: ProcessId,
         diagnostic: String,
     },
 }
+
+/// Explicit execution policy for a process or operation.
+/// Replaces the ad-hoc combination of `Control::terminal` and `OperationContext::tool_mode`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecutionPolicy {
+    /// Interactive execution: inherits stdio, permits terminal access, allows credential prompting.
+    Interactive,
+    /// Background/headless execution: null stdin, piped stdout/stderr, no terminal access,
+    /// non-interactive credentials, bounded waits, no visible console window on Windows.
+    Background,
+}
+
 /// Callbacks run synchronously on the executor thread and must return promptly.
 /// Output is not retained here; consumers choose their own bounded storage.
 #[derive(Clone)]
 pub struct Control {
     pub cancellation: Cancellation,
     pub observer: Option<Arc<dyn Fn(Event) + Send + Sync>>,
-    /// CLI Git may prompt via /dev/tty despite captured stdout. GUI callers
-    /// must disable terminal access and use noninteractive credentials.
-    pub terminal: bool,
+    /// Execution policy governing stdio, terminal access, credentials, and platform flags.
+    pub policy: ExecutionPolicy,
 }
 impl Default for Control {
     fn default() -> Self {
         Self {
             cancellation: Cancellation::default(),
             observer: None,
-            terminal: true,
+            policy: ExecutionPolicy::Interactive,
         }
     }
 }
@@ -158,8 +205,13 @@ pub enum Mode {
     },
 }
 
-pub fn execute(command: &mut Command, mode: Mode, control: &Control) -> Result<Output> {
-    execute_bounded(command, mode, control, None)
+pub fn execute(
+    command: &mut Command,
+    mode: Mode,
+    control: &Control,
+    operation_id: OperationId,
+) -> Result<Output> {
+    execute_bounded(command, mode, control, None, operation_id)
 }
 
 pub fn execute_with_timeout(
@@ -167,8 +219,9 @@ pub fn execute_with_timeout(
     mode: Mode,
     control: &Control,
     timeout: Duration,
+    operation_id: OperationId,
 ) -> Result<Output> {
-    execute_bounded(command, mode, control, Some(timeout))
+    execute_bounded(command, mode, control, Some(timeout), operation_id)
 }
 
 fn execute_bounded(
@@ -176,19 +229,25 @@ fn execute_bounded(
     mode: Mode,
     control: &Control,
     timeout: Option<Duration>,
+    operation_id: OperationId,
 ) -> Result<Output> {
+    let process_id = ProcessId(rand::random());
     control.cancellation.check()?;
     control.emit(Event::Starting {
+        operation_id,
+        process_id,
         program: command.get_program().to_owned(),
         arguments: command.get_args().map(std::ffi::OsStr::to_owned).collect(),
         directory: command.get_current_dir().map(std::path::Path::to_owned),
     });
     control.cancellation.check()?;
-    let result = execute_inner(command, mode, control, timeout);
+    let result = execute_inner(command, mode, control, timeout, operation_id, process_id);
     if let Err(error) = &result
         && error.downcast_ref::<Cancelled>().is_none()
     {
         control.emit(Event::Failed {
+            operation_id,
+            process_id,
             diagnostic: format!("{error:#}"),
         });
     }
@@ -200,7 +259,10 @@ fn execute_inner(
     mode: Mode,
     control: &Control,
     timeout: Option<Duration>,
+    operation_id: OperationId,
+    process_id: ProcessId,
 ) -> Result<Output> {
+    let interactive = matches!(control.policy, ExecutionPolicy::Interactive);
     let piped = !matches!(mode, Mode::Inherit);
     if piped {
         command
@@ -213,12 +275,12 @@ fn execute_inner(
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());
     }
-    platform::prepare(command);
+    platform::prepare(command, control.policy);
     let mut child = ReapedChild(command.spawn().context("could not spawn process")?);
     let pid = child.id();
     let owner = match platform::Owner::new(
         &child,
-        !piped || (control.terminal && matches!(mode, Mode::Capture { .. })),
+        !piped || (interactive && matches!(mode, Mode::Capture { .. })),
     ) {
         Ok(owner) => owner,
         Err(error) => {
@@ -231,7 +293,11 @@ fn execute_inner(
             return Err(error);
         }
     };
-    control.emit(Event::Started { pid });
+    control.emit(Event::Started {
+        operation_id,
+        process_id,
+        pid,
+    });
     let (sender, receiver) = mpsc::sync_channel(16);
     let reader_stop = Arc::new(AtomicBool::new(false));
     let mut readers = Vec::new();
@@ -312,7 +378,12 @@ fn execute_inner(
                     buffer.extend_from_slice(&bytes[..bytes.len().min(room)]);
                     overflow |= bytes.len() > room;
                 }
-                control.emit(Event::Output { stream, bytes });
+                control.emit(Event::Output {
+                    operation_id,
+                    process_id,
+                    stream,
+                    bytes,
+                });
             }
             Ok((_, Err(error))) => read_error = Some(error),
             Err(mpsc::RecvTimeoutError::Disconnected) => {
@@ -331,7 +402,12 @@ fn execute_inner(
     }
     let status = status.unwrap();
     owner.finish().context(CleanupIncomplete)?;
-    control.emit(Event::Exited { pid, status });
+    control.emit(Event::Exited {
+        operation_id,
+        process_id,
+        pid,
+        status,
+    });
     if cleanup_incomplete {
         return Err(CleanupIncomplete.into());
     }
@@ -339,7 +415,11 @@ fn execute_inner(
         return Err(error).context("could not read process output or verify cleanup");
     }
     if cancelled {
-        control.emit(Event::Cancelled { pid });
+        control.emit(Event::Cancelled {
+            operation_id,
+            process_id,
+            pid,
+        });
         return Err(Cancelled.into());
     }
     if timed_out {
@@ -458,8 +538,11 @@ fn drain(
 mod platform {
     use super::*;
     use std::os::unix::process::CommandExt;
-    pub fn prepare(command: &mut Command) {
+    pub fn prepare(command: &mut Command, policy: ExecutionPolicy) {
         command.process_group(0);
+        // Interactive policy may need terminal access; Background policy never does.
+        // No additional flags needed on Unix for background processes.
+        let _ = policy;
     }
     pub struct Owner {
         pid: i32,
@@ -600,10 +683,11 @@ mod tests {
             &mut command,
             Mode::Capture { limit: 1024 },
             &Control {
-                terminal: false,
+                policy: ExecutionPolicy::Background,
                 ..Control::default()
             },
             Duration::from_millis(50),
+            OperationId(rand::random()),
         )
         .unwrap_err();
         assert!(error.downcast_ref::<TimedOut>().is_some());

@@ -238,7 +238,7 @@ pub fn with_query<T>(
         interactive: terminal_is_interactive(),
         renderer: Renderer { query, first: true },
     };
-    operation(&mut OperationContext::new(&mut interaction))
+    operation(&mut OperationContext::interactive(&mut interaction))
 }
 
 fn repository(status: Option<&git::RepositoryStatus>) {

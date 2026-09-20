@@ -13,12 +13,18 @@ use windows_sys::Win32::{
             JobObjectBasicAccountingInformation, JobObjectExtendedLimitInformation,
             QueryInformationJobObject, SetInformationJobObject, TerminateJobObject,
         },
-        Threading::{CREATE_SUSPENDED, OpenThread, ResumeThread, THREAD_SUSPEND_RESUME},
+        Threading::{
+            CREATE_NO_WINDOW, CREATE_SUSPENDED, OpenThread, ResumeThread, THREAD_SUSPEND_RESUME,
+        },
     },
 };
 
-pub fn prepare(command: &mut Command) {
-    command.creation_flags(CREATE_SUSPENDED);
+pub fn prepare(command: &mut Command, policy: ExecutionPolicy) {
+    let mut flags = CREATE_SUSPENDED;
+    if matches!(policy, ExecutionPolicy::Background) {
+        flags |= CREATE_NO_WINDOW;
+    }
+    command.creation_flags(flags);
 }
 struct Handle(HANDLE);
 impl Drop for Handle {

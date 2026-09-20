@@ -225,9 +225,7 @@ fn exercise_headless_session() {
     let mut frontend = Frontend::default();
     let events = Arc::new(Mutex::new(Vec::new()));
     let observed = events.clone();
-    let mut context = OperationContext::new(&mut frontend);
-    context.tool_mode = Mode::Stream;
-    context.process.terminal = false;
+    let mut context = OperationContext::background(&mut frontend);
     context.process.observer = Some(Arc::new(move |event| observed.lock().unwrap().push(event)));
 
     let report = context.run(|context| operations::catalog_list(&paths, context));
@@ -352,12 +350,16 @@ fn exercise_headless_session() {
         7
     );
     let observed = events.lock().unwrap();
-    assert!(matches!(observed.first(), Some(Event::OperationStarted)));
+    assert!(matches!(
+        observed.first(),
+        Some(Event::OperationStarted { .. })
+    ));
     assert!(matches!(
         observed.last(),
         Some(Event::OperationFinished {
             outcome: OperationStatus::Failed,
-            partial: false
+            partial: false,
+            ..
         })
     ));
     // The launcher first inspects Git. Its final process is the selected command.
@@ -372,6 +374,7 @@ fn exercise_headless_session() {
                 Event::Output {
                     stream: actual,
                     bytes,
+                    ..
                 } if *actual == stream => Some(bytes.as_slice()),
                 _ => None,
             })

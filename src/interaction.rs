@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use crate::{
     persistence::Lease,
-    process::{Control, Mode},
+    process::{Control, ExecutionPolicy, Mode},
 };
 use anyhow::Result;
 use std::cell::RefCell;
@@ -45,26 +45,62 @@ pub struct OperationContext<'a> {
     pub interaction: &'a mut dyn Interaction,
     pub process: Control,
     pub tool_mode: Mode,
+    /// Execution policy governing subprocess behavior.
+    /// Use OperationContext::interactive() or OperationContext::background() to construct.
+    pub execution_policy: ExecutionPolicy,
     leases: Vec<Weak<RefCell<Lease>>>,
     watches: Vec<Weak<Snapshot>>,
 }
 impl<'a> OperationContext<'a> {
-    pub fn new(interaction: &'a mut dyn Interaction) -> Self {
+    /// Create a context for interactive execution (CLI default, user-attended operations).
+    /// Subprocesses inherit stdio, may access the terminal, and can prompt for credentials.
+    pub fn interactive(interaction: &'a mut dyn Interaction) -> Self {
+        let process = Control {
+            policy: ExecutionPolicy::Interactive,
+            ..Control::default()
+        };
         Self {
             notices: Vec::new(),
             interaction,
-            process: Control::default(),
+            process,
             tool_mode: Mode::Inherit,
+            execution_policy: ExecutionPolicy::Interactive,
             leases: Vec::new(),
             watches: Vec::new(),
         }
+    }
+    /// Create a context for background/headless execution (GUI operations, automation).
+    /// Subprocesses have null stdin, piped stdout/stderr, no terminal access,
+    /// non-interactive credentials, and no visible console window on Windows.
+    pub fn background(interaction: &'a mut dyn Interaction) -> Self {
+        let process = Control {
+            policy: ExecutionPolicy::Background,
+            ..Control::default()
+        };
+        Self {
+            notices: Vec::new(),
+            interaction,
+            process,
+            tool_mode: Mode::Stream,
+            execution_policy: ExecutionPolicy::Background,
+            leases: Vec::new(),
+            watches: Vec::new(),
+        }
+    }
+    /// Legacy constructor preserved for backward compatibility.
+    /// Defaults to interactive execution. Prefer explicit constructors.
+    #[deprecated(note = "Use OperationContext::interactive() or OperationContext::background()")]
+    pub fn new(interaction: &'a mut dyn Interaction) -> Self {
+        Self::interactive(interaction)
     }
     /// Run one operation and return its result together with all progress and diagnostics.
     /// The report is retained on failure; earlier successful steps are never hidden.
     pub fn run<T>(&mut self, operation: impl FnOnce(&mut Self) -> Result<T>) -> OperationReport<T> {
         let _process_scope = crate::process::scope(&self.process);
         let start = self.notices.len();
-        self.process.emit(crate::process::Event::OperationStarted);
+        let operation_id = crate::process::OperationId(rand::random());
+        self.process
+            .emit(crate::process::Event::OperationStarted { operation_id });
         let result = self
             .process
             .cancellation
@@ -75,6 +111,7 @@ impl<'a> OperationContext<'a> {
             notices: self.notices[start..].to_vec(),
         };
         self.process.emit(crate::process::Event::OperationFinished {
+            operation_id,
             outcome: report.status(),
             partial: report.is_partial(),
         });

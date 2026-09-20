@@ -6,8 +6,9 @@ use std::sync::{Arc, Mutex};
 
 use loadbot::{
     config,
+    interaction::{OperationContext, Unattended},
     persistence::{Busy, Lease},
-    process::{self, Cancellation, Control, Event, Mode, Stream},
+    process::{self, Cancellation, Control, Event, ExecutionPolicy, Mode, OperationId, Stream},
     shortcuts::{self, Shortcut},
 };
 
@@ -223,7 +224,7 @@ fn cancelled_catalog_inspection_is_not_downgraded_to_a_skipped_catalog() {
     })
     .unwrap();
     let mut unattended = Unattended;
-    let mut context = OperationContext::new(&mut unattended);
+    let mut context = OperationContext::background(&mut unattended);
     let cancellation = context.process.cancellation.clone();
     context.process.observer = Some(Arc::new(move |event| {
         if matches!(event, Event::Starting { .. }) {
@@ -243,25 +244,44 @@ fn cancelled_catalog_inspection_is_not_downgraded_to_a_skipped_catalog() {
 #[test]
 fn executor_reports_spawn_exit_and_streams_large_simultaneous_output() {
     let mut absent = Command::new("loadbot-test-executable-that-does-not-exist");
-    assert!(process::execute(&mut absent, Mode::Stream, &Control::default()).is_err());
+    assert!(
+        process::execute(
+            &mut absent,
+            Mode::Stream,
+            &Control::default(),
+            OperationId::default()
+        )
+        .is_err()
+    );
     assert_eq!(
-        process::execute(&mut worker("exit"), Mode::Stream, &Control::default())
-            .unwrap()
-            .status
-            .code(),
+        process::execute(
+            &mut worker("exit"),
+            Mode::Stream,
+            &Control::default(),
+            OperationId::default()
+        )
+        .unwrap()
+        .status
+        .code(),
         Some(7)
     );
     let counts = Arc::new(Mutex::new([0usize; 2]));
     let totals = counts.clone();
     let control = Control {
         observer: Some(Arc::new(move |event| {
-            if let Event::Output { stream, bytes } = event {
+            if let Event::Output { stream, bytes, .. } = event {
                 totals.lock().unwrap()[usize::from(stream == Stream::Stderr)] += bytes.len();
             }
         })),
         ..Control::default()
     };
-    let output = process::execute(&mut worker("large"), Mode::Stream, &control).unwrap();
+    let output = process::execute(
+        &mut worker("large"),
+        Mode::Stream,
+        &control,
+        OperationId::default(),
+    )
+    .unwrap();
     assert!(output.status.success());
     assert!(output.stdout.is_empty() && output.stderr.is_empty());
     assert!(
@@ -275,7 +295,8 @@ fn executor_reports_spawn_exit_and_streams_large_simultaneous_output() {
         process::execute(
             &mut worker("large"),
             Mode::Capture { limit: 1024 },
-            &Control::default()
+            &Control::default(),
+            OperationId::default(),
         )
         .unwrap_err()
         .to_string()
@@ -291,7 +312,7 @@ fn cancellation_stops_and_reaps_process_tree_and_preserves_output() {
     let bytes = received.clone();
     let control = Control {
         cancellation,
-        terminal: false,
+        policy: ExecutionPolicy::Background,
         observer: Some(Arc::new(move |event| {
             if let Event::Output { bytes: chunk, .. } = event {
                 let mut bytes = bytes.lock().unwrap();
@@ -305,7 +326,13 @@ fn cancellation_stops_and_reaps_process_tree_and_preserves_output() {
             }
         })),
     };
-    let error = process::execute(&mut worker("tree"), Mode::Stream, &control).unwrap_err();
+    let error = process::execute(
+        &mut worker("tree"),
+        Mode::Stream,
+        &control,
+        OperationId::default(),
+    )
+    .unwrap_err();
     assert!(
         error.downcast_ref::<process::Cancelled>().is_some(),
         "{error:#}"
@@ -336,7 +363,13 @@ fn cancellation_stops_and_reaps_process_tree_and_preserves_output() {
             CloseHandle(handle);
         }
     }
-    let error = process::execute(&mut worker("exit"), Mode::Stream, &control).unwrap_err();
+    let error = process::execute(
+        &mut worker("exit"),
+        Mode::Stream,
+        &control,
+        OperationId::default(),
+    )
+    .unwrap_err();
     assert!(error.downcast_ref::<process::Cancelled>().is_some());
 }
 

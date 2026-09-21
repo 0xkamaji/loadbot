@@ -95,13 +95,25 @@ fn clone_arguments_for_url(url: &str, revision: Option<&str>, destination: &Path
 }
 
 pub fn is_expected_repository(path: &Path, configured_url: &str) -> Result<bool> {
+    is_expected_repository_with_identities(path, configured_url, &[])
+}
+
+pub fn is_expected_repository_with_identities(
+    path: &Path,
+    configured_url: &str,
+    verified_aliases: &[String],
+) -> Result<bool> {
     if !path.is_dir() || !is_repository(path)? {
         return Ok(false);
     }
     let Some(origin) = fetch_url(path)? else {
         return Ok(false);
     };
-    Ok(urls_match(&origin, configured_url))
+    let match_result = repository_match(path, configured_url, verified_aliases)?;
+    Ok(matches!(
+        match_result,
+        RepositoryMatch::Exact | RepositoryMatch::EquivalentGithub
+    ))
 }
 
 pub fn is_repository(path: &Path) -> Result<bool> {

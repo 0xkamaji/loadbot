@@ -114,12 +114,12 @@ export interface LoadbotActions {
   reloadInventory(): void;
   openProjectFolder(id: string): void;
   openProjectTerminal(id: string): void;
-  pullProject(): Promise<boolean>;
-  pushProject(): Promise<boolean>;
-  updateProject(): Promise<boolean>;
-  removeProject(): Promise<boolean>;
-  reinstallProject(): Promise<boolean>;
-  requestProjectAction(action: ProjectLifecycleAction): void;
+  pullProject(project?: LoadbotProject): Promise<boolean>;
+  pushProject(project?: LoadbotProject): Promise<boolean>;
+  updateProject(project?: LoadbotProject): Promise<boolean>;
+  removeProject(project?: LoadbotProject): Promise<boolean>;
+  reinstallProject(project?: LoadbotProject): Promise<boolean>;
+  requestProjectAction(action: ProjectLifecycleAction, project?: LoadbotProject): void;
   cancelProjectAction(): void;
   confirmProjectAction(): Promise<boolean>;
   addCatalog(input: AddCatalogInput): Promise<boolean>;
@@ -448,10 +448,10 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
         return { catalog: reinstalled.catalog, projectId: projectKey(reinstalled), projectFilter: 'installed' };
       });
     },
-    requestProjectAction(action) {
-      const project = state.project;
-      if (!project || project.installed === false || state.management.status === 'submitting') return;
-      publish({ ...state, pendingProjectAction: { action, project } });
+    requestProjectAction(action, project?: LoadbotProject) {
+      const target = project ?? state.project;
+      if (!target || target.installed === false || state.management.status === 'submitting') return;
+      publish({ ...state, pendingProjectAction: { action, project: target } });
     },
     cancelProjectAction() {
       if (state.management.status !== 'submitting') publish({ ...state, pendingProjectAction: undefined });
@@ -763,10 +763,10 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
               actions.updateProject(project);
               break;
             case 'remove':
-              actions.requestProjectAction('remove');
+              actions.requestProjectAction('remove', project);
               break;
             case 'reinstall':
-              actions.requestProjectAction('reinstall');
+              actions.requestProjectAction('reinstall', project);
               break;
           }
         }

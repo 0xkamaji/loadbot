@@ -368,7 +368,7 @@ where
     }
     let mut created_clone = false;
     if path_exists(&destination) {
-        if git::is_expected_repository(&destination, &source.url)? {
+        if git::is_expected_repository_with_identities(&destination, &source.url, &[])? {
         } else if git::is_repository(&destination)? {
             bail!("catalog destination exists but is not the configured Git repository");
         } else {
@@ -394,7 +394,7 @@ where
     }
 
     let validation = (|| -> Result<()> {
-        if !git::is_expected_repository(&destination, &source.url)? {
+        if !git::is_expected_repository_with_identities(&destination, &source.url, &[])? {
             bail!("cloned catalog is not the configured Git repository");
         }
         catalog::load(&paths.catalog_file(name))
@@ -529,7 +529,7 @@ pub fn catalog_initialize(
         if !git::is_repository(&destination)? {
             bail!("catalog destination exists but is not a Git repository");
         }
-        if !git::is_expected_repository(&destination, &source.url)? {
+        if !git::is_expected_repository_with_identities(&destination, &source.url, &[])? {
             bail!("catalog destination exists but is not the configured Git repository");
         }
     } else {
@@ -722,7 +722,7 @@ pub fn catalog_list(
         });
         let state = if !path_exists(&destination) {
             CatalogState::Missing
-        } else if git::is_expected_repository(&destination, &source.url)? {
+        } else if git::is_expected_repository_with_identities(&destination, &source.url, &[])? {
             CatalogState::Installed
         } else {
             CatalogState::Mismatch
@@ -1136,7 +1136,15 @@ where
     });
     let validation = (|| -> Result<()> {
         context.process.cancellation.check()?;
-        if !git::is_expected_repository(&destination, &tool.definition.url)? {
+        let aliases = optional_identities(identities())?
+            .into_iter()
+            .map(|identity| identity.alias)
+            .collect::<Vec<_>>();
+        if !git::is_expected_repository_with_identities(
+            &destination,
+            &tool.definition.url,
+            &aliases,
+        )? {
             bail!("cloned tool is not the configured Git repository");
         }
         Ok(())
@@ -1198,11 +1206,15 @@ where
     if available.is_empty() || !context.configure_push()? {
         return Ok(());
     }
-    let identity = git::select_verified_rot_identity(available, context)?;
+    let identity = git::select_verified_rot_identity(available.clone(), context)?;
     let push_url = git::github_ssh_push_url(canonical_url, &identity.alias)
         .context("could not derive the GitHub SSH push URL")?;
+    let aliases = available
+        .into_iter()
+        .map(|identity| identity.alias)
+        .collect::<Vec<_>>();
     if git::push_url(destination)?.is_some()
-        || !git::is_expected_repository(destination, canonical_url)?
+        || !git::is_expected_repository_with_identities(destination, canonical_url, &aliases)?
     {
         bail!("repository URLs changed while awaiting a decision; retry the operation");
     }
@@ -1248,7 +1260,11 @@ fn reconcile_existing_checkout(
         name: name.to_owned(),
     });
     context.process.cancellation.check()?;
-    if !git::is_expected_repository(destination, canonical_url)? {
+    let aliases = optional_identities(git::verified_rot_identities())?
+        .into_iter()
+        .map(|identity| identity.alias)
+        .collect::<Vec<_>>();
+    if !git::is_expected_repository_with_identities(destination, canonical_url, &aliases)? {
         bail!("reconciled repository did not match the catalog URL");
     }
     context.process.cancellation.check()
@@ -1287,7 +1303,11 @@ pub fn tool_update(
     if !git::is_repository(&destination)? {
         bail!("destination exists but is not a Git repository");
     }
-    if !git::is_expected_repository(&destination, &tool.definition.url)? {
+    let aliases = optional_identities(git::verified_rot_identities())?
+        .into_iter()
+        .map(|identity| identity.alias)
+        .collect::<Vec<_>>();
+    if !git::is_expected_repository_with_identities(&destination, &tool.definition.url, &aliases)? {
         if equivalent_github_checkout(&destination, &tool.definition.url)? {
             bail!(
                 "destination uses a different transport for the configured GitHub repository; run 'loadbot pull {name}' interactively to reconcile its fetch and push URLs"
@@ -1456,7 +1476,11 @@ pub fn tool_reinstall(
         name: tool.name.clone(),
         catalog_name: tool.catalog.clone(),
     });
-    if !git::is_expected_repository(fresh.path(), &tool.definition.url)? {
+    let aliases = optional_identities(git::verified_rot_identities())?
+        .into_iter()
+        .map(|identity| identity.alias)
+        .collect::<Vec<_>>();
+    if !git::is_expected_repository_with_identities(fresh.path(), &tool.definition.url, &aliases)? {
         bail!("fresh checkout is not the configured Git repository");
     }
 
@@ -1525,7 +1549,11 @@ fn validate_destructive_checkout(
     {
         bail!("refusing to remove a destination that is not a managed Git checkout");
     }
-    if !git::is_expected_repository(destination, &tool.definition.url)? {
+    let aliases = optional_identities(git::verified_rot_identities())?
+        .into_iter()
+        .map(|identity| identity.alias)
+        .collect::<Vec<_>>();
+    if !git::is_expected_repository_with_identities(destination, &tool.definition.url, &aliases)? {
         bail!("refusing to remove a checkout that is not the configured Git repository");
     }
     if git::status(destination)?.dirty {
@@ -1568,7 +1596,11 @@ fn validate_push_checkout(
     {
         bail!("refusing to push a destination that is not a managed Git checkout");
     }
-    if !git::is_expected_repository(destination, &tool.definition.url)? {
+    let aliases = optional_identities(git::verified_rot_identities())?
+        .into_iter()
+        .map(|identity| identity.alias)
+        .collect::<Vec<_>>();
+    if !git::is_expected_repository_with_identities(destination, &tool.definition.url, &aliases)? {
         bail!("refusing to push a checkout that is not the configured Git repository");
     }
     if git::status(destination)?.dirty {
@@ -1594,7 +1626,7 @@ pub fn tool_status(
         path: destination.clone(),
     });
     let installed = path_exists(&destination)
-        && git::is_expected_repository(&destination, &tool.definition.url)?;
+        && git::is_expected_repository_with_identities(&destination, &tool.definition.url, &[])?;
     context.record(Notice::ToolSourceInspected {
         installed,
         url: tool.definition.url.clone(),
@@ -1642,7 +1674,11 @@ pub fn installed_tool_path(
     if !git::is_repository(&destination)? {
         bail!("installed tool destination is not a Git repository");
     }
-    if !git::is_expected_repository(&destination, &tool.definition.url)? {
+    let aliases = optional_identities(git::verified_rot_identities())?
+        .into_iter()
+        .map(|identity| identity.alias)
+        .collect::<Vec<_>>();
+    if !git::is_expected_repository_with_identities(&destination, &tool.definition.url, &aliases)? {
         if equivalent_github_checkout(&destination, &tool.definition.url)? {
             bail!(
                 "installed tool destination uses a different transport for the configured GitHub repository\nRun 'loadbot pull {name}' interactively to reconcile its fetch and push URLs."
@@ -1887,7 +1923,7 @@ fn checked_catalog_repository(
     if !git::is_repository(&destination)? {
         bail!("catalog destination exists but is not a Git repository");
     }
-    if !git::is_expected_repository(&destination, &source.url)? {
+    if !git::is_expected_repository_with_identities(&destination, &source.url, &[])? {
         bail!("catalog destination is not the configured Git repository");
     }
     Ok(destination)

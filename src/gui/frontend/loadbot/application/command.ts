@@ -306,20 +306,6 @@ const definitions: readonly CommandDefinition[] = [
       return { kind: 'error', code: 'unsupported-syntax', input: arguments_.join(' '), subject: 'reinstall requires Tauri backend' };
     },
   },
-  {
-    name: 'status', usage: 'status <project>', summary: 'Show status of a managed tool.',
-    complete(argumentIndex, _argumentsBefore, context) {
-      return argumentIndex === 0 ? projectCompletionCandidates(context) : [];
-    },
-    dispatch(arguments_, context) {
-      if (arguments_.length !== 1) return usage(this);
-      const unavailableResult = unavailable(context);
-      if (unavailableResult) return unavailableResult;
-      const project = resolveProject(arguments_[0], context);
-      if ('kind' in project) return project;
-      return { kind: 'error', code: 'unsupported-syntax', input: arguments_.join(' '), subject: 'status requires Tauri backend' };
-    },
-  },
 ];
 
 export const commandDefinitions: readonly CommandDefinitionSummary[] = definitions.map(({ name, usage: commandUsage, summary }) => ({

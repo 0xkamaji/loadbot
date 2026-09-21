@@ -1350,7 +1350,7 @@ pub fn tool_push(
         name: tool.name.clone(),
         catalog_name: tool.catalog.clone(),
     });
-    validate_destructive_checkout(paths, &tool, &destination, context)?;
+    validate_push_checkout(paths, &tool, &destination, context)?;
     context.record(Notice::ToolOperationStage {
         operation: ToolOperation::Push,
         stage: ToolOperationStage::PushingCommits,
@@ -1538,6 +1538,44 @@ fn validate_destructive_checkout(
             "repository has local commits not present on origin; push or preserve them before retrying"
         );
     }
+    Ok(())
+}
+
+/// Validate a checkout for push operations.
+/// Unlike validate_destructive_checkout, this allows local commits not on origin
+/// (since push is exactly how those commits get to the remote).
+fn validate_push_checkout(
+    paths: &Paths,
+    tool: &ResolvedTool,
+    destination: &Path,
+    context: &mut OperationContext<'_>,
+) -> Result<()> {
+    context.process.cancellation.check()?;
+    let current = resolve_tool(paths, &tool.name, Some(&tool.catalog), context)?;
+    if current.definition != tool.definition {
+        return Err(crate::persistence::Busy {
+            resource: destination.to_owned(),
+        }
+        .into());
+    }
+    let metadata = fs::symlink_metadata(destination).with_context(|| {
+        format!(
+            "tool '{}' from catalog '{}' is not installed",
+            tool.name, tool.catalog
+        )
+    })?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() || !git::is_repository(destination)?
+    {
+        bail!("refusing to push a destination that is not a managed Git checkout");
+    }
+    if !git::is_expected_repository(destination, &tool.definition.url)? {
+        bail!("refusing to push a checkout that is not the configured Git repository");
+    }
+    if git::status(destination)?.dirty {
+        bail!("working tree has local changes; commit or discard them explicitly before retrying");
+    }
+    // Unlike destructive operations, push ALLOWS local commits not on origin.
+    // That is the purpose of push.
     Ok(())
 }
 
@@ -2113,6 +2151,55 @@ mod tests {
         .unwrap();
         let destination = paths.tool("personal", "demo").unwrap();
         (temporary, paths, destination)
+    }
+
+    #[test]
+    fn tool_push_allows_local_commits_ahead_of_origin() {
+        let (_temporary, paths, destination) = lifecycle_fixture();
+        // Create and then remove dirty.txt to start with a clean worktree
+        fs::write(destination.join("dirty.txt"), "dirty\n").unwrap();
+        fs::remove_file(destination.join("dirty.txt")).unwrap();
+        git(["config", "user.name", "Loadbot Tests"], Some(&destination));
+        git(
+            ["config", "user.email", "loadbot@example.test"],
+            Some(&destination),
+        );
+        fs::write(destination.join("local.txt"), "local commit\n").unwrap();
+        git(["add", "local.txt"], Some(&destination));
+        git(["commit", "-m", "local work"], Some(&destination));
+        // Push should succeed even with local commits not on origin
+        let mut policy = crate::interaction::Unattended;
+        let mut context = OperationContext::background(&mut policy);
+        let result = tool_push(&paths, "demo", Some("personal"), &mut context);
+        assert!(
+            result.is_ok(),
+            "push should succeed with local commits: {:?}",
+            result.err()
+        );
+        assert!(destination.join("local.txt").exists());
+    }
+
+    #[test]
+    fn tool_push_rejects_dirty_worktree() {
+        let (_temporary, paths, destination) = lifecycle_fixture();
+        fs::write(destination.join("dirty.txt"), "dirty\n").unwrap();
+        let mut policy = crate::interaction::Unattended;
+        let mut context = OperationContext::background(&mut policy);
+        let error = tool_push(&paths, "demo", Some("personal"), &mut context).unwrap_err();
+        assert!(error.to_string().contains("working tree has local changes"));
+    }
+
+    #[test]
+    fn tool_push_rejects_invalid_repository() {
+        let temporary = TempDir::new().unwrap();
+        let paths = Paths::with_root(temporary.path().join("loadbot"));
+        let mut policy = crate::interaction::Unattended;
+        let mut context = OperationContext::background(&mut policy);
+        let error = tool_push(&paths, "nonexistent", Some("personal"), &mut context).unwrap_err();
+        // When catalog doesn't exist, we get a catalog error
+        assert!(
+            error.to_string().contains("catalog") && error.to_string().contains("not configured")
+        );
     }
 
     #[test]

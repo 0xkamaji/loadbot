@@ -33,7 +33,7 @@ describe('Loadbot command parser and registry', () => {
   it('generates help from the registered working commands', () => {
     const result = executeLoadbotCommand('help', context);
     expect(result).toEqual({ kind: 'help', commands: commandDefinitions });
-    expect(commandDefinitions.map((command) => command.name)).toEqual(['help', 'projects', 'shortcuts', 'inspect', 'pull', 'update', 'push', 'remove', 'reinstall', 'status']);
+    expect(commandDefinitions.map((command) => command.name)).toEqual(['help', 'projects', 'shortcuts', 'inspect', 'pull', 'update', 'push', 'remove', 'reinstall']);
     expect(executeLoadbotCommand('help extra', context)).toMatchObject({ kind: 'error', code: 'usage', usage: 'help' });
   });
 
@@ -145,5 +145,52 @@ describe('Loadbot semantic command completion', () => {
     expect(completeLoadbotCommand('echo foo | ba', 13, context)).toBeUndefined();
     expect(completeLoadbotCommand('inspect "Project One" "missing', 30, context)).toBeUndefined();
     expect(completeLoadbotCommand('sho', 99, context)).toBeUndefined();
+  });
+});
+
+describe('Lifecycle command project resolution', () => {
+  it('lifecycle commands resolve project from command text, not selected project', () => {
+    const otherProject = { catalog: 'personal', tool: 'solo', entries: [] };
+    const ctx = { ...context, selectedProject: otherProject };
+    // push command should resolve "Project One" from args, not use selectedProject (solo)
+    const result = executeLoadbotCommand('push "Project One"', ctx);
+    expect(result).toEqual({
+      kind: 'error',
+      code: 'unsupported-syntax',
+      input: 'Project One',
+      subject: 'push requires Tauri backend',
+    });
+    // remove command should resolve "Project One" from args
+    const removeResult = executeLoadbotCommand('remove "Project One"', ctx);
+    expect(removeResult).toEqual({
+      kind: 'error',
+      code: 'unsupported-syntax',
+      input: 'Project One',
+      subject: 'remove requires Tauri backend',
+    });
+    // reinstall command should resolve "Project One" from args
+    const reinstallResult = executeLoadbotCommand('reinstall "Project One"', ctx);
+    expect(reinstallResult).toEqual({
+      kind: 'error',
+      code: 'unsupported-syntax',
+      input: 'Project One',
+      subject: 'reinstall requires Tauri backend',
+    });
+    // update command should resolve "Project One" from args
+    const updateResult = executeLoadbotCommand('update "Project One"', ctx);
+    expect(updateResult).toEqual({
+      kind: 'error',
+      code: 'unsupported-syntax',
+      input: 'Project One',
+      subject: 'update requires Tauri backend',
+    });
+    // pull command should resolve "Project One" from args
+    const pullResult = executeLoadbotCommand('pull "Project One"', ctx);
+    expect(pullResult).toEqual({
+      kind: 'error',
+      code: 'unsupported-syntax',
+      input: 'Project One',
+      subject: 'pull requires Tauri backend',
+    });
   });
 });

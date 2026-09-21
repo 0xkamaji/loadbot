@@ -408,43 +408,43 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
         },
       );
     },
-    async pullProject() {
-      const project = state.project;
-      if (!project || project.installed !== false || !adapter.pullProject) return false;
-      return mutation('pull-project', 'project-pull', `Pulling ${project.tool}…`, `Project ${project.tool} pulled.`, { catalog: project.catalog, project: project.tool }, async (operation) => {
-        const installed = await adapter.pullProject!({ catalog: project.catalog, tool: project.tool }, projectProgress(operation, 'project-pull'));
+    async pullProject(project?: LoadbotProject) {
+      const target = project ?? state.project;
+      if (!target || target.installed !== false || !adapter.pullProject) return false;
+      return mutation('pull-project', 'project-pull', `Pulling ${target.tool}…`, `Project ${target.tool} pulled.`, { catalog: target.catalog, project: target.tool }, async (operation) => {
+        const installed = await adapter.pullProject!({ catalog: target.catalog, tool: target.tool }, projectProgress(operation, 'project-pull'));
         return { catalog: installed.catalog, projectId: projectKey(installed), projectFilter: 'installed' };
       });
     },
-    async updateProject() {
-      const project = state.project;
-      if (!project || project.installed === false || !adapter.updateProject) return false;
-      return mutation('update-project', 'project-update', `Updating ${project.tool}…`, `Project ${project.tool} updated.`, { catalog: project.catalog, project: project.tool }, async (operation) => {
-        const updated = await adapter.updateProject!({ catalog: project.catalog, tool: project.tool }, projectProgress(operation, 'project-update'));
+    async updateProject(project?: LoadbotProject) {
+      const target = project ?? state.project;
+      if (!target || target.installed === false || !adapter.updateProject) return false;
+      return mutation('update-project', 'project-update', `Updating ${target.tool}…`, `Project ${target.tool} updated.`, { catalog: target.catalog, project: target.tool }, async (operation) => {
+        const updated = await adapter.updateProject!({ catalog: target.catalog, tool: target.tool }, projectProgress(operation, 'project-update'));
         return { catalog: updated.catalog, projectId: projectKey(updated) };
       });
     },
-    async pushProject() {
-      const project = state.project;
-      if (!project || project.installed === false || !adapter.pushProject) return false;
-      return mutation('push-project', 'project-push', `Pushing ${project.tool}…`, `Project ${project.tool} pushed.`, { catalog: project.catalog, project: project.tool }, async (operation) => {
-        const pushed = await adapter.pushProject!({ catalog: project.catalog, tool: project.tool }, projectProgress(operation, 'project-push'));
+    async pushProject(project?: LoadbotProject) {
+      const target = project ?? state.project;
+      if (!target || target.installed === false || !adapter.pushProject) return false;
+      return mutation('push-project', 'project-push', `Pushing ${target.tool}…`, `Project ${target.tool} pushed.`, { catalog: target.catalog, project: target.tool }, async (operation) => {
+        const pushed = await adapter.pushProject!({ catalog: target.catalog, tool: target.tool }, projectProgress(operation, 'project-push'));
         return { catalog: pushed.catalog, projectId: projectKey(pushed) };
       });
     },
-    async removeProject() {
-      const project = state.project;
-      if (!project || project.installed === false || !adapter.removeProject) return false;
-      return mutation('remove-project', 'project-remove', `Removing ${project.tool}…`, `Project ${project.tool} removed.`, { catalog: project.catalog, project: project.tool }, async (operation) => {
-        const removed = await adapter.removeProject!({ catalog: project.catalog, tool: project.tool }, projectProgress(operation, 'project-remove'));
+    async removeProject(project?: LoadbotProject) {
+      const target = project ?? state.project;
+      if (!target || target.installed === false || !adapter.removeProject) return false;
+      return mutation('remove-project', 'project-remove', `Removing ${target.tool}…`, `Project ${target.tool} removed.`, { catalog: target.catalog, project: target.tool }, async (operation) => {
+        const removed = await adapter.removeProject!({ catalog: target.catalog, tool: target.tool }, projectProgress(operation, 'project-remove'));
         return { catalog: removed.catalog, projectId: projectKey(removed), projectFilter: 'not-installed' };
       });
     },
-    async reinstallProject() {
-      const project = state.project;
-      if (!project || project.installed === false || !adapter.reinstallProject) return false;
-      return mutation('reinstall-project', 'project-reinstall', `Reinstalling ${project.tool}…`, `Project ${project.tool} reinstalled.`, { catalog: project.catalog, project: project.tool }, async (operation) => {
-        const reinstalled = await adapter.reinstallProject!({ catalog: project.catalog, tool: project.tool }, projectProgress(operation, 'project-reinstall'));
+    async reinstallProject(project?: LoadbotProject) {
+      const target = project ?? state.project;
+      if (!target || target.installed === false || !adapter.reinstallProject) return false;
+      return mutation('reinstall-project', 'project-reinstall', `Reinstalling ${target.tool}…`, `Project ${target.tool} reinstalled.`, { catalog: target.catalog, project: target.tool }, async (operation) => {
+        const reinstalled = await adapter.reinstallProject!({ catalog: target.catalog, tool: target.tool }, projectProgress(operation, 'project-reinstall'));
         return { catalog: reinstalled.catalog, projectId: projectKey(reinstalled), projectFilter: 'installed' };
       });
     },
@@ -754,19 +754,19 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
         if (project && !('kind' in project)) {
           switch (commandName) {
             case 'pull':
-              actions.pullProject();
+              actions.pullProject(project);
               break;
             case 'push':
-              actions.pushProject();
+              actions.pushProject(project);
               break;
             case 'update':
-              actions.updateProject();
+              actions.updateProject(project);
               break;
             case 'remove':
-              actions.removeProject();
+              actions.requestProjectAction('remove');
               break;
             case 'reinstall':
-              actions.reinstallProject();
+              actions.requestProjectAction('reinstall');
               break;
           }
         }

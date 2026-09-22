@@ -26,6 +26,10 @@ export type CommandResult =
   | { readonly kind: 'project'; readonly project: LoadbotProject }
   | { readonly kind: 'shortcut'; readonly project: LoadbotProject; readonly shortcut: LoadbotShortcut }
   | {
+    readonly kind: 'lifecycle'; readonly action: 'pull' | 'update' | 'push' | 'remove' | 'reinstall';
+    readonly project: LoadbotProject;
+  }
+  | {
     readonly kind: 'error'; readonly code: CommandErrorCode; readonly input?: string; readonly usage?: string;
     readonly subject?: string; readonly choices?: readonly string[];
   };
@@ -247,7 +251,7 @@ const definitions: readonly CommandDefinition[] = [
       if (unavailableResult) return unavailableResult;
       const project = resolveProject(arguments_[0], context);
       if ('kind' in project) return project;
-      return { kind: 'error', code: 'unsupported-syntax', input: arguments_.join(' '), subject: 'pull requires Tauri backend' };
+      return { kind: 'lifecycle', action: 'pull', project };
     },
   },
   {
@@ -261,7 +265,7 @@ const definitions: readonly CommandDefinition[] = [
       if (unavailableResult) return unavailableResult;
       const project = resolveProject(arguments_[0], context);
       if ('kind' in project) return project;
-      return { kind: 'error', code: 'unsupported-syntax', input: arguments_.join(' '), subject: 'update requires Tauri backend' };
+      return { kind: 'lifecycle', action: 'update', project };
     },
   },
   {
@@ -275,7 +279,7 @@ const definitions: readonly CommandDefinition[] = [
       if (unavailableResult) return unavailableResult;
       const project = resolveProject(arguments_[0], context);
       if ('kind' in project) return project;
-      return { kind: 'error', code: 'unsupported-syntax', input: arguments_.join(' '), subject: 'push requires Tauri backend' };
+      return { kind: 'lifecycle', action: 'push', project };
     },
   },
   {
@@ -289,7 +293,7 @@ const definitions: readonly CommandDefinition[] = [
       if (unavailableResult) return unavailableResult;
       const project = resolveProject(arguments_[0], context);
       if ('kind' in project) return project;
-      return { kind: 'error', code: 'unsupported-syntax', input: arguments_.join(' '), subject: 'remove requires Tauri backend' };
+      return { kind: 'lifecycle', action: 'remove', project };
     },
   },
   {
@@ -303,7 +307,7 @@ const definitions: readonly CommandDefinition[] = [
       if (unavailableResult) return unavailableResult;
       const project = resolveProject(arguments_[0], context);
       if ('kind' in project) return project;
-      return { kind: 'error', code: 'unsupported-syntax', input: arguments_.join(' '), subject: 'reinstall requires Tauri backend' };
+      return { kind: 'lifecycle', action: 'reinstall', project };
     },
   },
 ];

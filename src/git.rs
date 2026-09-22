@@ -34,17 +34,90 @@ pub struct RepositoryStatus {
     pub push_url: Option<String>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub enum RepositoryMatch {
-    Exact,
-    EquivalentGithub,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ManagedCheckout {
+    ExpectedTransport,
+    EquivalentTransport,
+    RequiresVerifiedAlias,
     Mismatch,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct GitHubRepository {
-    pub owner: String,
-    pub name: String,
+struct GitHubRepository {
+    owner: String,
+    name: String,
+}
+
+/// Repository identity policy for managed checkouts.
+///
+/// Canonical GitHub transports are always recognized. Additional SSH hosts are
+/// recognized only when they came from Rot's verified identity inventory.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ManagedRepositoryMatcher {
+    verified_github_aliases: Vec<String>,
+}
+
+impl ManagedRepositoryMatcher {
+    pub(crate) fn canonical() -> Self {
+        Self::default()
+    }
+
+    pub(crate) fn from_verified_rot_identities(identities: &[RotIdentity]) -> Self {
+        Self {
+            verified_github_aliases: identities
+                .iter()
+                .filter(|identity| {
+                    identity.verification == "verified"
+                        && identity.username.is_some()
+                        && valid_ssh_alias(&identity.alias)
+                })
+                .map(|identity| identity.alias.clone())
+                .collect(),
+        }
+    }
+
+    /// Answer whether a path is a managed checkout for the configured URL.
+    /// Path/repository/origin validation and repository identity comparison are
+    /// intentionally performed together so callers cannot accidentally omit one.
+    pub(crate) fn checkout_match(
+        &self,
+        path: &Path,
+        configured_url: &str,
+    ) -> Result<ManagedCheckout> {
+        if !path.is_dir() || !is_repository(path)? {
+            return Ok(ManagedCheckout::Mismatch);
+        }
+        let Some(actual_url) = fetch_url(path)? else {
+            return Ok(ManagedCheckout::Mismatch);
+        };
+        if normalize_url(&actual_url) == normalize_url(configured_url) {
+            return Ok(ManagedCheckout::ExpectedTransport);
+        }
+        if github_https_read_url(configured_url).is_some()
+            && github_https_repository(&actual_url).is_some()
+            && github_urls_have_same_identity(&actual_url, configured_url, &[])
+        {
+            return Ok(ManagedCheckout::ExpectedTransport);
+        }
+        if github_urls_have_same_identity(
+            &actual_url,
+            configured_url,
+            &self.verified_github_aliases,
+        ) {
+            Ok(ManagedCheckout::EquivalentTransport)
+        } else if github_urls_may_match_verified_alias(&actual_url, configured_url) {
+            Ok(ManagedCheckout::RequiresVerifiedAlias)
+        } else {
+            Ok(ManagedCheckout::Mismatch)
+        }
+    }
+
+    pub(crate) fn is_managed_checkout(&self, path: &Path, configured_url: &str) -> Result<bool> {
+        Ok(matches!(
+            self.checkout_match(path, configured_url)?,
+            ManagedCheckout::ExpectedTransport | ManagedCheckout::EquivalentTransport
+        ))
+    }
 }
 
 pub fn clone_repository(
@@ -92,28 +165,6 @@ fn clone_arguments_for_url(url: &str, revision: Option<&str>, destination: &Path
     arguments.push(OsString::from(url));
     arguments.push(destination.as_os_str().to_owned());
     arguments
-}
-
-pub fn is_expected_repository(path: &Path, configured_url: &str) -> Result<bool> {
-    is_expected_repository_with_identities(path, configured_url, &[])
-}
-
-pub fn is_expected_repository_with_identities(
-    path: &Path,
-    configured_url: &str,
-    verified_aliases: &[String],
-) -> Result<bool> {
-    if !path.is_dir() || !is_repository(path)? {
-        return Ok(false);
-    }
-    let Some(origin) = fetch_url(path)? else {
-        return Ok(false);
-    };
-    let match_result = repository_match(path, configured_url, verified_aliases)?;
-    Ok(matches!(
-        match_result,
-        RepositoryMatch::Exact | RepositoryMatch::EquivalentGithub
-    ))
 }
 
 pub fn is_repository(path: &Path) -> Result<bool> {
@@ -414,46 +465,6 @@ pub fn push_url(path: &Path) -> Result<Option<String>> {
     Ok(output.status.success().then(|| stdout_text(&output)))
 }
 
-pub fn repository_match(
-    path: &Path,
-    configured_url: &str,
-    verified_aliases: &[String],
-) -> Result<RepositoryMatch> {
-    let Some(actual_url) = fetch_url(path)? else {
-        return Ok(RepositoryMatch::Mismatch);
-    };
-    if normalize_url(&actual_url) == normalize_url(configured_url) {
-        return Ok(RepositoryMatch::Exact);
-    }
-    let configured = github_repository_identity(configured_url, verified_aliases);
-    let Some(configured) = configured else {
-        return Ok(RepositoryMatch::Mismatch);
-    };
-    let actual = github_repository_identity(&actual_url, verified_aliases);
-    let Some(actual) = actual else {
-        return Ok(RepositoryMatch::Mismatch);
-    };
-    if actual.owner.eq_ignore_ascii_case(&configured.owner)
-        && actual.name.eq_ignore_ascii_case(&configured.name)
-    {
-        // If both are canonical GitHub HTTPS, it's an exact match.
-        // If actual is HTTPS and configured is SSH, it's exact (legacy behavior:
-        // accepting HTTPS fetch for a configured SSH remote).
-        // Otherwise (actual SSH, configured HTTPS, or both SSH with aliases), it's equivalent.
-        let actual_is_canonical_https = actual_url.starts_with("https://github.com/");
-        let configured_is_canonical_https = configured_url.starts_with("https://github.com/");
-        if actual_is_canonical_https && configured_is_canonical_https {
-            Ok(RepositoryMatch::Exact)
-        } else if actual_is_canonical_https && !configured_is_canonical_https {
-            Ok(RepositoryMatch::Exact)
-        } else {
-            Ok(RepositoryMatch::EquivalentGithub)
-        }
-    } else {
-        Ok(RepositoryMatch::Mismatch)
-    }
-}
-
 pub fn verified_rot_identities() -> Result<Vec<RotIdentity>> {
     query_rot_identities()
 }
@@ -632,12 +643,7 @@ fn restore_remote_url(path: &Path, key: &str, urls: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// Canonical GitHub repository identity (owner/repo).
-/// Used for equivalence checks across different transport forms.
-pub fn github_repository_identity(
-    url: &str,
-    verified_aliases: &[String],
-) -> Option<GitHubRepository> {
+fn github_repository_identity(url: &str, verified_aliases: &[String]) -> Option<GitHubRepository> {
     // Try HTTPS github.com
     if let Some(path) = url.strip_prefix("https://github.com/") {
         return github_repository_path(path);
@@ -664,10 +670,19 @@ pub fn github_repository_identity(
     None
 }
 
-/// Extract GitHub repository identity using only canonical github.com hosts (no aliases).
-/// Used for read-only operations where we don't want to trust unverified aliases.
-pub fn github_repository_identity_canonical(url: &str) -> Option<GitHubRepository> {
-    github_repository_identity(url, &[])
+fn github_alias_candidate(url: &str) -> Option<GitHubRepository> {
+    let path = url.strip_prefix("git@")?;
+    let (host, path) = path.split_once(':')?;
+    (host != "github.com" && valid_ssh_alias(host)).then(|| github_repository_path(path))?
+}
+
+fn github_urls_may_match_verified_alias(actual: &str, configured: &str) -> bool {
+    let actual = github_repository_identity(actual, &[]).or_else(|| github_alias_candidate(actual));
+    let configured =
+        github_repository_identity(configured, &[]).or_else(|| github_alias_candidate(configured));
+    matches!((actual, configured), (Some(actual), Some(configured))
+        if actual.owner.eq_ignore_ascii_case(&configured.owner)
+            && actual.name.eq_ignore_ascii_case(&configured.name))
 }
 
 fn github_https_repository(url: &str) -> Option<GitHubRepository> {
@@ -1151,8 +1166,16 @@ fn urls_match(actual: &str, configured: &str) -> bool {
     if normalize_url(actual) == normalize_url(configured) {
         return true;
     }
-    let actual = github_repository_identity_canonical(actual);
-    let configured = github_repository_identity_canonical(configured);
+    github_urls_have_same_identity(actual, configured, &[])
+}
+
+fn github_urls_have_same_identity(
+    actual: &str,
+    configured: &str,
+    verified_aliases: &[String],
+) -> bool {
+    let actual = github_repository_identity(actual, verified_aliases);
+    let configured = github_repository_identity(configured, verified_aliases);
     matches!((actual, configured), (Some(actual), Some(configured))
         if actual.owner.eq_ignore_ascii_case(&configured.owner)
             && actual.name.eq_ignore_ascii_case(&configured.name))
@@ -1330,7 +1353,7 @@ mod tests {
     }
 
     #[test]
-    fn repository_match_requires_verified_rot_alias_and_exact_identity() {
+    fn managed_checkout_matches_canonical_transports_and_only_verified_aliases() {
         if raw_output([OsStr::new("--version")]).is_err() {
             return;
         }
@@ -1342,34 +1365,81 @@ mod tests {
             repository.as_os_str(),
         ])
         .unwrap();
+        let canonical = ManagedRepositoryMatcher::canonical();
+        let verified = ManagedRepositoryMatcher::from_verified_rot_identities(&[identity(
+            "github-work",
+            "owner",
+        )]);
+        let configured = "https://github.com/owner/repo.git";
+
+        set_remote_url(
+            repository,
+            "remote.origin.url",
+            "git@github.com:OWNER/REPO.git",
+        )
+        .unwrap();
+        assert!(
+            canonical
+                .is_managed_checkout(repository, configured)
+                .unwrap()
+        );
+
         set_remote_url(
             repository,
             "remote.origin.url",
             "git@github-work:owner/repo.git",
         )
         .unwrap();
+        assert!(
+            verified
+                .is_managed_checkout(repository, configured)
+                .unwrap()
+        );
+        assert!(
+            !canonical
+                .is_managed_checkout(repository, configured)
+                .unwrap()
+        );
 
-        assert_eq!(
-            repository_match(
-                repository,
-                "https://github.com/owner/repo.git",
-                &["github-work".to_owned()]
-            )
-            .unwrap(),
-            RepositoryMatch::EquivalentGithub
+        set_remote_url(
+            repository,
+            "remote.origin.url",
+            "https://github.com/owner/repo.git",
+        )
+        .unwrap();
+        assert!(
+            verified
+                .is_managed_checkout(repository, "git@github-work:OWNER/REPO.git")
+                .unwrap()
         );
-        assert_eq!(
-            repository_match(repository, "https://github.com/owner/repo.git", &[]).unwrap(),
-            RepositoryMatch::Mismatch
+        assert!(
+            !canonical
+                .is_managed_checkout(repository, "git@github-work:owner/repo.git")
+                .unwrap()
         );
-        assert_eq!(
-            repository_match(
-                repository,
-                "https://github.com/different/repo.git",
-                &["github-work".to_owned()]
-            )
-            .unwrap(),
-            RepositoryMatch::Mismatch
+
+        set_remote_url(
+            repository,
+            "remote.origin.url",
+            "git@random-host:owner/repo.git",
+        )
+        .unwrap();
+        assert!(
+            !verified
+                .is_managed_checkout(repository, configured)
+                .unwrap()
+        );
+
+        set_remote_url(
+            repository,
+            "remote.origin.url",
+            "git@github-work:owner/different.git",
+        )
+        .unwrap();
+        assert!(
+            !verified
+                .is_managed_checkout(repository, configured)
+                .unwrap()
         );
     }
 
@@ -1394,10 +1464,16 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            repository_match(repository, "git@github.com:OWNER/REPO.git", &[]).unwrap(),
-            RepositoryMatch::Exact
+            ManagedRepositoryMatcher::canonical()
+                .checkout_match(repository, "git@github.com:OWNER/REPO.git")
+                .unwrap(),
+            ManagedCheckout::ExpectedTransport
         );
-        assert!(is_expected_repository(repository, "ssh://git@github.com/owner/repo.git").unwrap());
+        assert!(
+            ManagedRepositoryMatcher::canonical()
+                .is_managed_checkout(repository, "ssh://git@github.com/owner/repo.git")
+                .unwrap()
+        );
     }
 
     #[test]
@@ -1467,7 +1543,11 @@ mod tests {
             Some("https://github.com/owner/repo.git")
         );
         assert_eq!(push_url(repository).unwrap().as_deref(), Some(configured));
-        assert!(is_expected_repository(repository, configured).unwrap());
+        assert!(
+            ManagedRepositoryMatcher::canonical()
+                .is_managed_checkout(repository, configured)
+                .unwrap()
+        );
     }
 
     #[test]

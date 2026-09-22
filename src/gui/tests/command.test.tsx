@@ -152,45 +152,10 @@ describe('Lifecycle command project resolution', () => {
   it('lifecycle commands resolve project from command text, not selected project', () => {
     const otherProject = { catalog: 'personal', tool: 'solo', entries: [] };
     const ctx = { ...context, selectedProject: otherProject };
-    // push command should resolve "Project One" from args, not use selectedProject (solo)
-    const result = executeLoadbotCommand('push "Project One"', ctx);
-    expect(result).toEqual({
-      kind: 'error',
-      code: 'unsupported-syntax',
-      input: 'Project One',
-      subject: 'push requires Tauri backend',
-    });
-    // remove command should resolve "Project One" from args
-    const removeResult = executeLoadbotCommand('remove "Project One"', ctx);
-    expect(removeResult).toEqual({
-      kind: 'error',
-      code: 'unsupported-syntax',
-      input: 'Project One',
-      subject: 'remove requires Tauri backend',
-    });
-    // reinstall command should resolve "Project One" from args
-    const reinstallResult = executeLoadbotCommand('reinstall "Project One"', ctx);
-    expect(reinstallResult).toEqual({
-      kind: 'error',
-      code: 'unsupported-syntax',
-      input: 'Project One',
-      subject: 'reinstall requires Tauri backend',
-    });
-    // update command should resolve "Project One" from args
-    const updateResult = executeLoadbotCommand('update "Project One"', ctx);
-    expect(updateResult).toEqual({
-      kind: 'error',
-      code: 'unsupported-syntax',
-      input: 'Project One',
-      subject: 'update requires Tauri backend',
-    });
-    // pull command should resolve "Project One" from args
-    const pullResult = executeLoadbotCommand('pull "Project One"', ctx);
-    expect(pullResult).toEqual({
-      kind: 'error',
-      code: 'unsupported-syntax',
-      input: 'Project One',
-      subject: 'pull requires Tauri backend',
-    });
+    for (const action of ['pull', 'update', 'push', 'remove', 'reinstall'] as const) {
+      expect(executeLoadbotCommand(`${action} "Project One"`, ctx)).toEqual({
+        kind: 'lifecycle', action, project: projects[0],
+      });
+    }
   });
 });

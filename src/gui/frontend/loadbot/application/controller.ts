@@ -5,7 +5,7 @@ import type {
   ShortcutHelpResult, ShortcutIdentity,
 } from '../contract';
 import { projectKey, selectionKey, shortcutKey } from '../identity';
-import { completeLoadbotCommand, executeLoadbotCommand, parseCommandLine, resolveProject, type CommandCompletion, type CommandResult } from './command';
+import { completeLoadbotCommand, executeLoadbotCommand, type CommandCompletion, type CommandResult } from './command';
 import { initialValues, missingInputs, noSampleForms, type SampleField, type SampleForms, type SampleValues } from './sampleForms';
 import {
   addDraftArgument, draftValidation, moveDraftArgument, newRecipeDraft, recipeDraftFromShortcut,
@@ -741,34 +741,21 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
         currentCatalog: state.currentCatalog,
         selectedProject: state.project,
       });
-      // Execute lifecycle commands via the corresponding actions
-      const parsed = parseCommandLine(submitted);
-      if (!('kind' in parsed) && parsed.tokens.length > 0) {
-        const [commandName, ...args] = parsed.tokens;
-        const project = args[0] ? resolveProject(args[0], {
-          inventoryStatus: state.inventory.status,
-          projects,
-          currentCatalog: state.currentCatalog,
-          selectedProject: state.project,
-        }) : state.project;
-        if (project && !('kind' in project)) {
-          switch (commandName) {
-            case 'pull':
-              actions.pullProject(project);
-              break;
-            case 'push':
-              actions.pushProject(project);
-              break;
-            case 'update':
-              actions.updateProject(project);
-              break;
-            case 'remove':
-              actions.requestProjectAction('remove', project);
-              break;
-            case 'reinstall':
-              actions.requestProjectAction('reinstall', project);
-              break;
-          }
+      if (result.kind === 'lifecycle') {
+        switch (result.action) {
+          case 'pull':
+            void actions.pullProject(result.project);
+            break;
+          case 'push':
+            void actions.pushProject(result.project);
+            break;
+          case 'update':
+            void actions.updateProject(result.project);
+            break;
+          case 'remove':
+          case 'reinstall':
+            actions.requestProjectAction(result.action, result.project);
+            break;
         }
       }
       publish({

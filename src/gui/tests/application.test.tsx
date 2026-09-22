@@ -80,6 +80,58 @@ describe('headless capability and application boundary', () => {
     expect(application.getSnapshot().activity).toBe(activity);
   });
 
+  it('routes lifecycle command targets through adapters and the shared destructive confirmation flow', async () => {
+    const projects: readonly LoadbotProject[] = [
+      { catalog: 'personal', tool: 'Project-A', installed: true, entries: [] },
+      { catalog: 'personal', tool: 'Project-B', installed: true, entries: [] },
+    ];
+    const readInventory = vi.fn(async () => structuredClone(projects));
+    const pushProject: NonNullable<LoadbotAdapter['pushProject']> = vi.fn(async (identity) => identity);
+    const updateProject: NonNullable<LoadbotAdapter['updateProject']> = vi.fn(async (identity) => identity);
+    const removeProject: NonNullable<LoadbotAdapter['removeProject']> = vi.fn(async (identity) => identity);
+    const reinstallProject: NonNullable<LoadbotAdapter['reinstallProject']> = vi.fn(async (identity) => identity);
+    const managed: LoadbotAdapter = {
+      ...adapter(readInventory), pushProject, updateProject, removeProject, reinstallProject,
+    };
+    const application = createLoadbotApplication(managed);
+    application.start();
+    await vi.waitFor(() => expect(application.getSnapshot().inventory.status).toBe('ready'));
+    expect(application.getSnapshot().project?.tool).toBe('Project-A');
+
+    application.actions.submitCommand('push Project-B');
+    await vi.waitFor(() => expect(pushProject).toHaveBeenCalledWith(
+      { catalog: 'personal', tool: 'Project-B' }, expect.any(Function),
+    ));
+    await vi.waitFor(() => expect(application.getSnapshot().management.status).not.toBe('submitting'));
+
+    application.actions.selectProject(projectKey(projects[0]));
+    application.actions.submitCommand('update Project-B');
+    await vi.waitFor(() => expect(updateProject).toHaveBeenCalledWith(
+      { catalog: 'personal', tool: 'Project-B' }, expect.any(Function),
+    ));
+    await vi.waitFor(() => expect(application.getSnapshot().management.status).not.toBe('submitting'));
+
+    application.actions.selectProject(projectKey(projects[0]));
+    application.actions.submitCommand('remove Project-B');
+    expect(removeProject).not.toHaveBeenCalled();
+    expect(application.getSnapshot().pendingProjectAction).toMatchObject({
+      action: 'remove', project: { catalog: 'personal', tool: 'Project-B' },
+    });
+    application.actions.cancelProjectAction();
+    expect(removeProject).not.toHaveBeenCalled();
+
+    application.actions.submitCommand('reinstall Project-B');
+    expect(reinstallProject).not.toHaveBeenCalled();
+    application.actions.cancelProjectAction();
+    expect(reinstallProject).not.toHaveBeenCalled();
+
+    application.actions.submitCommand('remove Project-B');
+    expect(await application.actions.confirmProjectAction()).toBe(true);
+    expect(removeProject).toHaveBeenCalledWith(
+      { catalog: 'personal', tool: 'Project-B' }, expect.any(Function),
+    );
+  });
+
   it('starts from a pre-management configured catalog without registration or migration', async () => {
     const existing: readonly LoadbotProject[] = [{
       catalog: 'existing', tool: 'known-project', entries: [{

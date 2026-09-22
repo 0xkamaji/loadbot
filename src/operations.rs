@@ -54,6 +54,58 @@ pub struct ToolStatus {
     pub repository: Option<git::RepositoryStatus>,
 }
 
+/// Lazily resolves verified Rot aliases for one managed-tool operation.
+/// Canonical and missing checkouts never need to invoke Rot; alias candidates
+/// share one verified identity snapshot across the whole operation.
+struct ManagedToolRepositories {
+    verified: Option<git::ManagedRepositoryMatcher>,
+}
+
+impl ManagedToolRepositories {
+    fn new() -> Self {
+        Self { verified: None }
+    }
+
+    #[cfg(test)]
+    fn with_verified_identities(identities: &[git::RotIdentity]) -> Self {
+        Self {
+            verified: Some(git::ManagedRepositoryMatcher::from_verified_rot_identities(
+                identities,
+            )),
+        }
+    }
+
+    fn checkout_match(
+        &mut self,
+        path: &Path,
+        configured_url: &str,
+    ) -> Result<git::ManagedCheckout> {
+        let direct =
+            git::ManagedRepositoryMatcher::canonical().checkout_match(path, configured_url)?;
+        if direct != git::ManagedCheckout::RequiresVerifiedAlias {
+            return Ok(direct);
+        }
+        if self.verified.is_none() {
+            let identities = optional_identities(git::verified_rot_identities())?;
+            self.verified = Some(git::ManagedRepositoryMatcher::from_verified_rot_identities(
+                &identities,
+            ));
+        }
+        let verified = self.verified.as_ref().expect("verified matcher was set");
+        Ok(match verified.checkout_match(path, configured_url)? {
+            git::ManagedCheckout::RequiresVerifiedAlias => git::ManagedCheckout::Mismatch,
+            matched => matched,
+        })
+    }
+
+    fn is_managed_checkout(&mut self, path: &Path, configured_url: &str) -> Result<bool> {
+        Ok(matches!(
+            self.checkout_match(path, configured_url)?,
+            git::ManagedCheckout::ExpectedTransport | git::ManagedCheckout::EquivalentTransport
+        ))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ShortcutIdentity {
     pub name: String,
@@ -368,7 +420,9 @@ where
     }
     let mut created_clone = false;
     if path_exists(&destination) {
-        if git::is_expected_repository_with_identities(&destination, &source.url, &[])? {
+        if git::ManagedRepositoryMatcher::canonical()
+            .is_managed_checkout(&destination, &source.url)?
+        {
         } else if git::is_repository(&destination)? {
             bail!("catalog destination exists but is not the configured Git repository");
         } else {
@@ -394,7 +448,9 @@ where
     }
 
     let validation = (|| -> Result<()> {
-        if !git::is_expected_repository_with_identities(&destination, &source.url, &[])? {
+        if !git::ManagedRepositoryMatcher::canonical()
+            .is_managed_checkout(&destination, &source.url)?
+        {
             bail!("cloned catalog is not the configured Git repository");
         }
         catalog::load(&paths.catalog_file(name))
@@ -529,7 +585,9 @@ pub fn catalog_initialize(
         if !git::is_repository(&destination)? {
             bail!("catalog destination exists but is not a Git repository");
         }
-        if !git::is_expected_repository_with_identities(&destination, &source.url, &[])? {
+        if !git::ManagedRepositoryMatcher::canonical()
+            .is_managed_checkout(&destination, &source.url)?
+        {
             bail!("catalog destination exists but is not the configured Git repository");
         }
     } else {
@@ -722,7 +780,9 @@ pub fn catalog_list(
         });
         let state = if !path_exists(&destination) {
             CatalogState::Missing
-        } else if git::is_expected_repository_with_identities(&destination, &source.url, &[])? {
+        } else if git::ManagedRepositoryMatcher::canonical()
+            .is_managed_checkout(&destination, &source.url)?
+        {
             CatalogState::Installed
         } else {
             CatalogState::Mismatch
@@ -1005,14 +1065,23 @@ pub fn tool_add(
 
 pub fn tool_list(paths: &Paths, context: &mut OperationContext<'_>) -> Result<Vec<ToolSummary>> {
     let _process_scope = crate::process::scope(&context.process);
+    let mut repositories = ManagedToolRepositories::new();
+    tool_list_with_repositories(paths, context, &mut repositories)
+}
+
+fn tool_list_with_repositories(
+    paths: &Paths,
+    context: &mut OperationContext<'_>,
+    repositories: &mut ManagedToolRepositories,
+) -> Result<Vec<ToolSummary>> {
+    let _process_scope = crate::process::scope(&context.process);
     context.process.cancellation.check()?;
     let tools = all_tools(paths, context)?;
     let mut rows = Vec::new();
     for tool in tools {
         context.process.cancellation.check()?;
         let destination = paths.tool(&tool.catalog, &tool.name)?;
-        let installed = path_exists(&destination)
-            && git::is_expected_repository(&destination, &tool.definition.url)?;
+        let installed = repositories.is_managed_checkout(&destination, &tool.definition.url)?;
         let row = ToolSummary { tool, installed };
         context.record(Notice::ToolInspected(row.clone()));
         rows.push(row);
@@ -1047,13 +1116,22 @@ fn tool_pull_with<I, C>(
     catalog_name: Option<&str>,
     interactive: bool,
     context: &mut OperationContext<'_>,
-    mut identities: I,
+    mut load_identities: I,
     mut clone_repository: C,
 ) -> Result<()>
 where
     I: FnMut() -> Result<Vec<git::RotIdentity>>,
     C: FnMut(&str, Option<&str>, &Path, &mut dyn Interaction) -> Result<()>,
 {
+    let mut cached_identities: Option<Vec<git::RotIdentity>> = None;
+    let mut identities = || -> Result<Vec<git::RotIdentity>> {
+        if let Some(identities) = cached_identities.as_ref() {
+            return Ok(identities.clone());
+        }
+        let identities = optional_identities(load_identities())?;
+        cached_identities = Some(identities.clone());
+        Ok(identities)
+    };
     let tool = resolve_tool(paths, name, catalog_name, context)?;
     let destination = paths.tool(&tool.catalog, &tool.name)?;
     let _repository_lease = context.lease(&destination)?;
@@ -1076,9 +1154,9 @@ where
         if !git::is_repository(&destination)? {
             bail!("destination exists but is not a Git repository");
         }
-        let repository_match =
-            repository_match_with_identities(&destination, &tool.definition.url, &mut identities)?;
-        if repository_match == git::RepositoryMatch::Exact {
+        let checkout_match =
+            managed_checkout_with_identities(&destination, &tool.definition.url, &mut identities)?;
+        if checkout_match == git::ManagedCheckout::ExpectedTransport {
             context.record(Notice::ToolAlreadyInstalled {
                 name: name.to_owned(),
             });
@@ -1091,7 +1169,7 @@ where
             )?;
             return Ok(());
         }
-        if repository_match == git::RepositoryMatch::EquivalentGithub {
+        if checkout_match == git::ManagedCheckout::EquivalentTransport {
             return reconcile_existing_checkout(
                 &destination,
                 name,
@@ -1136,15 +1214,9 @@ where
     });
     let validation = (|| -> Result<()> {
         context.process.cancellation.check()?;
-        let aliases = optional_identities(identities())?
-            .into_iter()
-            .map(|identity| identity.alias)
-            .collect::<Vec<_>>();
-        if !git::is_expected_repository_with_identities(
-            &destination,
-            &tool.definition.url,
-            &aliases,
-        )? {
+        if managed_checkout_with_identities(&destination, &tool.definition.url, &mut identities)?
+            == git::ManagedCheckout::Mismatch
+        {
             bail!("cloned tool is not the configured Git repository");
         }
         Ok(())
@@ -1167,23 +1239,28 @@ where
     Ok(())
 }
 
-fn repository_match_with_identities<I>(
+fn managed_checkout_with_identities<I>(
     destination: &Path,
     configured_url: &str,
     identities: &mut I,
-) -> Result<git::RepositoryMatch>
+) -> Result<git::ManagedCheckout>
 where
     I: FnMut() -> Result<Vec<git::RotIdentity>>,
 {
-    let direct = git::repository_match(destination, configured_url, &[])?;
-    if direct != git::RepositoryMatch::Mismatch {
+    let direct =
+        git::ManagedRepositoryMatcher::canonical().checkout_match(destination, configured_url)?;
+    if direct != git::ManagedCheckout::RequiresVerifiedAlias {
         return Ok(direct);
     }
-    let aliases = optional_identities(identities())?
-        .into_iter()
-        .map(|identity| identity.alias)
-        .collect::<Vec<_>>();
-    git::repository_match(destination, configured_url, &aliases)
+    let identities = optional_identities(identities())?;
+    Ok(
+        match git::ManagedRepositoryMatcher::from_verified_rot_identities(&identities)
+            .checkout_match(destination, configured_url)?
+        {
+            git::ManagedCheckout::RequiresVerifiedAlias => git::ManagedCheckout::Mismatch,
+            matched => matched,
+        },
+    )
 }
 
 fn offer_ssh_push<I>(
@@ -1209,12 +1286,9 @@ where
     let identity = git::select_verified_rot_identity(available.clone(), context)?;
     let push_url = git::github_ssh_push_url(canonical_url, &identity.alias)
         .context("could not derive the GitHub SSH push URL")?;
-    let aliases = available
-        .into_iter()
-        .map(|identity| identity.alias)
-        .collect::<Vec<_>>();
+    let repositories = git::ManagedRepositoryMatcher::from_verified_rot_identities(&available);
     if git::push_url(destination)?.is_some()
-        || !git::is_expected_repository_with_identities(destination, canonical_url, &aliases)?
+        || !repositories.is_managed_checkout(destination, canonical_url)?
     {
         bail!("repository URLs changed while awaiting a decision; retry the operation");
     }
@@ -1260,11 +1334,9 @@ fn reconcile_existing_checkout(
         name: name.to_owned(),
     });
     context.process.cancellation.check()?;
-    let aliases = optional_identities(git::verified_rot_identities())?
-        .into_iter()
-        .map(|identity| identity.alias)
-        .collect::<Vec<_>>();
-    if !git::is_expected_repository_with_identities(destination, canonical_url, &aliases)? {
+    if !git::ManagedRepositoryMatcher::canonical()
+        .is_managed_checkout(destination, canonical_url)?
+    {
         bail!("reconciled repository did not match the catalog URL");
     }
     context.process.cancellation.check()
@@ -1277,6 +1349,7 @@ pub fn tool_update(
     context: &mut OperationContext<'_>,
 ) -> Result<MutationOutcome> {
     let _process_scope = crate::process::scope(&context.process);
+    let mut repositories = ManagedToolRepositories::new();
     context.process.cancellation.check()?;
     let notice_start = context.notices.len();
     let tool = resolve_tool(paths, name, catalog_name, context)?;
@@ -1303,16 +1376,7 @@ pub fn tool_update(
     if !git::is_repository(&destination)? {
         bail!("destination exists but is not a Git repository");
     }
-    let aliases = optional_identities(git::verified_rot_identities())?
-        .into_iter()
-        .map(|identity| identity.alias)
-        .collect::<Vec<_>>();
-    if !git::is_expected_repository_with_identities(&destination, &tool.definition.url, &aliases)? {
-        if equivalent_github_checkout(&destination, &tool.definition.url)? {
-            bail!(
-                "destination uses a different transport for the configured GitHub repository; run 'loadbot pull {name}' interactively to reconcile its fetch and push URLs"
-            );
-        }
+    if !repositories.is_managed_checkout(&destination, &tool.definition.url)? {
         bail!("destination is not the configured Git repository");
     }
 
@@ -1344,9 +1408,6 @@ pub fn tool_update(
     Ok(context.outcome_since(notice_start))
 }
 
-/// Remove an installed managed checkout while retaining its catalog entry.
-/// Both uncommitted changes and commits not present on `origin` fail closed.
-
 /// Push local commits to the configured remote for an installed managed tool.
 /// The repository must be a valid managed checkout with a clean working tree.
 /// Uses the configured push URL if present, otherwise falls back to the origin URL.
@@ -1357,6 +1418,7 @@ pub fn tool_push(
     context: &mut OperationContext<'_>,
 ) -> Result<MutationOutcome> {
     let _process_scope = crate::process::scope(&context.process);
+    let mut repositories = ManagedToolRepositories::new();
     context.process.cancellation.check()?;
     let notice_start = context.notices.len();
     let tool = resolve_tool(paths, name, catalog_name, context)?;
@@ -1370,7 +1432,7 @@ pub fn tool_push(
         name: tool.name.clone(),
         catalog_name: tool.catalog.clone(),
     });
-    validate_push_checkout(paths, &tool, &destination, context)?;
+    validate_push_checkout(paths, &tool, &destination, context, &mut repositories)?;
     context.record(Notice::ToolOperationStage {
         operation: ToolOperation::Push,
         stage: ToolOperationStage::PushingCommits,
@@ -1385,6 +1447,9 @@ pub fn tool_push(
     });
     Ok(context.outcome_since(notice_start))
 }
+
+/// Remove an installed managed checkout while retaining its catalog entry.
+/// Both uncommitted changes and commits not present on `origin` fail closed.
 pub fn tool_remove(
     paths: &Paths,
     name: &str,
@@ -1392,6 +1457,7 @@ pub fn tool_remove(
     context: &mut OperationContext<'_>,
 ) -> Result<MutationOutcome> {
     let _process_scope = crate::process::scope(&context.process);
+    let mut repositories = ManagedToolRepositories::new();
     context.process.cancellation.check()?;
     let notice_start = context.notices.len();
     let tool = resolve_tool(paths, name, catalog_name, context)?;
@@ -1405,7 +1471,7 @@ pub fn tool_remove(
         name: tool.name.clone(),
         catalog_name: tool.catalog.clone(),
     });
-    validate_destructive_checkout(paths, &tool, &destination, context)?;
+    validate_destructive_checkout(paths, &tool, &destination, context, &mut repositories)?;
     context.record(Notice::ToolOperationStage {
         operation: ToolOperation::Remove,
         stage: ToolOperationStage::RemovingCheckout,
@@ -1436,6 +1502,7 @@ pub fn tool_reinstall(
     context: &mut OperationContext<'_>,
 ) -> Result<MutationOutcome> {
     let _process_scope = crate::process::scope(&context.process);
+    let mut repositories = ManagedToolRepositories::new();
     context.process.cancellation.check()?;
     let notice_start = context.notices.len();
     let tool = resolve_tool(paths, name, catalog_name, context)?;
@@ -1449,7 +1516,7 @@ pub fn tool_reinstall(
         name: tool.name.clone(),
         catalog_name: tool.catalog.clone(),
     });
-    validate_destructive_checkout(paths, &tool, &destination, context)?;
+    validate_destructive_checkout(paths, &tool, &destination, context, &mut repositories)?;
 
     let parent = destination
         .parent()
@@ -1476,16 +1543,12 @@ pub fn tool_reinstall(
         name: tool.name.clone(),
         catalog_name: tool.catalog.clone(),
     });
-    let aliases = optional_identities(git::verified_rot_identities())?
-        .into_iter()
-        .map(|identity| identity.alias)
-        .collect::<Vec<_>>();
-    if !git::is_expected_repository_with_identities(fresh.path(), &tool.definition.url, &aliases)? {
+    if !repositories.is_managed_checkout(fresh.path(), &tool.definition.url)? {
         bail!("fresh checkout is not the configured Git repository");
     }
 
     // Network work may have taken time. Recheck every destructive precondition.
-    validate_destructive_checkout(paths, &tool, &destination, context)?;
+    validate_destructive_checkout(paths, &tool, &destination, context, &mut repositories)?;
     let backup = tempfile::Builder::new()
         .prefix(".loadbot-backup-")
         .tempdir_in(parent)?;
@@ -1530,6 +1593,7 @@ fn validate_destructive_checkout(
     tool: &ResolvedTool,
     destination: &Path,
     context: &mut OperationContext<'_>,
+    repositories: &mut ManagedToolRepositories,
 ) -> Result<()> {
     context.process.cancellation.check()?;
     let current = resolve_tool(paths, &tool.name, Some(&tool.catalog), context)?;
@@ -1549,11 +1613,7 @@ fn validate_destructive_checkout(
     {
         bail!("refusing to remove a destination that is not a managed Git checkout");
     }
-    let aliases = optional_identities(git::verified_rot_identities())?
-        .into_iter()
-        .map(|identity| identity.alias)
-        .collect::<Vec<_>>();
-    if !git::is_expected_repository_with_identities(destination, &tool.definition.url, &aliases)? {
+    if !repositories.is_managed_checkout(destination, &tool.definition.url)? {
         bail!("refusing to remove a checkout that is not the configured Git repository");
     }
     if git::status(destination)?.dirty {
@@ -1577,6 +1637,7 @@ fn validate_push_checkout(
     tool: &ResolvedTool,
     destination: &Path,
     context: &mut OperationContext<'_>,
+    repositories: &mut ManagedToolRepositories,
 ) -> Result<()> {
     context.process.cancellation.check()?;
     let current = resolve_tool(paths, &tool.name, Some(&tool.catalog), context)?;
@@ -1596,11 +1657,7 @@ fn validate_push_checkout(
     {
         bail!("refusing to push a destination that is not a managed Git checkout");
     }
-    let aliases = optional_identities(git::verified_rot_identities())?
-        .into_iter()
-        .map(|identity| identity.alias)
-        .collect::<Vec<_>>();
-    if !git::is_expected_repository_with_identities(destination, &tool.definition.url, &aliases)? {
+    if !repositories.is_managed_checkout(destination, &tool.definition.url)? {
         bail!("refusing to push a checkout that is not the configured Git repository");
     }
     if git::status(destination)?.dirty {
@@ -1618,6 +1675,18 @@ pub fn tool_status(
     context: &mut OperationContext<'_>,
 ) -> Result<ToolStatus> {
     let _process_scope = crate::process::scope(&context.process);
+    let mut repositories = ManagedToolRepositories::new();
+    tool_status_with_repositories(paths, name, catalog_name, context, &mut repositories)
+}
+
+fn tool_status_with_repositories(
+    paths: &Paths,
+    name: &str,
+    catalog_name: Option<&str>,
+    context: &mut OperationContext<'_>,
+    repositories: &mut ManagedToolRepositories,
+) -> Result<ToolStatus> {
+    let _process_scope = crate::process::scope(&context.process);
     context.process.cancellation.check()?;
     let tool = resolve_tool(paths, name, catalog_name, context)?;
     let destination = paths.tool(&tool.catalog, &tool.name)?;
@@ -1625,8 +1694,7 @@ pub fn tool_status(
         tool: tool.clone(),
         path: destination.clone(),
     });
-    let installed = path_exists(&destination)
-        && git::is_expected_repository_with_identities(&destination, &tool.definition.url, &[])?;
+    let installed = repositories.is_managed_checkout(&destination, &tool.definition.url)?;
     context.record(Notice::ToolSourceInspected {
         installed,
         url: tool.definition.url.clone(),
@@ -1665,46 +1733,28 @@ pub fn installed_tool_path(
     context: &mut OperationContext<'_>,
 ) -> Result<PathBuf> {
     let _process_scope = crate::process::scope(&context.process);
+    let mut repositories = ManagedToolRepositories::new();
+    installed_tool_path_with_repositories(paths, name, catalog_name, context, &mut repositories)
+}
+
+fn installed_tool_path_with_repositories(
+    paths: &Paths,
+    name: &str,
+    catalog_name: &str,
+    context: &mut OperationContext<'_>,
+    repositories: &mut ManagedToolRepositories,
+) -> Result<PathBuf> {
+    let _process_scope = crate::process::scope(&context.process);
     context.process.cancellation.check()?;
     let tool = resolve_tool(paths, name, Some(catalog_name), context)?;
     let destination = paths.tool(&tool.catalog, &tool.name)?;
     if !path_exists(&destination) {
         bail!("tool '{name}' from catalog '{catalog_name}' is not installed");
     }
-    if !git::is_repository(&destination)? {
-        bail!("installed tool destination is not a Git repository");
-    }
-    let aliases = optional_identities(git::verified_rot_identities())?
-        .into_iter()
-        .map(|identity| identity.alias)
-        .collect::<Vec<_>>();
-    if !git::is_expected_repository_with_identities(&destination, &tool.definition.url, &aliases)? {
-        if equivalent_github_checkout(&destination, &tool.definition.url)? {
-            bail!(
-                "installed tool destination uses a different transport for the configured GitHub repository\nRun 'loadbot pull {name}' interactively to reconcile its fetch and push URLs."
-            );
-        }
+    if !repositories.is_managed_checkout(&destination, &tool.definition.url)? {
         bail!("installed tool destination is not the configured Git repository");
     }
     Ok(destination)
-}
-
-fn equivalent_github_checkout(destination: &Path, configured_url: &str) -> Result<bool> {
-    let direct = git::repository_match(destination, configured_url, &[])?;
-    if direct == git::RepositoryMatch::EquivalentGithub {
-        return Ok(true);
-    }
-    if direct != git::RepositoryMatch::Mismatch {
-        return Ok(false);
-    }
-    let aliases = optional_identities(git::verified_rot_identities())?
-        .into_iter()
-        .map(|identity| identity.alias)
-        .collect::<Vec<_>>();
-    Ok(
-        git::repository_match(destination, configured_url, &aliases)?
-            == git::RepositoryMatch::EquivalentGithub,
-    )
 }
 
 pub fn installed_tools(
@@ -1712,14 +1762,13 @@ pub fn installed_tools(
     context: &mut OperationContext<'_>,
 ) -> Result<Vec<ResolvedTool>> {
     let _process_scope = crate::process::scope(&context.process);
+    let mut repositories = ManagedToolRepositories::new();
     context.process.cancellation.check()?;
     let mut installed = Vec::new();
     for tool in all_tools(paths, context)? {
         context.process.cancellation.check()?;
         let destination = paths.tool(&tool.catalog, &tool.name)?;
-        if path_exists(&destination)
-            && git::is_expected_repository(&destination, &tool.definition.url)?
-        {
+        if repositories.is_managed_checkout(&destination, &tool.definition.url)? {
             installed.push(tool);
         }
     }
@@ -1923,7 +1972,7 @@ fn checked_catalog_repository(
     if !git::is_repository(&destination)? {
         bail!("catalog destination exists but is not a Git repository");
     }
-    if !git::is_expected_repository_with_identities(&destination, &source.url, &[])? {
+    if !git::ManagedRepositoryMatcher::canonical().is_managed_checkout(&destination, &source.url)? {
         bail!("catalog destination is not the configured Git repository");
     }
     Ok(destination)
@@ -2192,9 +2241,6 @@ mod tests {
     #[test]
     fn tool_push_allows_local_commits_ahead_of_origin() {
         let (_temporary, paths, destination) = lifecycle_fixture();
-        // Create and then remove dirty.txt to start with a clean worktree
-        fs::write(destination.join("dirty.txt"), "dirty\n").unwrap();
-        fs::remove_file(destination.join("dirty.txt")).unwrap();
         git(["config", "user.name", "Loadbot Tests"], Some(&destination));
         git(
             ["config", "user.email", "loadbot@example.test"],
@@ -2213,6 +2259,7 @@ mod tests {
             result.err()
         );
         assert!(destination.join("local.txt").exists());
+        assert!(!git::has_local_commits_not_on_origin(&destination).unwrap());
     }
 
     #[test]
@@ -2261,6 +2308,20 @@ mod tests {
         fs::write(destination.join("local.txt"), "preserve commit\n").unwrap();
         git(["add", "local.txt"], Some(&destination));
         git(["commit", "-m", "local work"], Some(&destination));
+        let error = tool_remove(
+            &paths,
+            "demo",
+            Some("personal"),
+            &mut OperationContext::new(&mut crate::interaction::Unattended),
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("local commits not present on origin")
+        );
+        assert!(destination.join("local.txt").exists());
+
         let error = tool_reinstall(
             &paths,
             "demo",
@@ -2563,6 +2624,96 @@ mod tests {
         }
         fs::write(destination.join("dirty.txt"), "preserve\n").unwrap();
         (temporary, paths, destination)
+    }
+
+    fn verified_alias_fixture() -> (TempDir, Paths, PathBuf, ManagedToolRepositories) {
+        let temporary = TempDir::new().unwrap();
+        let paths = Paths::with_root(temporary.path().join("loadbot"));
+        let remote = valid_catalog_remote(temporary.path(), "verified-alias-catalog");
+        catalog_add(
+            &paths,
+            "personal",
+            remote.display().to_string(),
+            false,
+            &mut OperationContext::new(&mut crate::interaction::Unattended),
+        )
+        .unwrap();
+        fs::write(
+            paths.catalog_file("personal"),
+            "version = 1\n[tools.demo]\ntype = \"git\"\nurl = \"https://github.com/owner/repo.git\"\n",
+        )
+        .unwrap();
+        fs::create_dir_all(paths.tools().join("personal")).unwrap();
+        let checkout = repository_with_origin(
+            &paths.tools().join("personal"),
+            "git@github-work:owner/repo.git",
+        );
+        let destination = paths.tool("personal", "demo").unwrap();
+        fs::rename(checkout, &destination).unwrap();
+        let repositories =
+            ManagedToolRepositories::with_verified_identities(&[identity("github-work", "owner")]);
+        (temporary, paths, destination, repositories)
+    }
+
+    #[test]
+    fn list_status_and_installed_path_accept_a_verified_rot_alias_checkout() {
+        let (_temporary, paths, destination, mut repositories) = verified_alias_fixture();
+
+        let listed = tool_list_with_repositories(
+            &paths,
+            &mut OperationContext::background(&mut crate::interaction::Unattended),
+            &mut repositories,
+        )
+        .unwrap();
+        assert_eq!(listed.len(), 1);
+        assert!(listed[0].installed);
+
+        let status = tool_status_with_repositories(
+            &paths,
+            "demo",
+            Some("personal"),
+            &mut OperationContext::background(&mut crate::interaction::Unattended),
+            &mut repositories,
+        )
+        .unwrap();
+        assert!(status.installed);
+
+        let installed = installed_tool_path_with_repositories(
+            &paths,
+            "demo",
+            "personal",
+            &mut OperationContext::background(&mut crate::interaction::Unattended),
+            &mut repositories,
+        )
+        .unwrap();
+        assert_eq!(installed, destination);
+    }
+
+    #[test]
+    fn pull_recognizes_a_verified_rot_alias_checkout_before_transport_reconciliation() {
+        let (_temporary, paths, destination, _repositories) = verified_alias_fixture();
+        let mut prompt = TestPrompt::default();
+        let error = tool_pull_with(
+            &paths,
+            "demo",
+            Some("personal"),
+            false,
+            &mut OperationContext::background(&mut prompt),
+            || Ok(vec![identity("github-work", "owner")]),
+            |_, _, _, _| panic!("a recognized existing checkout must not be cloned"),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("different transport"));
+        assert!(
+            !error
+                .to_string()
+                .contains("not the configured Git repository")
+        );
+        assert_eq!(
+            git::fetch_url(&destination).unwrap().as_deref(),
+            Some("git@github-work:owner/repo.git")
+        );
     }
 
     fn reconciliation_report(

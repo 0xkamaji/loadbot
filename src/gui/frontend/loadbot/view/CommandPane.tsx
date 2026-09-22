@@ -98,6 +98,11 @@ function CommandOutput({ result }: { result: CommandResult }) {
         ...(result.shortcut.description ? [['Description', result.shortcut.description] as const] : []),
       ]} />
     </div>;
+    case 'lifecycle': return <div className="lb-command-output">
+      <p>{result.action === 'remove' || result.action === 'reinstall'
+        ? `${result.action} awaiting confirmation for ${result.project.catalog}/${result.project.tool}.`
+        : `${result.action} requested for ${result.project.catalog}/${result.project.tool}.`}</p>
+    </div>;
     case 'error': return <div className="lb-command-output lb-command-error">
       <p>{errorText(result)}</p>
       {!!result.choices?.length && <><p className="lb-command-secondary">Use a qualified identity:</p>

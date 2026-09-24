@@ -7,15 +7,20 @@ use loadbot::{
     launcher::{self, Project},
     operations::{self, CatalogState, ShortcutHelpRequest, ShortcutIdentity},
     paths::Paths,
+    process::{
+        Control, ExecutionPolicy, InteractiveCommand, InteractiveSession, InteractiveSessionEvent,
+        OperationId,
+    },
     recipe::RecipeDefinition,
 };
+use std::collections::HashMap;
 use std::fs;
 #[cfg(unix)]
 use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tauri::Manager;
 use tauri::ipc::Channel;
 use tauri_plugin_dialog::DialogExt;
@@ -64,6 +69,161 @@ enum BackendActivity {
         stream: &'static str,
         text: String,
     },
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct InteractiveLaunchRequest {
+    /// Opaque capability issued by a backend operation. It is not an executable.
+    launch_id: String,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InteractiveSessionStarted {
+    session_id: String,
+    process_id: String,
+    os_process_id: Option<u32>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+enum BackendInteractiveEvent {
+    Output {
+        session_id: String,
+        bytes: Vec<u8>,
+    },
+    Exited {
+        session_id: String,
+        code: u32,
+        signal: Option<String>,
+        cancelled: bool,
+    },
+    Failed {
+        session_id: String,
+        message: String,
+    },
+}
+
+#[derive(Clone, Default)]
+struct InteractiveSessions {
+    pending: Arc<Mutex<HashMap<String, InteractiveCommand>>>,
+    active: Arc<Mutex<HashMap<String, InteractiveSession>>>,
+}
+
+impl InteractiveSessions {
+    fn start(
+        &self,
+        launch_id: &str,
+        observer: Arc<dyn Fn(BackendInteractiveEvent) + Send + Sync>,
+    ) -> anyhow::Result<InteractiveSessionStarted> {
+        let command = self
+            .pending
+            .lock()
+            .map_err(|_| anyhow::anyhow!("interactive launch registry is unavailable"))?
+            .remove(launch_id)
+            .context("interactive launch is unavailable or has already been used")?;
+        let registry = self.clone();
+        let session = InteractiveSession::start(
+            command,
+            &Control {
+                policy: ExecutionPolicy::Interactive,
+                ..Control::default()
+            },
+            OperationId::random(),
+            Arc::new(move |event| {
+                let terminal = matches!(
+                    event,
+                    InteractiveSessionEvent::Exited { .. } | InteractiveSessionEvent::Failed { .. }
+                );
+                let event = backend_interactive_event(event);
+                let session_id = event.session_id().to_owned();
+                observer(event);
+                if terminal && let Ok(mut active) = registry.active.lock() {
+                    active.remove(&session_id);
+                }
+            }),
+        )?;
+        let session_id = session_key(session.process_id());
+        let started = InteractiveSessionStarted {
+            session_id: session_id.clone(),
+            process_id: process_key(session.process_id()),
+            os_process_id: session.os_process_id(),
+        };
+        self.active
+            .lock()
+            .map_err(|_| anyhow::anyhow!("interactive session registry is unavailable"))?
+            .insert(session_id.clone(), session.clone());
+        // A very short child may finish before insertion; do not retain a stale handle.
+        if session.is_finished() {
+            self.active
+                .lock()
+                .map_err(|_| anyhow::anyhow!("interactive session registry is unavailable"))?
+                .remove(&session_id);
+        }
+        Ok(started)
+    }
+
+    fn session(&self, session_id: &str) -> anyhow::Result<InteractiveSession> {
+        self.active
+            .lock()
+            .map_err(|_| anyhow::anyhow!("interactive session registry is unavailable"))?
+            .get(session_id)
+            .cloned()
+            .context("interactive session is not active")
+    }
+
+    #[cfg(test)]
+    fn register_test_launch(&self, launch_id: &str, command: InteractiveCommand) {
+        self.pending
+            .lock()
+            .unwrap()
+            .insert(launch_id.to_owned(), command);
+    }
+}
+
+impl BackendInteractiveEvent {
+    fn session_id(&self) -> &str {
+        match self {
+            Self::Output { session_id, .. }
+            | Self::Exited { session_id, .. }
+            | Self::Failed { session_id, .. } => session_id,
+        }
+    }
+}
+
+fn session_key(process_id: loadbot::process::ProcessId) -> String {
+    format!("session-{:016x}", process_id.0)
+}
+
+fn process_key(process_id: loadbot::process::ProcessId) -> String {
+    format!("process-{:016x}", process_id.0)
+}
+
+fn backend_interactive_event(event: InteractiveSessionEvent) -> BackendInteractiveEvent {
+    match event {
+        InteractiveSessionEvent::Output { process_id, bytes } => BackendInteractiveEvent::Output {
+            session_id: session_key(process_id),
+            bytes,
+        },
+        InteractiveSessionEvent::Exited {
+            process_id,
+            status,
+            cancelled,
+        } => BackendInteractiveEvent::Exited {
+            session_id: session_key(process_id),
+            code: status.code,
+            signal: status.signal,
+            cancelled,
+        },
+        InteractiveSessionEvent::Failed {
+            process_id,
+            diagnostic,
+        } => BackendInteractiveEvent::Failed {
+            session_id: session_key(process_id),
+            message: diagnostic,
+        },
+    }
 }
 
 struct DesktopInteraction {
@@ -167,12 +327,69 @@ fn backend_process_activity(event: loadbot::process::Event) -> Option<BackendAct
         Event::Exited { status, .. } => log("system", format!("process exited with {status}")),
         Event::Cancelled { .. } => log("system", "process cancelled".into()),
         Event::Failed { diagnostic, .. } => log("system", diagnostic),
+        Event::InteractiveStarted { .. } => log("system", "interactive process started".into()),
+        Event::InteractiveExited { status, .. } => log(
+            "system",
+            if status.success() {
+                "interactive process exited successfully".into()
+            } else {
+                format!("interactive process exited with code {}", status.code)
+            },
+        ),
+        Event::InteractiveCancelled { .. } => log("system", "interactive process cancelled".into()),
         Event::OperationStarted { .. }
         | Event::OperationFinished { .. }
         | Event::Started { .. } => {
             return None;
         }
     })
+}
+
+#[tauri::command]
+fn start_loadbot_interactive_session(
+    request: InteractiveLaunchRequest,
+    on_event: Channel<BackendInteractiveEvent>,
+    sessions: tauri::State<'_, InteractiveSessions>,
+) -> Result<InteractiveSessionStarted, DesktopError> {
+    sessions
+        .start(
+            &request.launch_id,
+            Arc::new(move |event| {
+                let _ = on_event.send(event);
+            }),
+        )
+        .map_err(interactive_error)
+}
+
+#[tauri::command]
+fn send_loadbot_interactive_input(
+    session_id: String,
+    input: String,
+    sessions: tauri::State<'_, InteractiveSessions>,
+) -> Result<(), DesktopError> {
+    // `input` is intentionally opaque and is never formatted, retained, or emitted.
+    sessions
+        .session(&session_id)
+        .and_then(|session| session.send_input(input.as_bytes()))
+        .map_err(interactive_error)
+}
+
+#[tauri::command]
+fn terminate_loadbot_interactive_session(
+    session_id: String,
+    sessions: tauri::State<'_, InteractiveSessions>,
+) -> Result<(), DesktopError> {
+    sessions
+        .session(&session_id)
+        .and_then(|session| session.terminate())
+        .map_err(interactive_error)
+}
+
+fn interactive_error(error: anyhow::Error) -> DesktopError {
+    DesktopError {
+        kind: "interactive-session",
+        message: format!("{error:#}"),
+    }
 }
 
 fn quote_log_argument(value: &str) -> String {
@@ -744,7 +961,11 @@ fn main() {
     // The same native host and qualified semantic capabilities serve Windows and Linux.
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .manage(InteractiveSessions::default())
         .invoke_handler(tauri::generate_handler![
+            start_loadbot_interactive_session,
+            send_loadbot_interactive_input,
+            terminate_loadbot_interactive_session,
             read_loadbot_inventory,
             read_loadbot_catalogs,
             open_loadbot_project,
@@ -873,6 +1094,8 @@ mod tests {
     #[test]
     fn native_activity_maps_real_process_commands_and_output_as_verbose_logs() {
         let command = backend_process_activity(loadbot::process::Event::Starting {
+            operation_id: OperationId::random(),
+            process_id: loadbot::process::ProcessId::random(),
             program: "git".into(),
             arguments: ["fetch", "origin"].into_iter().map(Into::into).collect(),
             directory: Some(PathBuf::from("catalog path")),
@@ -885,6 +1108,8 @@ mod tests {
         assert_eq!(text, "git fetch origin\nworking directory: catalog path");
 
         let stderr = backend_process_activity(loadbot::process::Event::Output {
+            operation_id: OperationId::random(),
+            process_id: loadbot::process::ProcessId::random(),
             stream: loadbot::process::Stream::Stderr,
             bytes: b"Permission denied (publickey).\n".to_vec(),
         })
@@ -914,5 +1139,58 @@ mod tests {
             Some(malformed)
         );
         assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn interactive_bridge_rejects_unissued_launch_capabilities() {
+        let sessions = InteractiveSessions::default();
+        let error = sessions
+            .start("frontend-supplied-program", Arc::new(|_| {}))
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("launch is unavailable"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn interactive_bridge_routes_output_input_exit_and_removes_the_session() {
+        use std::{sync::mpsc, time::Duration};
+
+        let sessions = InteractiveSessions::default();
+        let mut command = InteractiveCommand::new("sh");
+        command.args([
+            "-c",
+            "printf 'bridge-ready\\n'; IFS= read -r value; printf 'bridge:%s\\n' \"$value\"",
+        ]);
+        sessions.register_test_launch("issued-by-backend", command);
+        let (sender, receiver) = mpsc::channel();
+        let started = sessions
+            .start(
+                "issued-by-backend",
+                Arc::new(move |event| {
+                    let _ = sender.send(event);
+                }),
+            )
+            .unwrap();
+        let first = receiver.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(matches!(first, BackendInteractiveEvent::Output { .. }));
+        sessions
+            .session(&started.session_id)
+            .unwrap()
+            .send_input(b"opaque-value\n")
+            .unwrap();
+        let mut output = Vec::new();
+        let exit = loop {
+            match receiver.recv_timeout(Duration::from_secs(5)).unwrap() {
+                BackendInteractiveEvent::Output { bytes, .. } => output.extend(bytes),
+                event @ BackendInteractiveEvent::Exited { .. } => break event,
+                BackendInteractiveEvent::Failed { message, .. } => panic!("{message}"),
+            }
+        };
+        assert!(String::from_utf8_lossy(&output).contains("bridge:opaque-value"));
+        assert!(matches!(
+            exit,
+            BackendInteractiveEvent::Exited { code: 0, .. }
+        ));
+        assert!(sessions.session(&started.session_id).is_err());
     }
 }

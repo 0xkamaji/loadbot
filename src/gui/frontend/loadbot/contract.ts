@@ -110,6 +110,25 @@ export interface ProjectOperationActivity extends ProjectIdentity {
 export type ProjectOperationActivityEvent = ProjectOperationActivity | OperationLogActivity;
 export type ProjectOperationActivitySink = (activity: ProjectOperationActivityEvent) => void;
 
+/** Opaque, single-use capability created by a Rust backend operation. */
+export interface InteractiveLaunch {
+  readonly launchId: string;
+  readonly label: string;
+}
+export interface InteractiveSessionStarted {
+  readonly sessionId: string;
+  readonly processId: string;
+  readonly osProcessId?: number;
+}
+export type InteractiveSessionEvent =
+  | { readonly kind: 'output'; readonly sessionId: string; readonly text: string }
+  | {
+    readonly kind: 'exited'; readonly sessionId: string; readonly code: number;
+    readonly signal?: string; readonly cancelled: boolean;
+  }
+  | { readonly kind: 'failed'; readonly sessionId: string; readonly message: string };
+export type InteractiveSessionEventSink = (event: InteractiveSessionEvent) => void;
+
 /** Backend capabilities are semantic and qualified; native paths never cross this seam.
  * Each read returns a complete, caller-owned inventory snapshot, or rejects.
  */
@@ -123,6 +142,12 @@ export interface LoadbotAdapter {
   updateProject?(project: ProjectIdentity, onActivity?: ProjectOperationActivitySink): Promise<ProjectIdentity>;
   removeProject?(project: ProjectIdentity, onActivity?: ProjectOperationActivitySink): Promise<ProjectIdentity>;
   reinstallProject?(project: ProjectIdentity, onActivity?: ProjectOperationActivitySink): Promise<ProjectIdentity>;
+  startInteractiveSession?(
+    launch: InteractiveLaunch,
+    onEvent: InteractiveSessionEventSink,
+  ): Promise<InteractiveSessionStarted>;
+  sendInteractiveInput?(sessionId: string, input: string): Promise<void>;
+  terminateInteractiveSession?(sessionId: string): Promise<void>;
   addCatalog(input: AddCatalogInput): Promise<CatalogIdentity>;
   addProject(input: AddProjectInput): Promise<ProjectIdentity>;
   addShortcut(input: AddShortcutInput): Promise<ShortcutIdentity>;

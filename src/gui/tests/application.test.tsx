@@ -4,7 +4,9 @@ import { ACTIVITY_LOG_HISTORY_LIMIT, COMMAND_HISTORY_LIMIT, createLoadbotApplica
 import { fixtureAdapter } from '../frontend/loadbot/fixtures/adapter';
 import { fixtureSampleForms } from '../frontend/loadbot/fixtures/sampleForms';
 import { projectKey, shortcutKey } from '../frontend/loadbot/identity';
-import type { LoadbotAdapter, LoadbotProject, ShortcutIdentity } from '../frontend/loadbot/contract';
+import type {
+  InteractiveSessionEventSink, InteractiveSessionStarted, LoadbotAdapter, LoadbotProject, ShortcutIdentity,
+} from '../frontend/loadbot/contract';
 
 describe('headless capability and application boundary', () => {
   const adapter = (readInventory: LoadbotAdapter['readInventory'], openProjectFolder: LoadbotAdapter['openProjectFolder'] = vi.fn(async () => {})): LoadbotAdapter => ({
@@ -78,6 +80,67 @@ describe('headless capability and application boundary', () => {
     expect(application.getSnapshot().command.history).toHaveLength(COMMAND_HISTORY_LIMIT);
     expect(application.getSnapshot().command.history[0]).toBe('unknown-4');
     expect(application.getSnapshot().activity).toBe(activity);
+  });
+
+  it('owns interactive COMMAND state without recording or logging opaque input', async () => {
+    let onEvent: InteractiveSessionEventSink = () => {};
+    let resolveStart!: (started: InteractiveSessionStarted) => void;
+    const startInteractiveSession: NonNullable<LoadbotAdapter['startInteractiveSession']> = vi.fn((_launch, sink) => {
+      onEvent = sink;
+      return new Promise<InteractiveSessionStarted>((resolve) => { resolveStart = resolve; });
+    });
+    const sendInteractiveInput: NonNullable<LoadbotAdapter['sendInteractiveInput']> = vi.fn(async () => {});
+    const terminateInteractiveSession: NonNullable<LoadbotAdapter['terminateInteractiveSession']> = vi.fn(async () => {});
+    const injected: LoadbotAdapter = {
+      ...adapter(vi.fn(() => fixtureAdapter.readInventory())),
+      startInteractiveSession, sendInteractiveInput, terminateInteractiveSession,
+    };
+    const application = createLoadbotApplication(injected);
+    application.start();
+    await vi.waitFor(() => expect(application.getSnapshot().inventory.status).toBe('ready'));
+    const activity = application.getSnapshot().activity;
+    const history = application.getSnapshot().command.history;
+    const entries = application.getSnapshot().command.entries;
+
+    const starting = application.actions.startInteractiveSession({ launchId: 'opaque-launch', label: 'Test prompt' });
+    expect(application.getSnapshot().command.interactive).toMatchObject({
+      status: 'starting', launchId: 'opaque-launch', label: 'Test prompt',
+    });
+    resolveStart({ sessionId: 'session-1', processId: 'process-1', osProcessId: 42 });
+    expect(await starting).toBe(true);
+    expect(application.getSnapshot().command.interactive).toMatchObject({
+      status: 'active', sessionId: 'session-1', processId: 'process-1',
+    });
+
+    onEvent({ kind: 'output', sessionId: 'session-1', text: 'prompt: ' });
+    expect(application.getSnapshot().command.interactiveTranscript.at(-1)).toMatchObject({
+      kind: 'output', text: 'prompt: ',
+    });
+    expect(application.actions.submitCommand('opaque user input')).toBe(true);
+    await vi.waitFor(() => expect(sendInteractiveInput).toHaveBeenCalledWith('session-1', 'opaque user input\r'));
+    expect(application.getSnapshot().command.history).toBe(history);
+    expect(application.getSnapshot().command.entries).toBe(entries);
+    expect(application.getSnapshot().activity).toBe(activity);
+    expect(JSON.stringify(application.getSnapshot())).not.toContain('opaque user input');
+
+    onEvent({ kind: 'exited', sessionId: 'session-1', code: 0, cancelled: false });
+    expect(application.getSnapshot().command.interactive).toBeUndefined();
+    expect(application.getSnapshot().command.interactiveTranscript.at(-1)?.text).toContain('exited with code 0');
+    expect(application.actions.submitCommand('projects')).toBe(true);
+    expect(application.getSnapshot().command.history.at(-1)).toBe('projects');
+
+    let cancelEvent: InteractiveSessionEventSink = () => {};
+    vi.mocked(startInteractiveSession).mockImplementationOnce(async (_launch, sink) => {
+      cancelEvent = sink;
+      return { sessionId: 'session-2', processId: 'process-2' };
+    });
+    await application.actions.startInteractiveSession({ launchId: 'opaque-cancel', label: 'Cancelable prompt' });
+    expect(await application.actions.cancelInteractiveSession()).toBe(true);
+    expect(terminateInteractiveSession).toHaveBeenCalledWith('session-2');
+    expect(application.getSnapshot().command.interactive?.status).toBe('terminating');
+    cancelEvent({ kind: 'exited', sessionId: 'session-2', code: 1, cancelled: true });
+    expect(application.getSnapshot().command.interactive).toBeUndefined();
+    expect(application.getSnapshot().command.interactiveTranscript.at(-1)?.text).toContain('cancelled');
   });
 
   it('routes lifecycle command targets through adapters and the shared destructive confirmation flow', async () => {

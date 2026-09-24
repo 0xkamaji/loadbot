@@ -1,0 +1,8 @@
+[[permission]]
+identifier = "interactive-session"
+description = "Start backend-authorized interactive sessions and route opaque input or termination to an active session."
+commands.allow = [
+  "start_loadbot_interactive_session",
+  "send_loadbot_interactive_input",
+  "terminate_loadbot_interactive_session",
+]

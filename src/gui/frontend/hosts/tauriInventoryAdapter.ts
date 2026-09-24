@@ -3,6 +3,7 @@ import type {
   AddCatalogInput, AddProjectInput, AddShortcutInput, CatalogIdentity, LoadbotAdapter,
   CatalogSyncActivity, CatalogSyncActivitySink, LoadbotCatalog, LoadbotProject, LoadbotRecipe,
   LoadbotInterpreterRunner, LoadbotRecipeArgument, LoadbotRunner, LoadbotShortcut,
+  InteractiveLaunch, InteractiveSessionEvent, InteractiveSessionEventSink, InteractiveSessionStarted,
   OperationLogActivity, ProjectIdentity, ShortcutIdentity,
   ProjectOperationActivity, ProjectOperationActivitySink, RecipeShortcutInput, ShortcutHelpRequest, ShortcutHelpResult,
 } from '../loadbot/contract';
@@ -28,6 +29,12 @@ export interface ManagementBridge {
   viewShortcutHelp(request: ShortcutHelpRequest): Promise<unknown>;
   deleteShortcuts(shortcuts: readonly ShortcutIdentity[]): Promise<unknown>;
   syncCatalog(catalog: string, onActivity?: CatalogSyncActivitySink): Promise<unknown>;
+}
+
+export interface InteractiveSessionBridge {
+  start(launch: InteractiveLaunch, onEvent: InteractiveSessionEventSink): Promise<unknown>;
+  sendInput(sessionId: string, input: string): Promise<unknown>;
+  terminate(sessionId: string): Promise<unknown>;
 }
 
 async function nativeInventoryQuery(): Promise<unknown> {
@@ -105,6 +112,28 @@ const nativeManagementBridge: ManagementBridge = {
   },
 };
 
+const nativeInteractiveSessionBridge: InteractiveSessionBridge = {
+  async start(launch, onEvent) {
+    requireTauri('Interactive sessions');
+    const channel = new Channel<unknown>();
+    const decoder = new TextDecoder();
+    channel.onmessage = (value) => {
+      interactiveSessionEvents(value, decoder).forEach(onEvent);
+    };
+    return invoke('start_loadbot_interactive_session', {
+      request: { launchId: launch.launchId }, onEvent: channel,
+    });
+  },
+  async sendInput(sessionId, input) {
+    requireTauri('Interactive sessions');
+    return invoke('send_loadbot_interactive_input', { sessionId, input });
+  },
+  async terminate(sessionId) {
+    requireTauri('Interactive sessions');
+    return invoke('terminate_loadbot_interactive_session', { sessionId });
+  },
+};
+
 function invokeProjectOperation(command: string, project: ProjectIdentity, onActivity?: ProjectOperationActivitySink) {
   requireTauri('Project management');
   const channel = new Channel<unknown>();
@@ -130,6 +159,41 @@ function boolean(value: unknown): boolean {
 function number(value: unknown): number {
   if (typeof value !== 'number' || !Number.isInteger(value)) throw new Error('Invalid inventory response: expected an integer.');
   return value;
+}
+
+function optionalNumber(value: unknown): number | undefined {
+  return value == null ? undefined : number(value);
+}
+
+function interactiveSessionStarted(value: unknown): InteractiveSessionStarted {
+  const item = record(value);
+  return {
+    sessionId: text(item.sessionId), processId: text(item.processId),
+    osProcessId: optionalNumber(item.osProcessId),
+  };
+}
+
+function interactiveSessionEvents(value: unknown, decoder: TextDecoder): readonly InteractiveSessionEvent[] {
+  const item = record(value);
+  const kind = text(item.kind);
+  const sessionId = text(item.sessionId);
+  if (kind === 'output') {
+    if (!Array.isArray(item.bytes) || item.bytes.some((byte) => typeof byte !== 'number' || !Number.isInteger(byte) || byte < 0 || byte > 255)) {
+      throw new Error('Invalid interactive session output.');
+    }
+    const streamed = decoder.decode(Uint8Array.from(item.bytes), { stream: true });
+    return streamed ? [{ kind, sessionId, text: streamed }] : [];
+  }
+  if (kind === 'exited') {
+    const tail = decoder.decode();
+    const exited: InteractiveSessionEvent = {
+      kind, sessionId, code: number(item.code), signal: optionalText(item.signal),
+      cancelled: boolean(item.cancelled),
+    };
+    return tail ? [{ kind: 'output', sessionId, text: tail }, exited] : [exited];
+  }
+  if (kind === 'failed') return [{ kind, sessionId, message: text(item.message) }];
+  throw new Error('Invalid interactive session event.');
 }
 function optionalPath(value: unknown): string | undefined {
   if (value == null) return undefined;
@@ -292,6 +356,7 @@ export function createTauriLoadbotAdapter(
   query: InventoryQuery = nativeInventoryQuery,
   openProject: ProjectFolderOpen = nativeProjectFolderOpen,
   management: ManagementBridge = nativeManagementBridge,
+  interactive: InteractiveSessionBridge = nativeInteractiveSessionBridge,
 ): LoadbotAdapter {
   return {
     async readInventory() {
@@ -336,6 +401,18 @@ export function createTauriLoadbotAdapter(
     async reinstallProject(project, onActivity) {
       try { return projectIdentity(await management.reinstallProject?.(project, onActivity)); }
       catch (error: unknown) { throw nativeError(error, 'Could not reinstall the project.'); }
+    },
+    async startInteractiveSession(launch, onEvent) {
+      try { return interactiveSessionStarted(await interactive.start(launch, onEvent)); }
+      catch (error: unknown) { throw nativeError(error, 'Could not start the interactive session.'); }
+    },
+    async sendInteractiveInput(sessionId, input) {
+      try { await interactive.sendInput(sessionId, input); }
+      catch (error: unknown) { throw nativeError(error, 'Could not send interactive input.'); }
+    },
+    async terminateInteractiveSession(sessionId) {
+      try { await interactive.terminate(sessionId); }
+      catch (error: unknown) { throw nativeError(error, 'Could not terminate the interactive session.'); }
     },
     async addCatalog(input) {
       try { return catalogIdentity(await management.addCatalog(input)); }

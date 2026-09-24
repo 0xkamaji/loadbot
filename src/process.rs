@@ -1,4 +1,4 @@
-//! Synchronous, bounded process execution. Streaming is not a terminal adapter.
+//! Bounded process execution plus explicit, caller-owned interactive PTY sessions.
 use std::io::Read;
 use std::process::{Command, ExitStatus, Output, Stdio};
 use std::sync::{
@@ -9,6 +9,11 @@ use std::sync::{
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+
+mod interactive;
+pub use interactive::{
+    InteractiveCommand, InteractiveExitStatus, InteractiveSession, InteractiveSessionEvent,
+};
 
 thread_local! {
     static CURRENT: std::cell::RefCell<Control> = std::cell::RefCell::new(Control::default());
@@ -156,6 +161,22 @@ pub enum Event {
         operation_id: OperationId,
         process_id: ProcessId,
         diagnostic: String,
+    },
+    /// High-level lifecycle only. Interactive bytes are delivered through the
+    /// session observer and never copied into background/activity logging.
+    InteractiveStarted {
+        operation_id: OperationId,
+        process_id: ProcessId,
+        pid: Option<u32>,
+    },
+    InteractiveExited {
+        operation_id: OperationId,
+        process_id: ProcessId,
+        status: InteractiveExitStatus,
+    },
+    InteractiveCancelled {
+        operation_id: OperationId,
+        process_id: ProcessId,
     },
 }
 

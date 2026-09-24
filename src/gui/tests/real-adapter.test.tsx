@@ -220,6 +220,39 @@ describe('one platform-neutral real read adapter', () => {
     expect(JSON.stringify(tauri.invoke.mock.calls)).not.toMatch(/shell|powershell\.exe|xdg-open/);
   });
 
+  it('bridges opaque interactive capabilities, ordered UTF-8 output, input, and termination', async () => {
+    tauri.invoke.mockReset();
+    tauri.invoke.mockImplementation(async (command: string, input?: Record<string, unknown>) => {
+      if (command === 'start_loadbot_interactive_session') {
+        const channel = input?.onEvent as InstanceType<typeof tauri.Channel>;
+        channel.onmessage({ kind: 'output', sessionId: 'session-1', bytes: [0xe2] } as never);
+        channel.onmessage({ kind: 'output', sessionId: 'session-1', bytes: [0x82, 0xac, 0x0a] } as never);
+        channel.onmessage({ kind: 'exited', sessionId: 'session-1', code: 0, signal: null, cancelled: false } as never);
+        return { sessionId: 'session-1', processId: 'process-1', osProcessId: 42 };
+      }
+      return undefined;
+    });
+    const adapter = createTauriLoadbotAdapter();
+    const events = vi.fn();
+    await expect(adapter.startInteractiveSession?.({ launchId: 'backend-token', label: 'Prompt' }, events))
+      .resolves.toEqual({ sessionId: 'session-1', processId: 'process-1', osProcessId: 42 });
+    expect(events.mock.calls.map(([event]) => event)).toEqual([
+      { kind: 'output', sessionId: 'session-1', text: '€\n' },
+      { kind: 'exited', sessionId: 'session-1', code: 0, signal: undefined, cancelled: false },
+    ]);
+    await adapter.sendInteractiveInput?.('session-1', 'opaque value\r');
+    await adapter.terminateInteractiveSession?.('session-1');
+    expect(tauri.invoke.mock.calls).toEqual([
+      ['start_loadbot_interactive_session', {
+        request: { launchId: 'backend-token' }, onEvent: expect.any(tauri.Channel),
+      }],
+      ['send_loadbot_interactive_input', { sessionId: 'session-1', input: 'opaque value\r' }],
+      ['terminate_loadbot_interactive_session', { sessionId: 'session-1' }],
+    ]);
+    expect(tauri.invoke.mock.calls[0][1]).not.toHaveProperty('program');
+    expect(tauri.invoke.mock.calls[0][1]).not.toHaveProperty('arguments');
+  });
+
   it('rejects malformed payloads and unavailable hosts rather than substituting fixtures', async () => {
     for (const invalid of [{ projects: [] }, [{ catalog: 'a', tool: 'b' }], [{ catalog: 'a', tool: 'b', entries: [{ name: 'x', path: 'x', source: 'unknown' }] }]]) {
       await expect(createTauriLoadbotAdapter(async () => invalid).readInventory()).rejects.toThrow(/Invalid inventory/);

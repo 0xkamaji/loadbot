@@ -2,5 +2,5 @@
   "identifier": "main-inventory",
   "description": "The main local window may read and manage Loadbot state, open resolved project folders, and persist its workspace layout.",
   "windows": ["main"],
-  "permissions": ["read-local-inventory", "manage-loadbot", "open-project-folder", "workspace-layout"]
+  "permissions": ["read-local-inventory", "manage-loadbot", "interactive-session", "open-project-folder", "workspace-layout"]
 }

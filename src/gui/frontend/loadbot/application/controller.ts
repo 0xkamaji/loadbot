@@ -1,6 +1,6 @@
 import type {
   AddCatalogInput, AddProjectInput, AddShortcutInput, CatalogSyncActivityEvent, CatalogSyncStage, LoadbotAdapter, LoadbotCatalog,
-  LoadbotProject, LoadbotShortcut,
+  InteractiveLaunch, InteractiveSessionEvent, LoadbotProject, LoadbotShortcut,
   LoadbotRecipe, LoadbotRecipeArgument, LoadbotRunner, OperationLogActivity, ProjectOperationActivityEvent, ProjectOperationStage,
   ShortcutHelpResult, ShortcutIdentity,
 } from '../contract';
@@ -57,6 +57,7 @@ export interface ActivityLogEntry {
 export const ACTIVITY_HISTORY_LIMIT = 250;
 export const ACTIVITY_LOG_HISTORY_LIMIT = 1000;
 export const COMMAND_HISTORY_LIMIT = 100;
+export const INTERACTIVE_TRANSCRIPT_LIMIT = 500;
 export interface CommandEntry {
   readonly id: number;
   readonly input: string;
@@ -65,6 +66,18 @@ export interface CommandEntry {
 export interface CommandState {
   readonly entries: readonly CommandEntry[];
   readonly history: readonly string[];
+  readonly interactive?: {
+    readonly status: 'starting' | 'active' | 'terminating';
+    readonly launchId: string;
+    readonly label: string;
+    readonly sessionId?: string;
+    readonly processId?: string;
+  };
+  readonly interactiveTranscript: readonly {
+    readonly id: number;
+    readonly kind: 'output' | 'system' | 'error';
+    readonly text: string;
+  }[];
 }
 export type ShortcutHelpState =
   | { readonly status: 'loading' }
@@ -154,6 +167,8 @@ export interface LoadbotActions {
   selectBottomView(view: 'command' | 'activity'): void;
   completeCommand(input: string, caret: number): CommandCompletion | undefined;
   submitCommand(input: string): boolean;
+  startInteractiveSession(launch: InteractiveLaunch): Promise<boolean>;
+  cancelInteractiveSession(): Promise<boolean>;
   changeSampleInput(id: string, value: string | boolean): void;
   useSamplePath(id: string): void;
   toggleDrawer(): void;
@@ -167,7 +182,8 @@ interface ReadPreference { catalog?: string; projectId?: string; shortcutId?: st
 export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: SampleForms = noSampleForms) {
   let state: LoadbotState = {
     inventory: { status: 'loading' }, catalogState: { status: 'loading' }, projectFilter: 'installed', fields: [], values: {},
-    missingInputIds: [], drawerOpen: true, bottomView: 'command', command: { entries: [], history: [] },
+    missingInputIds: [], drawerOpen: true, bottomView: 'command',
+    command: { entries: [], history: [], interactiveTranscript: [] },
     activity: [], activityLogs: [], management: { status: 'idle' }, shortcutManagement: { active: false, selected: [] },
     projectFolder: { status: 'idle' }, projectTerminal: { status: 'idle' },
   };
@@ -179,6 +195,8 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
   let operationId = 0;
   let activityLogId = 0;
   let commandId = 0;
+  let interactiveTranscriptId = 0;
+  let interactiveGeneration = 0;
   let recipeArgumentKey = 1000;
   let recipeHelpGeneration = 0;
   const publish = (next: LoadbotState) => {
@@ -210,6 +228,13 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
     publish({ ...state, activityLogs, bottomView: 'activity' });
   };
   const errorMessage = (error: unknown, fallback: string) => error instanceof Error ? error.message : fallback;
+  const appendInteractiveTranscript = (kind: 'output' | 'system' | 'error', text: string) => {
+    if (!text) return;
+    const interactiveTranscript = [...state.command.interactiveTranscript, {
+      id: ++interactiveTranscriptId, kind, text,
+    }].slice(-INTERACTIVE_TRANSCRIPT_LIMIT);
+    publish({ ...state, bottomView: 'command', command: { ...state.command, interactiveTranscript } });
+  };
   const cancelled = (error: unknown) => Boolean(error && typeof error === 'object' && 'kind' in error && error.kind === 'cancelled');
   const projectProgress = (id: string, operation: ActivityOperation) => (activity: ProjectOperationActivityEvent) => {
     if ('kind' in activity) appendLog(id, activity);
@@ -723,6 +748,7 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
     clearManagementStatus() { if (state.management.status !== 'submitting') publish({ ...state, management: { status: 'idle' } }); },
     selectBottomView(view) { publish({ ...state, bottomView: view }); },
     completeCommand(input, caret) {
+      if (state.command.interactive) return undefined;
       const projects = state.inventory.status === 'ready' ? state.inventory.projects : [];
       return completeLoadbotCommand(input, caret, {
         inventoryStatus: state.inventory.status,
@@ -732,6 +758,17 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
       });
     },
     submitCommand(input) {
+      const interactive = state.command.interactive;
+      if (interactive) {
+        if (interactive.status !== 'active' || !interactive.sessionId || !adapter.sendInteractiveInput) return false;
+        const generation = interactiveGeneration;
+        void adapter.sendInteractiveInput(interactive.sessionId, `${input}\r`).catch((error: unknown) => {
+          if (generation === interactiveGeneration) {
+            appendInteractiveTranscript('error', `${errorMessage(error, 'Could not send interactive input.')}\n`);
+          }
+        });
+        return true;
+      }
       const submitted = input.trim();
       if (!submitted) return false;
       const projects = state.inventory.status === 'ready' ? state.inventory.projects : [];
@@ -761,11 +798,101 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
       publish({
         ...state,
         command: {
+          ...state.command,
           entries: [...state.command.entries, { id: ++commandId, input: submitted, result }].slice(-COMMAND_HISTORY_LIMIT),
           history: [...state.command.history, submitted].slice(-COMMAND_HISTORY_LIMIT),
         },
       });
       return true;
+    },
+    async startInteractiveSession(launch) {
+      if (state.command.interactive || !adapter.startInteractiveSession
+        || !adapter.sendInteractiveInput || !adapter.terminateInteractiveSession) return false;
+      const generation = ++interactiveGeneration;
+      publish({
+        ...state, bottomView: 'command',
+        command: {
+          ...state.command,
+          interactive: { status: 'starting', launchId: launch.launchId, label: launch.label },
+        },
+      });
+      appendInteractiveTranscript('system', `Interactive session starting: ${launch.label}\n`);
+      const onEvent = (event: InteractiveSessionEvent) => {
+        if (generation !== interactiveGeneration) return;
+        if (event.kind === 'output') {
+          appendInteractiveTranscript('output', event.text);
+          return;
+        }
+        const text = event.kind === 'failed'
+          ? `Interactive session failed: ${event.message}\n`
+          : event.cancelled
+            ? 'Interactive session cancelled.\n'
+            : `Interactive session exited with code ${event.code}${event.signal ? ` (${event.signal})` : ''}.\n`;
+        const entry = {
+          id: ++interactiveTranscriptId,
+          kind: event.kind === 'failed' ? 'error' as const : 'system' as const,
+          text,
+        };
+        publish({
+          ...state, bottomView: 'command',
+          command: {
+            ...state.command, interactive: undefined,
+            interactiveTranscript: [...state.command.interactiveTranscript, entry].slice(-INTERACTIVE_TRANSCRIPT_LIMIT),
+          },
+        });
+      };
+      try {
+        const started = await adapter.startInteractiveSession(launch, onEvent);
+        if (generation !== interactiveGeneration || !state.command.interactive) return true;
+        publish({
+          ...state,
+          command: {
+            ...state.command,
+            interactive: {
+              status: 'active', launchId: launch.launchId, label: launch.label,
+              sessionId: started.sessionId, processId: started.processId,
+            },
+          },
+        });
+        return true;
+      } catch (error: unknown) {
+        if (generation === interactiveGeneration) {
+          const entry = {
+            id: ++interactiveTranscriptId, kind: 'error' as const,
+            text: `${errorMessage(error, 'Could not start the interactive session.')}\n`,
+          };
+          publish({
+            ...state,
+            command: {
+              ...state.command, interactive: undefined,
+              interactiveTranscript: [...state.command.interactiveTranscript, entry].slice(-INTERACTIVE_TRANSCRIPT_LIMIT),
+            },
+          });
+        }
+        return false;
+      }
+    },
+    async cancelInteractiveSession() {
+      const interactive = state.command.interactive;
+      if (!interactive?.sessionId || interactive.status !== 'active' || !adapter.terminateInteractiveSession) return false;
+      const generation = interactiveGeneration;
+      publish({
+        ...state,
+        command: { ...state.command, interactive: { ...interactive, status: 'terminating' } },
+      });
+      try {
+        await adapter.terminateInteractiveSession(interactive.sessionId);
+        return true;
+      } catch (error: unknown) {
+        if (generation === interactiveGeneration && state.command.interactive?.sessionId === interactive.sessionId) {
+          publish({
+            ...state,
+            command: { ...state.command, interactive: { ...interactive, status: 'active' } },
+          });
+          appendInteractiveTranscript('error', `${errorMessage(error, 'Could not terminate the interactive session.')}\n`);
+        }
+        return false;
+      }
     },
     changeSampleInput,
     useSamplePath(id) {

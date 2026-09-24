@@ -1,6 +1,9 @@
 fn main() {
     let mut attributes =
         tauri_build::Attributes::new().app_manifest(tauri_build::AppManifest::new().commands(&[
+            "start_loadbot_interactive_session",
+            "send_loadbot_interactive_input",
+            "terminate_loadbot_interactive_session",
             "read_loadbot_inventory",
             "read_loadbot_catalogs",
             "open_loadbot_project",

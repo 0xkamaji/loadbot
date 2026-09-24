@@ -141,6 +141,11 @@
 .lb-command-output li { display: flex; align-items: baseline; gap: var(--lb-space-3); padding: 2px 0; }
 .lb-command-output li > span { font-size: 10px; overflow-wrap: anywhere; }
 .lb-command-error { color: var(--lb-terminal-error); }
+.lb-interactive-transcript { margin-top: var(--lb-space-2); white-space: pre-wrap; overflow-wrap: anywhere; }
+.lb-interactive-transcript > span { display: inline; }
+.lb-interactive-transcript > span[data-kind='error'] { color: var(--lb-terminal-error); }
+.lb-interactive-status { display: flex; align-items: center; justify-content: space-between; gap: var(--lb-space-2); margin-top: var(--lb-space-2); color: var(--lb-terminal-accent); }
+.lb-interactive-status button { font: inherit; color: inherit; background: transparent; border: 1px solid currentColor; cursor: pointer; }
 .lb-command-facts { margin: var(--lb-space-1) 0 0; font-size: 11px; }
 .lb-command-facts > div { display: grid; grid-template-columns: 88px minmax(0, 1fr); gap: var(--lb-space-2); padding: 2px 0; }
 .lb-command-facts dd { margin: 0; overflow-wrap: anywhere; }

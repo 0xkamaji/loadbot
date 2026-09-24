@@ -121,10 +121,18 @@ export function CommandPane({ state, actions }: { state: LoadbotState; actions: 
   const candidateElements = useRef(new Map<string, HTMLElement>());
   const pendingCaret = useRef<number | undefined>(undefined);
   const completionId = useId();
+  const interactive = state.command.interactive;
 
   useEffect(() => {
     if (transcript.current) transcript.current.scrollTop = transcript.current.scrollHeight;
-  }, [state.command.entries.length]);
+  }, [state.command.entries.length, state.command.interactiveTranscript.length]);
+
+  useLayoutEffect(() => {
+    setInput('');
+    setCompletionSession(undefined);
+    setHistoryIndex(undefined);
+    draft.current = '';
+  }, [interactive?.launchId]);
 
   useLayoutEffect(() => {
     if (pendingCaret.current === undefined) return;
@@ -223,10 +231,19 @@ export function CommandPane({ state, actions }: { state: LoadbotState; actions: 
         <p className="lb-command-echo"><span aria-hidden="true">&gt;</span> {entry.input}</p>
         <CommandOutput result={entry.result} />
       </article>)}
+      {!!state.command.interactiveTranscript.length && <div className="lb-interactive-transcript" aria-label="Interactive session output">
+        {state.command.interactiveTranscript.map((entry) => <span key={entry.id} data-kind={entry.kind}>{entry.text}</span>)}
+      </div>}
+      {interactive && <div className="lb-interactive-status" role="status">
+        <span>Interactive session {interactive.status}: {interactive.label}</span>
+        {interactive.status === 'active' && <button type="button" onClick={() => { void actions.cancelInteractiveSession(); }}>
+          Terminate session
+        </button>}
+      </div>}
     </div>
     <form className="lb-command-form" onSubmit={(event) => {
       event.preventDefault();
-      if (completionSession) {
+      if (!interactive && completionSession) {
         acceptCompletion();
         return;
       }
@@ -237,10 +254,12 @@ export function CommandPane({ state, actions }: { state: LoadbotState; actions: 
       setCompletionSession(undefined);
     }}>
       <span aria-hidden="true">&gt;</span>
-      <input ref={inputElement} aria-label="Loadbot command" value={input} autoComplete="off" autoCapitalize="none" spellCheck={false}
-        role="combobox" aria-autocomplete="list" aria-expanded={completionSession !== undefined}
-        aria-controls={completionSession ? completionId : undefined}
-        aria-activedescendant={completionSession
+      <input ref={inputElement} aria-label={interactive ? 'Interactive session input' : 'Loadbot command'} value={input}
+        disabled={interactive?.status === 'starting' || interactive?.status === 'terminating'}
+        autoComplete="off" autoCapitalize="none" spellCheck={false}
+        role="combobox" aria-autocomplete="list" aria-expanded={!interactive && completionSession !== undefined}
+        aria-controls={!interactive && completionSession ? completionId : undefined}
+        aria-activedescendant={!interactive && completionSession
           ? `${completionId}-option-${completionSession.completion.candidates.findIndex((candidate) => candidate.id === completionSession.selectedId)}`
           : undefined}
         onChange={(event) => {
@@ -249,9 +268,10 @@ export function CommandPane({ state, actions }: { state: LoadbotState; actions: 
           setInput(value);
           draft.current = value;
           setHistoryIndex(undefined);
-          if (completionSession) beginOrRefreshCompletion(value, caret, true);
+          if (!interactive && completionSession) beginOrRefreshCompletion(value, caret, true);
         }}
         onKeyDown={(event) => {
+          if (interactive) return;
           if (completionSession) {
             if (event.key === 'Tab') {
               event.preventDefault();
@@ -281,7 +301,7 @@ export function CommandPane({ state, actions }: { state: LoadbotState; actions: 
           moveHistory(event.key === 'ArrowUp' ? -1 : 1);
         }} />
     </form>
-    {completionSession && <div id={completionId} className="lb-command-completions" role="listbox" aria-label="Command completions">
+    {!interactive && completionSession && <div id={completionId} className="lb-command-completions" role="listbox" aria-label="Command completions">
       {completionSession.completion.candidates.map((candidate, index) => <button
         id={`${completionId}-option-${index}`} key={candidate.id} type="button" role="option" tabIndex={-1}
         aria-selected={candidate.id === completionSession.selectedId}

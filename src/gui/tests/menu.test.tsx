@@ -360,6 +360,47 @@ describe('injected menu outside Tauri', () => {
     expect(within(screen.getByRole('tabpanel', { name: 'Activity' })).getByText('Catalog personal refreshed.')).not.toBeVisible();
   });
 
+  it('renders and routes the installed and available project lifecycle controls', async () => {
+    const user = userEvent.setup();
+    const projects: readonly LoadbotProject[] = [
+      { catalog: 'personal', tool: 'installed', installed: true, entries: [] },
+      { catalog: 'personal', tool: 'available', installed: false, entries: [] },
+    ];
+    const pending = deferred<{ catalog: string; tool: string }>();
+    const pushProject: NonNullable<LoadbotAdapter['pushProject']> = vi.fn(() => pending.promise);
+    const managed: LoadbotAdapter = {
+      ...adapter(projects),
+      readInventory: async () => structuredClone(projects),
+      pushProject,
+    };
+    render(<LoadbotMenu adapter={managed} />);
+    await projectRows().findByRole('button', { name: 'installed personal' });
+
+    expect(screen.getByRole('button', { name: 'Update from Remote' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Push' })).toBeEnabled();
+    expect(screen.queryByRole('button', { name: 'OPEN FOLDER' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Open project folder: installed (personal)' })).toBeEnabled();
+    await user.click(screen.getByRole('button', { name: 'More project actions' }));
+    expect(screen.getByRole('menuitem', { name: 'Reinstall' })).toBeEnabled();
+    expect(screen.getByRole('menuitem', { name: 'Remove' })).toBeEnabled();
+
+    await user.click(screen.getByRole('button', { name: 'Push' }));
+    expect(pushProject).toHaveBeenCalledWith({ catalog: 'personal', tool: 'installed' }, expect.any(Function));
+    expect(screen.getByRole('button', { name: 'PUSHING…' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Update from Remote' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'OPEN TERMINAL' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'More project actions' })).toBeDisabled();
+    expect(screen.getByRole('menuitem', { name: 'Reinstall' })).toBeDisabled();
+    expect(screen.getByRole('menuitem', { name: 'Remove' })).toBeDisabled();
+
+    await act(async () => pending.resolve({ catalog: 'personal', tool: 'installed' }));
+    expect(await screen.findByRole('button', { name: 'Push' })).toBeEnabled();
+    await user.click(screen.getByRole('button', { name: 'Not Installed' }));
+    expect(await screen.findByRole('button', { name: 'PULL' })).toBeEnabled();
+    expect(screen.queryByRole('button', { name: 'Update from Remote' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Push' })).not.toBeInTheDocument();
+  });
+
   it('shows project lifecycle busy labels, real stages, completion, and failure', async () => {
     const user = userEvent.setup();
     let projects: LoadbotProject[] = [
@@ -401,14 +442,14 @@ describe('injected menu outside Tauri', () => {
     expect(screen.getByRole('tabpanel', { name: 'Activity' })).toHaveTextContent('Cloning project: personal / available');
     projects = projects.map((item) => item.tool === 'available' ? { ...item, installed: true } : item);
     await act(async () => pull.resolve({ catalog: 'personal', tool: 'available' }));
-    expect(await screen.findByRole('button', { name: 'UPDATE' })).toBeEnabled();
+    expect(await screen.findByRole('button', { name: 'Update from Remote' })).toBeEnabled();
     expect(screen.getByRole('tabpanel', { name: 'Activity' })).toHaveTextContent('Project available pulled.');
 
-    await user.click(screen.getByRole('button', { name: 'UPDATE' }));
+    await user.click(screen.getByRole('button', { name: 'Update from Remote' }));
     expect(screen.getByRole('button', { name: 'UPDATING…' })).toBeDisabled();
     expect(screen.getByRole('tabpanel', { name: 'Activity' })).toHaveTextContent('Fetching remote and updating checkout');
     await act(async () => update.reject(new Error('remote is unavailable')));
-    expect(await screen.findByRole('button', { name: 'UPDATE' })).toBeEnabled();
+    expect(await screen.findByRole('button', { name: 'Update from Remote' })).toBeEnabled();
     expect(screen.getByRole('tabpanel', { name: 'Activity' })).toHaveTextContent('Update Project failed: remote is unavailable');
     expect(screen.getByRole('tabpanel', { name: 'Activity' })).toHaveTextContent('FAILED');
 

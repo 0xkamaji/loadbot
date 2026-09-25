@@ -221,15 +221,16 @@ function ProjectActions({ state, actions }: { state: LoadbotState; actions: Load
   </div>;
   return <div className="lb-project-actions">
     <span className="lb-project-state">INSTALLED</span>
-    <Button disabled={busy} onClick={() => actions.openProjectFolder(id)}>OPEN FOLDER</Button>
     <Button disabled={busy || state.projectTerminal.status === 'opening'} onClick={() => actions.openProjectTerminal(id)}>OPEN TERMINAL</Button>
     <Button disabled={busy} onClick={() => void actions.updateProject()}>{busy && state.management.kind === 'update-project'
-      ? <BusyLabel text="UPDATING…" /> : 'UPDATE'}</Button>
+      ? <BusyLabel text="UPDATING…" /> : 'Update from Remote'}</Button>
+    <Button disabled={busy || Boolean(state.command.interactive)} onClick={() => void actions.pushProject()}>{busy && state.management.kind === 'push-project'
+      ? <BusyLabel text="PUSHING…" /> : 'Push'}</Button>
     <div className="lb-project-overflow">
       <Button aria-label="More project actions" aria-expanded={overflow} disabled={busy} onClick={() => setOverflow((open) => !open)}>…</Button>
       {overflow && <div role="menu" aria-label="Project actions">
-        <button type="button" role="menuitem" onClick={() => { setOverflow(false); actions.requestProjectAction('remove'); }}>Remove</button>
-        <button type="button" role="menuitem" onClick={() => { setOverflow(false); actions.requestProjectAction('reinstall'); }}>Reinstall</button>
+        <button type="button" role="menuitem" disabled={busy} onClick={() => { setOverflow(false); actions.requestProjectAction('remove'); }}>Remove</button>
+        <button type="button" role="menuitem" disabled={busy} onClick={() => { setOverflow(false); actions.requestProjectAction('reinstall'); }}>Reinstall</button>
       </div>}
     </div>
   </div>;

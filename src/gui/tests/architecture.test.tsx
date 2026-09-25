@@ -66,14 +66,18 @@ it('keeps the embedded terminal inside the shrinkable Console pane', () => {
   const rule = (selector: string) => menu.match(new RegExp(`${selector}\\s*\\{([^}]*)\\}`))?.[1] ?? '';
   const drawer = rule('\\.lb-main-console > \\.lb-drawer');
   const pane = rule('\\.lb-project-terminal');
+  const body = rule('\\.lb-terminal-body');
   const host = rule('\\.lb-terminal-emulator');
   const xterm = rule('\\.lb-terminal-emulator \\.xterm');
 
-  for (const boundary of [drawer, pane, host]) {
+  for (const boundary of [drawer, pane, body, host]) {
     expect(boundary).toContain('min-height: 0');
     expect(boundary).toContain('overflow: hidden');
   }
-  expect(host).toContain('flex: 1 1 0');
+  expect(body).toContain('flex: 1 1 0');
+  expect(body).toContain('padding: var(--lb-space-2)');
+  expect(host).toContain('height: 100%');
+  expect(host).not.toContain('padding');
   expect(xterm).toContain('height: 100%');
   expect(xterm).toContain('overflow: hidden');
 });

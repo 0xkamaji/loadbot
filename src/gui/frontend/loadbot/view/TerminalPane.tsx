@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useLayoutEffect, useRef } from 'react';
 import { FitAddon } from '@xterm/addon-fit';
 import { Terminal } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
@@ -19,7 +19,7 @@ function TerminalSurface({ terminalState, actions, visible }: {
 
   visibleRef.current = visible;
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!host.current) return undefined;
     const emulator = new Terminal({
       allowTransparency: true,
@@ -56,15 +56,24 @@ function TerminalSurface({ terminalState, actions, visible }: {
         // A hidden or transitioning pane can be temporarily unmeasurable.
       }
     };
+    let fitFrame: number | undefined;
+    const scheduleFit = () => {
+      if (fitFrame !== undefined) cancelAnimationFrame(fitFrame);
+      fitFrame = requestAnimationFrame(() => {
+        fitFrame = undefined;
+        fitToHost();
+      });
+    };
     const input = emulator.onData((data) => {
       actions.sendProjectTerminalInput(data);
     });
     const resized = emulator.onResize(reportSize);
-    const observer = typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(fitToHost);
+    const observer = typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(scheduleFit);
     observer?.observe(host.current);
-    fitToHost();
+    scheduleFit();
 
     return () => {
+      if (fitFrame !== undefined) cancelAnimationFrame(fitFrame);
       observer?.disconnect();
       resized.dispose();
       input.dispose();
@@ -95,7 +104,7 @@ function TerminalSurface({ terminalState, actions, visible }: {
     written.current = terminalState.transcript;
   }, [terminalState.launchId, terminalState.project, terminalState.transcript]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!visible || !terminal.current || !fit.current) return;
     const frame = requestAnimationFrame(() => {
       if (!host.current?.clientWidth || !host.current.clientHeight) return;
@@ -113,7 +122,9 @@ function TerminalSurface({ terminalState, actions, visible }: {
     return () => cancelAnimationFrame(frame);
   }, [actions, terminalState.status, visible]);
 
-  return <div ref={host} className="lb-terminal-emulator" role="application" aria-label="Project terminal" />;
+  return <div className="lb-terminal-body" role="application" aria-label="Project terminal">
+    <div ref={host} className="lb-terminal-emulator" />
+  </div>;
 }
 
 export function TerminalPane({ state, actions, visible = true }: {

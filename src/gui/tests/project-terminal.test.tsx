@@ -1,6 +1,6 @@
 import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { LoadbotMenu } from '../frontend/loadbot/LoadbotMenu';
 import type {
   InteractiveSessionEventSink, LoadbotAdapter, LoadbotProject,
@@ -28,11 +28,27 @@ const xterm = vi.hoisted(() => {
       this.cols = cols; this.rows = rows; this.resized?.({ cols, rows });
     }
   }
-  return { MockTerminal };
+  class MockFitAddon {
+    static instances: MockFitAddon[] = [];
+    fits = 0;
+    constructor() { MockFitAddon.instances.push(this); }
+    fit() { this.fits++; }
+  }
+  class MockResizeObserver {
+    static instances: MockResizeObserver[] = [];
+    observed: Element[] = [];
+    constructor(private readonly callback: () => void) { MockResizeObserver.instances.push(this); }
+    observe(element: Element) { this.observed.push(element); }
+    disconnect() {}
+    trigger() { this.callback(); }
+  }
+  return { MockFitAddon, MockResizeObserver, MockTerminal };
 });
 
 vi.mock('@xterm/xterm', () => ({ Terminal: xterm.MockTerminal }));
-vi.mock('@xterm/addon-fit', () => ({ FitAddon: class { fit() {} } }));
+vi.mock('@xterm/addon-fit', () => ({ FitAddon: xterm.MockFitAddon }));
+
+afterEach(() => vi.unstubAllGlobals());
 
 function terminalAdapter(projects: readonly LoadbotProject[]) {
   const sinks = new Map<string, InteractiveSessionEventSink>();
@@ -85,6 +101,9 @@ describe('embedded project terminal', () => {
 
   it('streams a bound session, routes opaque input, survives tab changes, restarts, and closes', async () => {
     xterm.MockTerminal.instances.length = 0;
+    xterm.MockFitAddon.instances.length = 0;
+    xterm.MockResizeObserver.instances.length = 0;
+    vi.stubGlobal('ResizeObserver', xterm.MockResizeObserver);
     const user = userEvent.setup();
     const projects: LoadbotProject[] = [
       { catalog: 'personal', tool: 'alpha', installed: true, entries: [] },
@@ -98,7 +117,20 @@ describe('embedded project terminal', () => {
     await screen.findByText('ACTIVE');
     expect(screen.getByRole('tab', { name: 'TERMINAL' })).toHaveAttribute('aria-selected', 'true');
     expect(host.createProjectTerminalLaunch).toHaveBeenCalledWith({ catalog: 'personal', tool: 'alpha' });
-    expect(screen.getByRole('application', { name: 'Project terminal' })).toHaveTextContent('startup-prompt>');
+    const terminalSurface = screen.getByRole('application', { name: 'Project terminal' });
+    expect(terminalSurface).toHaveTextContent('startup-prompt>');
+    expect(terminalSurface).toHaveClass('lb-terminal-body');
+    const fitHost = terminalSurface.querySelector<HTMLElement>('.lb-terminal-emulator')!;
+    expect(xterm.MockTerminal.instances[0].host).toBe(fitHost);
+    Object.defineProperties(fitHost, {
+      clientWidth: { configurable: true, value: 640 },
+      clientHeight: { configurable: true, value: 160 },
+    });
+    const fitsBeforeResize = xterm.MockFitAddon.instances[0].fits;
+    const terminalObserver = xterm.MockResizeObserver.instances.find((observer) => observer.observed.includes(fitHost));
+    expect(terminalObserver).toBeDefined();
+    act(() => terminalObserver!.trigger());
+    await waitFor(() => expect(xterm.MockFitAddon.instances[0].fits).toBeGreaterThan(fitsBeforeResize));
     act(() => host.sinks.get('terminal-alpha-1')?.({
       kind: 'output', sessionId: 'session-terminal-alpha-1', text: 'shell-ready\n',
     }));

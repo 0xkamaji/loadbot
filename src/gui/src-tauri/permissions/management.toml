@@ -12,7 +12,7 @@ commands.allow = [
   "commit_and_push_loadbot_project",
   "remove_loadbot_project",
   "reinstall_loadbot_project",
-  "open_loadbot_project_terminal",
+  "create_loadbot_project_terminal_launch",
   "add_loadbot_shortcut",
   "add_loadbot_recipe_shortcut",
   "update_loadbot_recipe_shortcut",

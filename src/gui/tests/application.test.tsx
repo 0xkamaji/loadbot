@@ -143,6 +143,76 @@ describe('headless capability and application boundary', () => {
     expect(application.getSnapshot().command.interactiveTranscript.at(-1)?.text).toContain('cancelled');
   });
 
+  it('owns one project-bound terminal independently from COMMAND authentication sessions', async () => {
+    const projects: LoadbotProject[] = [
+      { catalog: 'personal', tool: 'alpha', installed: true, entries: [] },
+      { catalog: 'personal', tool: 'beta', installed: true, entries: [] },
+      { catalog: 'personal', tool: 'missing', installed: false, entries: [] },
+    ];
+    const sinks = new Map<string, InteractiveSessionEventSink>();
+    let terminalLaunch = 0;
+    const createProjectTerminalLaunch: NonNullable<LoadbotAdapter['createProjectTerminalLaunch']> = vi.fn(async (project) => ({
+      launchId: `terminal-${project.tool}-${++terminalLaunch}`, label: `Project terminal — ${project.tool}`,
+    }));
+    const startInteractiveSession: NonNullable<LoadbotAdapter['startInteractiveSession']> = vi.fn(async (launch, sink) => {
+      sinks.set(launch.launchId, sink);
+      return { sessionId: `session-${launch.launchId}`, processId: `process-${launch.launchId}` };
+    });
+    const sendInteractiveInput: NonNullable<LoadbotAdapter['sendInteractiveInput']> = vi.fn(async () => {});
+    const terminateInteractiveSession: NonNullable<LoadbotAdapter['terminateInteractiveSession']> = vi.fn(async () => {});
+    const application = createLoadbotApplication({
+      ...adapter(async () => projects), createProjectTerminalLaunch, startInteractiveSession,
+      sendInteractiveInput, terminateInteractiveSession,
+    });
+    application.start();
+    await vi.waitFor(() => expect(application.getSnapshot().project?.tool).toBe('alpha'));
+    const commandHistory = application.getSnapshot().command.history;
+    const activity = application.getSnapshot().activity;
+
+    application.actions.selectBottomView('terminal');
+    await vi.waitFor(() => expect(application.getSnapshot().projectTerminal.status).toBe('active'));
+    expect(createProjectTerminalLaunch).toHaveBeenCalledWith({ catalog: 'personal', tool: 'alpha' });
+    expect(application.getSnapshot().projectTerminal).toMatchObject({
+      project: { catalog: 'personal', tool: 'alpha' }, sessionId: 'session-terminal-alpha-1',
+    });
+    sinks.get('terminal-alpha-1')?.({ kind: 'output', sessionId: 'session-terminal-alpha-1', text: 'alpha-ready\n' });
+    expect(application.getSnapshot().projectTerminal.transcript).toContain('alpha-ready');
+    expect(application.actions.sendProjectTerminalInput('opaque terminal input\r')).toBe(true);
+    await vi.waitFor(() => expect(sendInteractiveInput).toHaveBeenCalledWith('session-terminal-alpha-1', 'opaque terminal input\r'));
+    expect(application.getSnapshot().command.history).toBe(commandHistory);
+    expect(application.getSnapshot().activity).toBe(activity);
+    expect(JSON.stringify(application.getSnapshot())).not.toContain('opaque terminal input');
+
+    application.actions.selectBottomView('activity');
+    application.actions.selectBottomView('command');
+    application.actions.selectBottomView('terminal');
+    expect(terminateInteractiveSession).not.toHaveBeenCalled();
+    expect(startInteractiveSession).toHaveBeenCalledTimes(1);
+
+    application.actions.selectProject(projectKey(projects[1]));
+    application.actions.selectBottomView('terminal');
+    expect(application.getSnapshot().project?.tool).toBe('beta');
+    expect(application.getSnapshot().projectTerminal.project?.tool).toBe('alpha');
+    expect(createProjectTerminalLaunch).toHaveBeenCalledTimes(1);
+
+    await application.actions.startInteractiveSession({ launchId: 'auth-launch', label: 'Git push — beta' });
+    expect(application.getSnapshot().command.interactive?.sessionId).toBe('session-auth-launch');
+    expect(application.getSnapshot().projectTerminal.sessionId).toBe('session-terminal-alpha-1');
+    expect(application.actions.submitCommand('opaque auth input')).toBe(true);
+    await vi.waitFor(() => expect(sendInteractiveInput).toHaveBeenCalledWith('session-auth-launch', 'opaque auth input\r'));
+    sinks.get('auth-launch')?.({ kind: 'exited', sessionId: 'session-auth-launch', code: 0, cancelled: false });
+
+    sinks.get('terminal-alpha-1')?.({ kind: 'exited', sessionId: 'session-terminal-alpha-1', code: 0, cancelled: false });
+    expect(application.getSnapshot().projectTerminal.status).toBe('exited');
+    expect(await application.actions.restartProjectTerminal()).toBe(true);
+    expect(application.getSnapshot().projectTerminal).toMatchObject({
+      status: 'active', project: { tool: 'alpha' }, sessionId: 'session-terminal-alpha-2',
+    });
+    expect(await application.actions.closeProjectTerminal()).toBe(true);
+    expect(terminateInteractiveSession).toHaveBeenCalledWith('session-terminal-alpha-2');
+    expect(application.getSnapshot().projectTerminal).toEqual({ status: 'idle', transcript: '' });
+  });
+
   it('keeps Push pending through interactive success, routes opaque input, and reloads authority', async () => {
     const project = { catalog: 'one', tool: 'radio-configs', installed: true, entries: [] };
     const readInventory = vi.fn(async () => [project]);
@@ -615,7 +685,6 @@ describe('headless capability and application boundary', () => {
       { catalog: 'one', tool: 'available', installed: false, entries: [{ name: 'catalog command', path: 'run.sh', source: 'catalog' }] },
     ];
     const readInventory = vi.fn(async () => structuredClone(projects));
-    const openProjectTerminal = vi.fn(async () => {});
     const pullProject: NonNullable<LoadbotAdapter['pullProject']> = vi.fn(async (identity, onActivity) => {
       onActivity?.({ ...identity, stage: 'cloning-project' });
       onActivity?.({ ...identity, stage: 'validating-fresh-checkout' });
@@ -639,7 +708,7 @@ describe('headless capability and application boundary', () => {
       return identity;
     });
     const managed: LoadbotAdapter = {
-      ...adapter(readInventory), openProjectTerminal, pullProject, updateProject, removeProject, reinstallProject,
+      ...adapter(readInventory), pullProject, updateProject, removeProject, reinstallProject,
     };
     const application = createLoadbotApplication(managed);
     application.start();
@@ -658,9 +727,6 @@ describe('headless capability and application boundary', () => {
     expect(application.getSnapshot()).toMatchObject({ projectFilter: 'installed', project: { tool: 'available', installed: true } });
     expect(await application.actions.updateProject()).toBe(true);
     expect(updateProject).toHaveBeenCalledWith({ catalog: 'one', tool: 'available' }, expect.any(Function));
-    application.actions.openProjectTerminal(projectKey(application.getSnapshot().project!));
-    await vi.waitFor(() => expect(openProjectTerminal).toHaveBeenCalledWith({ catalog: 'one', tool: 'available' }));
-
     application.actions.requestProjectAction('reinstall');
     expect(reinstallProject).not.toHaveBeenCalled();
     expect(application.getSnapshot().pendingProjectAction?.action).toBe('reinstall');
@@ -678,7 +744,7 @@ describe('headless capability and application boundary', () => {
     expect(application.getSnapshot()).toMatchObject({ projectFilter: 'not-installed', project: { tool: 'available', installed: false } });
     expect(readInventory).toHaveBeenCalledTimes(5);
     expect(application.getSnapshot().activity.map((entry) => entry.operation)).toEqual(expect.arrayContaining([
-      'project-pull', 'project-update', 'project-terminal-open', 'project-reinstall', 'project-remove',
+      'project-pull', 'project-update', 'project-reinstall', 'project-remove',
     ]));
     expect(application.getSnapshot().activity.map((entry) => entry.stage)).toEqual(expect.arrayContaining([
       'cloning-project', 'validating-fresh-checkout', 'validating-checkout', 'fetching-and-updating',

@@ -32,7 +32,7 @@ export type ManagementState =
   | { readonly status: 'cancelled'; readonly kind: ManagementKind; readonly message: string }
   | { readonly status: 'error'; readonly kind: ManagementKind; readonly message: string };
 export type ActivityOperation = 'catalog-sync' | 'catalog-add' | 'project-add' | 'shortcut-add' | 'shortcut-update' | 'shortcut-delete' | 'local-reload'
-  | 'project-folder-open' | 'project-terminal-open' | 'project-pull' | 'project-push' | 'project-update' | 'project-remove' | 'project-reinstall';
+  | 'project-folder-open' | 'project-pull' | 'project-push' | 'project-update' | 'project-remove' | 'project-reinstall';
 export type ActivityStatus = 'in-progress' | 'info' | 'success' | 'error' | 'cancelled';
 export type ActivityStage = CatalogSyncStage | ProjectOperationStage | 'started' | 'interactive-authentication'
   | 'authoritative-reload' | 'catalog-state' | 'completed' | 'failed' | 'cancelled';
@@ -59,6 +59,7 @@ export const ACTIVITY_HISTORY_LIMIT = 250;
 export const ACTIVITY_LOG_HISTORY_LIMIT = 1000;
 export const COMMAND_HISTORY_LIMIT = 100;
 export const INTERACTIVE_TRANSCRIPT_LIMIT = 500;
+export const TERMINAL_TRANSCRIPT_LIMIT = 256 * 1024;
 export interface CommandEntry {
   readonly id: number;
   readonly input: string;
@@ -80,6 +81,18 @@ export interface CommandState {
     readonly text: string;
   }[];
 }
+export interface ProjectTerminalState {
+  readonly status: 'idle' | 'starting' | 'active' | 'terminating' | 'exited' | 'error';
+  readonly project?: { readonly catalog: string; readonly tool: string };
+  readonly transcript: string;
+  readonly launchId?: string;
+  readonly sessionId?: string;
+  readonly processId?: string;
+  readonly exitCode?: number;
+  readonly signal?: string;
+  readonly cancelled?: boolean;
+  readonly message?: string;
+}
 export type ShortcutHelpState =
   | { readonly status: 'loading' }
   | { readonly status: 'ready'; readonly result: ShortcutHelpResult }
@@ -96,7 +109,7 @@ export interface LoadbotState {
   readonly values: SampleValues;
   readonly missingInputIds: readonly string[];
   readonly drawerOpen: boolean;
-  readonly bottomView: 'command' | 'activity';
+  readonly bottomView: 'command' | 'activity' | 'terminal';
   readonly command: CommandState;
   readonly activity: readonly ActivityEntry[];
   readonly activityLogs: readonly ActivityLogEntry[];
@@ -112,11 +125,7 @@ export interface LoadbotState {
     readonly projectId?: string;
     readonly message?: string;
   };
-  readonly projectTerminal: {
-    readonly status: 'idle' | 'opening' | 'opened' | 'error';
-    readonly projectId?: string;
-    readonly message?: string;
-  };
+  readonly projectTerminal: ProjectTerminalState;
   readonly pendingProjectAction?: { readonly action: ProjectLifecycleAction; readonly project: LoadbotProject };
   readonly pendingCommitPush?: {
     readonly project: LoadbotProject;
@@ -176,11 +185,14 @@ export interface LoadbotActions {
   confirmShortcutDeletion(): Promise<boolean>;
   syncCatalog(): Promise<boolean>;
   clearManagementStatus(): void;
-  selectBottomView(view: 'command' | 'activity'): void;
+  selectBottomView(view: 'command' | 'activity' | 'terminal'): void;
   completeCommand(input: string, caret: number): CommandCompletion | undefined;
   submitCommand(input: string): boolean;
   startInteractiveSession(launch: InteractiveLaunch): Promise<boolean>;
   cancelInteractiveSession(): Promise<boolean>;
+  sendProjectTerminalInput(input: string): boolean;
+  closeProjectTerminal(): Promise<boolean>;
+  restartProjectTerminal(): Promise<boolean>;
   changeSampleInput(id: string, value: string | boolean): void;
   useSamplePath(id: string): void;
   toggleDrawer(): void;
@@ -197,7 +209,7 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
     missingInputIds: [], drawerOpen: true, bottomView: 'command',
     command: { entries: [], history: [], interactiveTranscript: [] },
     activity: [], activityLogs: [], management: { status: 'idle' }, shortcutManagement: { active: false, selected: [] },
-    projectFolder: { status: 'idle' }, projectTerminal: { status: 'idle' },
+    projectFolder: { status: 'idle' }, projectTerminal: { status: 'idle', transcript: '' },
   };
   const listeners = new Set<() => void>();
   let generation = 0;
@@ -278,8 +290,7 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
     const selectedCatalog = preferred.catalog ?? state.currentCatalog;
     const projectFilter = preferred.projectFilter ?? state.projectFilter;
     folderGeneration++;
-    terminalGeneration++;
-    publish({ ...state, inventory: { status: 'loading' }, catalogState: { status: 'loading' }, projectFilter, ...selection(), projectFolder: { status: 'idle' }, projectTerminal: { status: 'idle' } });
+    publish({ ...state, inventory: { status: 'loading' }, catalogState: { status: 'loading' }, projectFilter, ...selection(), projectFolder: { status: 'idle' } });
     try {
       const [projects, catalogs] = await Promise.all([adapter.readInventory(), adapter.readCatalogs()]);
       if (request !== generation) return false;
@@ -306,7 +317,7 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
         ...state,
         inventory: { status: 'error', message: error instanceof Error ? error.message : undefined },
         catalogState: { status: 'error', message: error instanceof Error ? error.message : undefined },
-        ...selection(), projectFolder: { status: 'idle' }, projectTerminal: { status: 'idle' },
+        ...selection(), projectFolder: { status: 'idle' },
       });
       return false;
     }
@@ -410,13 +421,101 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
     }
   }
 
+  const sameProject = (left: { catalog: string; tool: string } | undefined, right: { catalog: string; tool: string }) =>
+    left?.catalog === right.catalog && left.tool === right.tool;
+  const boundedTerminalTranscript = (current: string, text: string) =>
+    `${current}${text}`.slice(-TERMINAL_TRANSCRIPT_LIMIT);
+
+  async function startProjectTerminal(
+    project: { catalog: string; tool: string },
+    restart = false,
+  ): Promise<boolean> {
+    const current = state.projectTerminal;
+    if (!restart && current.project) {
+      return sameProject(current.project, project) && current.status === 'active';
+    }
+    if (!adapter.createProjectTerminalLaunch || !adapter.startInteractiveSession
+      || !adapter.sendInteractiveInput || !adapter.terminateInteractiveSession) {
+      publish({
+        ...state,
+        projectTerminal: {
+          status: 'error', project, transcript: '',
+          message: 'Embedded project terminals are unavailable in this host.',
+        },
+      });
+      return false;
+    }
+    const generation = ++terminalGeneration;
+    publish({ ...state, projectTerminal: { status: 'starting', project, transcript: '' } });
+    try {
+      const launch = await adapter.createProjectTerminalLaunch(project);
+      if (generation !== terminalGeneration) return false;
+      publish({
+        ...state,
+        projectTerminal: { ...state.projectTerminal, launchId: launch.launchId },
+      });
+      const onEvent = (event: InteractiveSessionEvent) => {
+        if (generation !== terminalGeneration) return;
+        const terminal = state.projectTerminal;
+        if (!sameProject(terminal.project, project)) return;
+        if (event.kind === 'output') {
+          publish({
+            ...state,
+            projectTerminal: {
+              ...terminal,
+              transcript: boundedTerminalTranscript(terminal.transcript, event.text),
+            },
+          });
+          return;
+        }
+        if (event.kind === 'failed') {
+          publish({
+            ...state,
+            projectTerminal: {
+              ...terminal, status: 'error', message: event.message,
+            },
+          });
+          return;
+        }
+        publish({
+          ...state,
+          projectTerminal: {
+            ...terminal, status: 'exited', exitCode: event.code, signal: event.signal,
+            cancelled: event.cancelled, sessionId: undefined,
+          },
+        });
+      };
+      const started = await adapter.startInteractiveSession(launch, onEvent);
+      if (generation !== terminalGeneration) return false;
+      if (state.projectTerminal.status !== 'starting') return true;
+      publish({
+        ...state,
+        projectTerminal: {
+          ...state.projectTerminal, status: 'active', sessionId: started.sessionId,
+          processId: started.processId,
+        },
+      });
+      return true;
+    } catch (error: unknown) {
+      if (generation === terminalGeneration) {
+        publish({
+          ...state,
+          projectTerminal: {
+            ...state.projectTerminal, status: 'error', project,
+            message: errorMessage(error, 'Could not start the project terminal.'),
+          },
+        });
+      }
+      return false;
+    }
+  }
+
   const actions: LoadbotActions = {
     selectCatalog(name) {
       if (state.catalogState.status !== 'ready' || !state.catalogState.catalogs.some((item) => item.name === name)) return;
       const projects = state.inventory.status === 'ready' ? projectsFor(state.inventory.projects, name) : [];
       folderGeneration++;
-      terminalGeneration++;
-      publish({ ...state, currentCatalog: name, ...selection(projects[0]), projectFolder: { status: 'idle' }, projectTerminal: { status: 'idle' }, shortcutManagement: { active: false, selected: [] } });
+      publish({ ...state, currentCatalog: name, ...selection(projects[0]), projectFolder: { status: 'idle' }, shortcutManagement: { active: false, selected: [] } });
     },
     selectProjectFilter(filter) {
       if (filter === state.projectFilter) return;
@@ -424,16 +523,14 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
       const selectedId = state.project && projectKey(state.project);
       const current = selectedId ? projects.find((project) => projectKey(project) === selectedId) : undefined;
       folderGeneration++;
-      terminalGeneration++;
-      publish({ ...state, projectFilter: filter, ...selection(current ?? projects[0]), projectFolder: { status: 'idle' }, projectTerminal: { status: 'idle' }, shortcutManagement: { active: false, selected: [] } });
+      publish({ ...state, projectFilter: filter, ...selection(current ?? projects[0]), projectFolder: { status: 'idle' }, shortcutManagement: { active: false, selected: [] } });
     },
     selectProject(id) {
       if (state.inventory.status !== 'ready') return;
       const project = projectsFor(state.inventory.projects, state.currentCatalog).find((item) => projectKey(item) === id);
       if (!project || project === state.project) return;
       folderGeneration++;
-      terminalGeneration++;
-      publish({ ...state, ...selection(project), projectFolder: { status: 'idle' }, projectTerminal: { status: 'idle' }, shortcutManagement: { active: state.shortcutManagement.active, selected: [] } });
+      publish({ ...state, ...selection(project), projectFolder: { status: 'idle' }, shortcutManagement: { active: state.shortcutManagement.active, selected: [] } });
     },
     selectShortcut(id) {
       const shortcut = state.project?.entries.find((item) => shortcutKey(item) === id);
@@ -476,26 +573,11 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
     openProjectTerminal(id) {
       if (state.inventory.status !== 'ready') return;
       const project = projectsFor(state.inventory.projects, state.currentCatalog).find((item) => projectKey(item) === id);
-      if (!project || project.installed === false || !adapter.openProjectTerminal) return;
-      const request = ++terminalGeneration;
-      publish({ ...state, projectTerminal: { status: 'opening', projectId: id } });
-      const identity = { catalog: project.catalog, tool: project.tool };
-      const operation = beginActivity({ operation: 'project-terminal-open', stage: 'started', status: 'in-progress', ...identity, project: project.tool });
-      Promise.resolve().then(() => adapter.openProjectTerminal!(identity)).then(
-        () => {
-          if (request === terminalGeneration) {
-            publish({ ...state, projectTerminal: { status: 'opened', projectId: id, message: `Opened a terminal for ${project.tool}.` } });
-          }
-          appendActivity({ operationId: operation, operation: 'project-terminal-open', stage: 'completed', status: 'success', catalog: project.catalog, project: project.tool });
-        },
-        (error: unknown) => {
-          const message = errorMessage(error, 'Could not open a terminal for the project.');
-          if (request === terminalGeneration) {
-            publish({ ...state, projectTerminal: { status: 'error', projectId: id, message } });
-          }
-          appendActivity({ operationId: operation, operation: 'project-terminal-open', stage: 'failed', status: 'error', catalog: project.catalog, project: project.tool, detail: message });
-        },
-      );
+      if (!project) return;
+      publish({ ...state, bottomView: 'terminal', drawerOpen: true });
+      if (project.installed !== false && !state.projectTerminal.project) {
+        void startProjectTerminal({ catalog: project.catalog, tool: project.tool });
+      }
     },
     async pullProject(project?: LoadbotProject) {
       const target = project ?? state.project;
@@ -895,7 +977,12 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
       });
     },
     clearManagementStatus() { if (state.management.status !== 'submitting') publish({ ...state, management: { status: 'idle' } }); },
-    selectBottomView(view) { publish({ ...state, bottomView: view }); },
+    selectBottomView(view) {
+      publish({ ...state, bottomView: view });
+      if (view === 'terminal' && state.project?.installed !== false && !state.projectTerminal.project && state.project) {
+        void startProjectTerminal({ catalog: state.project.catalog, tool: state.project.tool });
+      }
+    },
     completeCommand(input, caret) {
       if (state.command.interactive) return undefined;
       const projects = state.inventory.status === 'ready' ? state.inventory.projects : [];
@@ -1045,6 +1132,59 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
         return false;
       }
     },
+    sendProjectTerminalInput(input) {
+      const terminal = state.projectTerminal;
+      if (terminal.status !== 'active' || !terminal.sessionId || !adapter.sendInteractiveInput || !input) return false;
+      const generation = terminalGeneration;
+      void adapter.sendInteractiveInput(terminal.sessionId, input).catch((error: unknown) => {
+        if (generation === terminalGeneration && state.projectTerminal.sessionId === terminal.sessionId) {
+          publish({
+            ...state,
+            projectTerminal: {
+              ...state.projectTerminal,
+              message: errorMessage(error, 'Could not send terminal input.'),
+            },
+          });
+        }
+      });
+      return true;
+    },
+    async closeProjectTerminal() {
+      const terminal = state.projectTerminal;
+      if (terminal.status === 'idle' || terminal.status === 'starting' || terminal.status === 'terminating') return false;
+      if (terminal.status === 'exited' || terminal.status === 'error' || !terminal.sessionId) {
+        terminalGeneration++;
+        publish({ ...state, projectTerminal: { status: 'idle', transcript: '' } });
+        return true;
+      }
+      if (!adapter.terminateInteractiveSession) return false;
+      const generation = terminalGeneration;
+      publish({ ...state, projectTerminal: { ...terminal, status: 'terminating' } });
+      try {
+        await adapter.terminateInteractiveSession(terminal.sessionId);
+        if (generation === terminalGeneration) {
+          terminalGeneration++;
+          publish({ ...state, projectTerminal: { status: 'idle', transcript: '' } });
+        }
+        return true;
+      } catch (error: unknown) {
+        if (generation === terminalGeneration) {
+          publish({
+            ...state,
+            projectTerminal: {
+              ...terminal, status: 'active',
+              message: errorMessage(error, 'Could not close the project terminal.'),
+            },
+          });
+        }
+        return false;
+      }
+    },
+    async restartProjectTerminal() {
+      const terminal = state.projectTerminal;
+      if (!terminal.project || (terminal.status !== 'exited' && terminal.status !== 'error')) return false;
+      return startProjectTerminal(terminal.project, true);
+    },
     changeSampleInput,
     useSamplePath(id) {
       const field = state.fields.find((item) => item.id === id);
@@ -1060,7 +1200,12 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
     start() {
       const request = generation + 1;
       void beginWorkspaceRead();
-      return () => { if (request === generation) generation++; };
+      return () => {
+        if (request === generation) generation++;
+        terminalGeneration++;
+        const sessionId = state.projectTerminal.sessionId;
+        if (sessionId) void adapter.terminateInteractiveSession?.(sessionId).catch(() => {});
+      };
     },
   };
 }

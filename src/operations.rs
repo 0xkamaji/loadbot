@@ -1889,6 +1889,36 @@ pub fn installed_tool_path(
     installed_tool_path_with_repositories(paths, name, catalog_name, context, &mut repositories)
 }
 
+/// Construct an interactive shell for an authoritative managed checkout.
+/// The caller receives a typed backend command, never a path or argv supplied
+/// by a presentation adapter.
+pub fn project_terminal_command(
+    paths: &Paths,
+    name: &str,
+    catalog_name: &str,
+    context: &mut OperationContext<'_>,
+) -> Result<crate::process::InteractiveCommand> {
+    let _process_scope = crate::process::scope(&context.process);
+    context.process.cancellation.check()?;
+    let destination = paths.tool(catalog_name, name)?;
+    let metadata = fs::symlink_metadata(&destination)
+        .with_context(|| format!("tool '{name}' from catalog '{catalog_name}' is not installed"))?;
+    if metadata.file_type().is_symlink() {
+        bail!("refusing to open a terminal for a symlinked tool destination");
+    }
+    if !metadata.is_dir() {
+        bail!("installed tool destination is not a directory");
+    }
+    let directory = installed_tool_path(paths, name, catalog_name, context)?;
+    let directory = fs::canonicalize(&directory).with_context(|| {
+        format!(
+            "could not resolve project directory {}",
+            directory.display()
+        )
+    })?;
+    crate::process::InteractiveCommand::user_shell_in(directory)
+}
+
 fn installed_tool_path_with_repositories(
     paths: &Paths,
     name: &str,
@@ -2919,6 +2949,145 @@ mod tests {
         )
         .unwrap();
         assert!(*invoked.lock().unwrap());
+    }
+
+    #[test]
+    fn project_terminal_command_uses_the_authoritative_managed_directory_and_environment() {
+        let (_temporary, paths, destination) = lifecycle_fixture();
+        let mut policy = crate::interaction::Unattended;
+        let mut context = OperationContext::background(&mut policy);
+        let command = project_terminal_command(&paths, "demo", "personal", &mut context).unwrap();
+        assert_eq!(
+            command.current_directory(),
+            Some(fs::canonicalize(destination).unwrap().as_path())
+        );
+        assert!(!command.program().is_empty());
+        assert_eq!(command.arguments().count(), 0);
+        assert_eq!(
+            command.environment("PATH"),
+            std::env::var_os("PATH").as_deref()
+        );
+    }
+
+    #[test]
+    fn project_terminal_command_rejects_uninstalled_and_foreign_checkouts() {
+        let (temporary, paths, destination) = lifecycle_fixture();
+        fs::remove_dir_all(&destination).unwrap();
+        let mut policy = crate::interaction::Unattended;
+        let mut context = OperationContext::background(&mut policy);
+        let missing = project_terminal_command(&paths, "demo", "personal", &mut context)
+            .err()
+            .expect("missing checkout must be rejected");
+        assert!(format!("{missing:#}").contains("not installed"));
+
+        let wrong = populated_remote(temporary.path(), "terminal-foreign");
+        git(
+            [
+                "clone",
+                wrong.to_str().unwrap(),
+                destination.to_str().unwrap(),
+            ],
+            None,
+        );
+        let mut context = OperationContext::background(&mut policy);
+        let foreign = project_terminal_command(&paths, "demo", "personal", &mut context)
+            .err()
+            .expect("foreign checkout must be rejected");
+        assert!(format!("{foreign:#}").contains("not the configured Git repository"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn project_terminal_command_rejects_a_symlinked_destination() {
+        use std::os::unix::fs::symlink;
+
+        let (_temporary, paths, destination) = lifecycle_fixture();
+        let real = destination.with_extension("real");
+        fs::rename(&destination, &real).unwrap();
+        symlink(&real, &destination).unwrap();
+        let mut policy = crate::interaction::Unattended;
+        let mut context = OperationContext::background(&mut policy);
+        let error = project_terminal_command(&paths, "demo", "personal", &mut context)
+            .err()
+            .expect("symlinked checkout must be rejected");
+        assert!(format!("{error:#}").contains("symlinked tool destination"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_project_terminal_streams_input_exit_and_termination_without_logging_stdin() {
+        let (_temporary, paths, destination) = lifecycle_fixture();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let observed_events = events.clone();
+        let control = crate::process::Control {
+            observer: Some(Arc::new(move |event| {
+                observed_events.lock().unwrap().push(format!("{event:?}"));
+            })),
+            ..crate::process::Control::default()
+        };
+        let mut policy = crate::interaction::Unattended;
+        let mut context = OperationContext::background(&mut policy);
+        let command = project_terminal_command(&paths, "demo", "personal", &mut context).unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let session = crate::process::InteractiveSession::start(
+            command,
+            &control,
+            crate::process::OperationId::random(),
+            Arc::new(move |event| sender.send(event).unwrap()),
+        )
+        .unwrap();
+        session
+            .send_input(b"printf 'loadbot-terminal:%s\\n' \"$PWD\"\nexit\n")
+            .unwrap();
+        let mut output = Vec::new();
+        loop {
+            match receiver.recv_timeout(Duration::from_secs(5)).unwrap() {
+                crate::process::InteractiveSessionEvent::Output { bytes, .. } => {
+                    output.extend(bytes)
+                }
+                crate::process::InteractiveSessionEvent::Exited { status, .. } => {
+                    assert!(status.success());
+                    break;
+                }
+                crate::process::InteractiveSessionEvent::Failed { diagnostic, .. } => {
+                    panic!("{diagnostic}")
+                }
+            }
+        }
+        let output = String::from_utf8_lossy(&output);
+        assert!(output.contains("loadbot-terminal:"));
+        assert!(output.contains(&fs::canonicalize(destination).unwrap().display().to_string()));
+        assert!(
+            !events
+                .lock()
+                .unwrap()
+                .join("\n")
+                .contains("loadbot-terminal")
+        );
+
+        let mut context = OperationContext::background(&mut policy);
+        let command = project_terminal_command(&paths, "demo", "personal", &mut context).unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let session = crate::process::InteractiveSession::start(
+            command,
+            &crate::process::Control::default(),
+            crate::process::OperationId::random(),
+            Arc::new(move |event| sender.send(event).unwrap()),
+        )
+        .unwrap();
+        session.terminate().unwrap();
+        loop {
+            match receiver.recv_timeout(Duration::from_secs(5)).unwrap() {
+                crate::process::InteractiveSessionEvent::Exited { cancelled, .. } => {
+                    assert!(cancelled);
+                    break;
+                }
+                crate::process::InteractiveSessionEvent::Failed { diagnostic, .. } => {
+                    panic!("{diagnostic}")
+                }
+                crate::process::InteractiveSessionEvent::Output { .. } => {}
+            }
+        }
     }
 
     #[test]

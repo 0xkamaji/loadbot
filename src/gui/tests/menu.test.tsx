@@ -33,7 +33,7 @@ describe('injected menu outside Tauri', () => {
     expect(screen.getByRole('region', { name: 'Bottom workspace' })).toBeVisible();
     expect(screen.getByRole('tab', { name: 'COMMAND' })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: 'ACTIVITY' })).toBeInTheDocument();
-    expect(screen.queryByRole('tab', { name: 'TERMINAL' })).not.toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'TERMINAL' })).toBeInTheDocument();
     expect(screen.getByRole('combobox', { name: 'Loadbot command' })).toBeInTheDocument();
     const consoleButton = screen.getByRole('button', { name: 'Console' });
     await user.click(consoleButton);

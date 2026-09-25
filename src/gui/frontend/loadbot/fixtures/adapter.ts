@@ -64,7 +64,7 @@ export function createFixtureAdapter(): LoadbotAdapter {
     ];
   },
   async openProjectFolder() { throw new Error('Folder opening is unavailable in fixture preview.'); },
-  async openProjectTerminal() { throw new Error('Terminal opening is unavailable in fixture preview.'); },
+  async createProjectTerminalLaunch() { throw new Error('Terminal opening is unavailable in fixture preview.'); },
   async pullProject() { throw new Error('Management is unavailable in fixture preview.'); },
   async updateProject() { throw new Error('Management is unavailable in fixture preview.'); },
   async removeProject() { throw new Error('Management is unavailable in fixture preview.'); },

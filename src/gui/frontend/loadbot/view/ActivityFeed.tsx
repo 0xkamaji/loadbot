@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { ActivityEntry, ActivityLogEntry, LoadbotActions, LoadbotState } from '../application/controller';
 import { CommandPane } from './CommandPane';
+import { TerminalPane } from './TerminalPane';
 
 const operationLabels: Record<ActivityEntry['operation'], string> = {
   'catalog-sync': 'Refresh Catalog',
@@ -11,7 +12,6 @@ const operationLabels: Record<ActivityEntry['operation'], string> = {
   'shortcut-delete': 'Delete Shortcut',
   'local-reload': 'Reload',
   'project-folder-open': 'Open Project Folder',
-  'project-terminal-open': 'Open Project Terminal',
   'project-pull': 'Pull Project',
   'project-push': 'Push Project',
   'project-update': 'Update Project',
@@ -117,8 +117,11 @@ export function BottomWorkspace({ state, actions }: { state: LoadbotState; actio
     <div className="lb-bottom-tabs" role="tablist" aria-label="Bottom workspace">
       <button type="button" role="tab" aria-selected={state.bottomView === 'command'} onClick={() => actions.selectBottomView('command')}>COMMAND</button>
       <button type="button" role="tab" aria-selected={state.bottomView === 'activity'} onClick={() => actions.selectBottomView('activity')}>ACTIVITY</button>
+      <button type="button" role="tab" aria-selected={state.bottomView === 'terminal'} onClick={() => actions.selectBottomView('terminal')}>TERMINAL</button>
     </div>
-    {state.bottomView === 'command' ? <CommandPane state={state} actions={actions} /> : <section className="lb-bottom-content lb-activity" role="tabpanel" aria-label="Activity">
+    {state.bottomView === 'command' ? <CommandPane state={state} actions={actions} />
+      : state.bottomView === 'terminal' ? <TerminalPane state={state} actions={actions} />
+        : <section className="lb-bottom-content lb-activity" role="tabpanel" aria-label="Activity">
       <h2>ACTIVITY / THIS SESSION</h2>
       {!groups.length && <p className="lb-metadata">No activity yet.</p>}
       <ol className="lb-activity-groups" aria-live="polite">

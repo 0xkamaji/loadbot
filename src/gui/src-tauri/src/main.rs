@@ -102,6 +102,13 @@ struct InteractiveSessionStarted {
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InteractiveLaunchCapability {
+    launch_id: String,
+    label: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 enum BackendInteractiveEvent {
     Output {
@@ -134,6 +141,34 @@ struct PendingInteractiveLaunch {
 }
 
 impl InteractiveSessions {
+    fn issue(
+        &self,
+        command: InteractiveCommand,
+        control: Control,
+        operation_id: OperationId,
+        label: String,
+        completion: Option<mpsc::SyncSender<anyhow::Result<InteractiveExecutionOutput>>>,
+    ) -> anyhow::Result<InteractiveLaunchCapability> {
+        let launch_id = format!("launch-{:016x}", OperationId::random().0);
+        self.pending
+            .lock()
+            .map_err(|_| anyhow::anyhow!("interactive launch registry is unavailable"))?
+            .insert(
+                launch_id.clone(),
+                PendingInteractiveLaunch {
+                    command,
+                    control: Control {
+                        policy: ExecutionPolicy::Interactive,
+                        interactive_executor: None,
+                        ..control
+                    },
+                    operation_id,
+                    completion,
+                },
+            );
+        Ok(InteractiveLaunchCapability { launch_id, label })
+    }
+
     fn start(
         &self,
         launch_id: &str,
@@ -145,7 +180,9 @@ impl InteractiveSessions {
             .map_err(|_| anyhow::anyhow!("interactive launch registry is unavailable"))?
             .remove(launch_id)
             .context("interactive launch is unavailable or has already been used")?;
-        let registry = self.clone();
+        // The observer thread must not keep the registry (and therefore its
+        // own session handle) alive after application state is dropped.
+        let active_registry = Arc::downgrade(&self.active);
         let completion = Arc::new(Mutex::new(pending.completion));
         let captured = Arc::new(Mutex::new(Vec::new()));
         let observer_completion = completion.clone();
@@ -194,7 +231,10 @@ impl InteractiveSessions {
                     };
                     let _ = sender.send(result);
                 }
-                if terminal && let Ok(mut active) = registry.active.lock() {
+                if terminal
+                    && let Some(active_registry) = active_registry.upgrade()
+                    && let Ok(mut active) = active_registry.lock()
+                {
                     active.remove(&session_id);
                 }
             }),
@@ -247,35 +287,19 @@ impl InteractiveSessions {
         label: String,
         activity: Channel<BackendActivity>,
     ) -> anyhow::Result<InteractiveExecutionOutput> {
-        let launch_id = format!("launch-{:016x}", OperationId::random().0);
         let (sender, receiver) = mpsc::sync_channel(1);
-        self.pending
-            .lock()
-            .map_err(|_| anyhow::anyhow!("interactive launch registry is unavailable"))?
-            .insert(
-                launch_id.clone(),
-                PendingInteractiveLaunch {
-                    command,
-                    control: Control {
-                        policy: ExecutionPolicy::Interactive,
-                        interactive_executor: None,
-                        ..control.clone()
-                    },
-                    operation_id,
-                    completion: Some(sender),
-                },
-            );
+        let launch = self.issue(command, control.clone(), operation_id, label, Some(sender))?;
         if activity
             .send(BackendActivity::InteractiveLaunch {
-                launch_id: launch_id.clone(),
-                label,
+                launch_id: launch.launch_id.clone(),
+                label: launch.label,
             })
             .is_err()
         {
             self.pending
                 .lock()
                 .ok()
-                .and_then(|mut pending| pending.remove(&launch_id));
+                .and_then(|mut pending| pending.remove(&launch.launch_id));
             anyhow::bail!("could not deliver the interactive launch to the GUI");
         }
 
@@ -287,7 +311,7 @@ impl InteractiveSessions {
                         self.pending
                             .lock()
                             .ok()
-                            .and_then(|mut pending| pending.remove(&launch_id));
+                            .and_then(|mut pending| pending.remove(&launch.launch_id));
                         return Err(loadbot::process::Cancelled.into());
                     }
                 }
@@ -575,26 +599,23 @@ async fn open_loadbot_project(catalog: String, tool: String) -> Result<(), Deskt
 }
 
 #[tauri::command]
-async fn open_loadbot_project_terminal(catalog: String, tool: String) -> Result<(), DesktopError> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let result = (|| -> anyhow::Result<()> {
-            let paths = Paths::discover()?;
-            let mut policy = Unattended;
-            let mut context = OperationContext::background(&mut policy);
-            let directory =
-                launcher::resolve_project_directory(&paths, &catalog, &tool, &mut context)?;
-            open_terminal(&directory)
-        })();
-        result.map_err(|error| DesktopError {
-            kind: "operation",
-            message: format!("{error:#}"),
-        })
+async fn create_loadbot_project_terminal_launch(
+    catalog: String,
+    tool: String,
+    sessions: tauri::State<'_, InteractiveSessions>,
+) -> Result<InteractiveLaunchCapability, DesktopError> {
+    let sessions = sessions.inner().clone();
+    run_loadbot_worker("project terminal", move |paths, context| {
+        let command = operations::project_terminal_command(paths, &tool, &catalog, context)?;
+        sessions.issue(
+            command,
+            context.process.clone(),
+            OperationId::random(),
+            format!("Project terminal — {tool}"),
+            None,
+        )
     })
     .await
-    .map_err(|error| DesktopError {
-        kind: "worker",
-        message: format!("project-terminal worker failed: {error}"),
-    })?
 }
 
 #[tauri::command]
@@ -1133,56 +1154,6 @@ fn directory_open_command(path: &Path) -> Command {
     command
 }
 
-fn open_terminal(path: &Path) -> anyhow::Result<()> {
-    let mut failures = Vec::new();
-    for mut command in terminal_open_commands(path) {
-        let program = command.get_program().to_string_lossy().into_owned();
-        match command
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-        {
-            Ok(_) => return Ok(()),
-            Err(error) => failures.push(format!("{program}: {error}")),
-        }
-    }
-    anyhow::bail!(
-        "could not open a terminal in {} ({})",
-        path.display(),
-        failures.join("; ")
-    )
-}
-
-fn terminal_open_commands(path: &Path) -> Vec<Command> {
-    #[cfg(target_os = "windows")]
-    let commands = vec![{
-        let mut command = Command::new("cmd.exe");
-        command.arg("/K");
-        command
-    }];
-    #[cfg(target_os = "linux")]
-    let commands = [
-        "x-terminal-emulator",
-        "gnome-terminal",
-        "konsole",
-        "xfce4-terminal",
-        "xterm",
-    ]
-    .map(Command::new)
-    .into_iter()
-    .collect::<Vec<_>>();
-    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
-    let commands = vec![Command::new("false")];
-    commands
-        .into_iter()
-        .map(|mut command| {
-            command.current_dir(path);
-            command
-        })
-        .collect()
-}
-
 fn main() {
     // The same native host and qualified semantic capabilities serve Windows and Linux.
     tauri::Builder::default()
@@ -1195,7 +1166,7 @@ fn main() {
             read_loadbot_inventory,
             read_loadbot_catalogs,
             open_loadbot_project,
-            open_loadbot_project_terminal,
+            create_loadbot_project_terminal_launch,
             add_loadbot_catalog,
             add_loadbot_project,
             pull_loadbot_project,
@@ -1235,35 +1206,91 @@ mod tests {
         assert_eq!(command.get_args().collect::<Vec<_>>(), [path.as_os_str()]);
     }
 
+    #[cfg(unix)]
     #[test]
-    fn project_terminal_uses_the_project_as_its_working_directory() {
-        let path = Path::new("project with spaces;and-metacharacters");
-        let commands = terminal_open_commands(path);
-        #[cfg(target_os = "windows")]
-        {
-            let command = &commands[0];
-            assert_eq!(command.get_program(), "cmd.exe");
-            assert_eq!(command.get_args().collect::<Vec<_>>(), ["/K"]);
+    fn backend_issued_terminal_and_auth_launches_have_distinct_sessions() {
+        let sessions = InteractiveSessions::default();
+        let command = |label: &str| {
+            let mut command = InteractiveCommand::new("sh");
+            command.args(["-c", &format!("printf '{label}\\n'; sleep 1")]);
+            command
+        };
+        let terminal = sessions
+            .issue(
+                command("terminal"),
+                Control::default(),
+                OperationId::random(),
+                "Project terminal — demo".into(),
+                None,
+            )
+            .unwrap();
+        let auth = sessions
+            .issue(
+                command("auth"),
+                Control::default(),
+                OperationId::random(),
+                "Git push — demo".into(),
+                None,
+            )
+            .unwrap();
+        assert_ne!(terminal.launch_id, auth.launch_id);
+        let terminal_session = sessions
+            .start(&terminal.launch_id, Arc::new(|_| {}))
+            .unwrap();
+        let auth_session = sessions.start(&auth.launch_id, Arc::new(|_| {})).unwrap();
+        assert_ne!(terminal_session.session_id, auth_session.session_id);
+        assert!(sessions.session(&terminal_session.session_id).is_ok());
+        assert!(sessions.session(&auth_session.session_id).is_ok());
+        sessions
+            .session(&terminal_session.session_id)
+            .unwrap()
+            .terminate()
+            .unwrap();
+        assert!(sessions.session(&auth_session.session_id).is_ok());
+        sessions
+            .session(&auth_session.session_id)
+            .unwrap()
+            .terminate()
+            .unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dropping_the_session_registry_terminates_a_live_project_shell() {
+        let sessions = InteractiveSessions::default();
+        let active_registry = Arc::downgrade(&sessions.active);
+        let mut command = InteractiveCommand::new("sh");
+        command.args(["-c", "sleep 30"]);
+        let launch = sessions
+            .issue(
+                command,
+                Control::default(),
+                OperationId::random(),
+                "Project terminal — demo".into(),
+                None,
+            )
+            .unwrap();
+        let (sender, receiver) = mpsc::channel();
+        sessions
+            .start(
+                &launch.launch_id,
+                Arc::new(move |event| {
+                    let _ = sender.send(event);
+                }),
+            )
+            .unwrap();
+        drop(sessions);
+        assert!(active_registry.upgrade().is_none());
+        loop {
+            match receiver.recv_timeout(Duration::from_secs(5)).unwrap() {
+                BackendInteractiveEvent::Exited { cancelled, .. } => {
+                    assert!(cancelled);
+                    break;
+                }
+                BackendInteractiveEvent::Failed { message, .. } => panic!("{message}"),
+                BackendInteractiveEvent::Output { .. } => {}
+            }
         }
-        #[cfg(target_os = "linux")]
-        assert_eq!(
-            commands
-                .iter()
-                .map(|command| command.get_program())
-                .collect::<Vec<_>>(),
-            [
-                "x-terminal-emulator",
-                "gnome-terminal",
-                "konsole",
-                "xfce4-terminal",
-                "xterm"
-            ]
-        );
-        assert!(
-            commands
-                .iter()
-                .all(|command| command.get_current_dir() == Some(path))
-        );
     }
 
     #[test]

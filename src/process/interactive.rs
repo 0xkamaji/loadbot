@@ -55,6 +55,23 @@ impl InteractiveCommand {
         self
     }
 
+    /// Build the user's normal shell without forcing login-shell behavior.
+    /// `portable-pty` resolves `$SHELL` and the account shell on Unix, and
+    /// `%ComSpec%` (falling back to `cmd.exe`) on Windows. Creating an explicit
+    /// command after that lookup avoids its default-program login-shell mode.
+    pub fn user_shell_in(directory: impl AsRef<Path>) -> Result<Self> {
+        let directory = directory.as_ref();
+        anyhow::ensure!(
+            directory.is_dir(),
+            "terminal working directory is not a directory"
+        );
+        let shell = CommandBuilder::new_default_prog().get_shell();
+        anyhow::ensure!(!shell.is_empty(), "could not determine the user's shell");
+        let mut command = Self::new(shell);
+        command.current_dir(directory);
+        Ok(command)
+    }
+
     #[cfg(test)]
     pub(crate) fn program(&self) -> &OsStr {
         self.command.get_argv()[0].as_os_str()
@@ -63,6 +80,16 @@ impl InteractiveCommand {
     #[cfg(test)]
     pub(crate) fn arguments(&self) -> impl Iterator<Item = &OsStr> {
         self.command.get_argv()[1..].iter().map(OsString::as_os_str)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn current_directory(&self) -> Option<&Path> {
+        self.command.get_cwd().map(Path::new)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn environment(&self, key: impl AsRef<OsStr>) -> Option<&OsStr> {
+        self.command.get_env(key)
     }
 }
 

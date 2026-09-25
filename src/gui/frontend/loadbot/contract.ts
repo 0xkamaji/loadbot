@@ -155,7 +155,7 @@ export interface LoadbotAdapter {
   readInventory(): Promise<readonly LoadbotProject[]>;
   readCatalogs(): Promise<readonly LoadbotCatalog[]>;
   openProjectFolder(project: Pick<LoadbotProject, 'catalog' | 'tool'>): Promise<void>;
-  openProjectTerminal?(project: ProjectIdentity): Promise<void>;
+  createProjectTerminalLaunch?(project: ProjectIdentity): Promise<InteractiveLaunch>;
   pullProject?(project: ProjectIdentity, onActivity?: ProjectOperationActivitySink): Promise<ProjectIdentity>;
   inspectProjectPush?(project: ProjectIdentity, onActivity?: ProjectOperationActivitySink): Promise<ProjectPushInspection>;
   pushProject?(project: ProjectIdentity, onActivity?: ProjectOperationActivitySink): Promise<ProjectIdentity>;

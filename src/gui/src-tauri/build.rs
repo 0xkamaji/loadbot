@@ -7,7 +7,7 @@ fn main() {
             "read_loadbot_inventory",
             "read_loadbot_catalogs",
             "open_loadbot_project",
-            "open_loadbot_project_terminal",
+            "create_loadbot_project_terminal_launch",
             "add_loadbot_catalog",
             "add_loadbot_project",
             "pull_loadbot_project",

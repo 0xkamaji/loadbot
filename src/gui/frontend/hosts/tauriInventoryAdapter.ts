@@ -14,7 +14,7 @@ export type InventoryQuery = () => Promise<unknown>;
 export type ProjectFolderOpen = (project: Pick<LoadbotProject, 'catalog' | 'tool'>) => Promise<unknown>;
 export interface ManagementBridge {
   readCatalogs(): Promise<unknown>;
-  openProjectTerminal?(project: ProjectIdentity): Promise<unknown>;
+  createProjectTerminalLaunch?(project: ProjectIdentity): Promise<unknown>;
   pullProject?(project: ProjectIdentity, onActivity?: ProjectOperationActivitySink): Promise<unknown>;
   inspectProjectPush?(project: ProjectIdentity, onActivity?: ProjectOperationActivitySink): Promise<unknown>;
   pushProject?(project: ProjectIdentity, onActivity?: ProjectOperationActivitySink): Promise<unknown>;
@@ -56,9 +56,9 @@ function requireTauri(capability: string) {
 
 const nativeManagementBridge: ManagementBridge = {
   async readCatalogs() { requireTauri('Catalog management'); return invoke('read_loadbot_catalogs'); },
-  async openProjectTerminal(project) {
-    requireTauri('Opening project terminals');
-    return invoke('open_loadbot_project_terminal', { ...project });
+  async createProjectTerminalLaunch(project) {
+    requireTauri('Project terminals');
+    return invoke('create_loadbot_project_terminal_launch', { ...project });
   },
   async pullProject(project, onActivity) { return invokeProjectOperation('pull_loadbot_project', project, onActivity); },
   async inspectProjectPush(project, onActivity) { return invokeProjectOperation('inspect_loadbot_project_push', project, onActivity); },
@@ -340,6 +340,11 @@ function interactiveLaunchActivity(value: unknown): (InteractiveLaunch & { reado
   return { kind: 'interactive-launch', launchId: text(item.launchId), label: text(item.label) };
 }
 
+function interactiveLaunch(value: unknown): InteractiveLaunch {
+  const item = record(value);
+  return { launchId: text(item.launchId), label: text(item.label) };
+}
+
 function projectOperationActivity(value: unknown): ProjectOperationActivity {
   const item = record(value);
   const stage = text(item.stage);
@@ -419,9 +424,9 @@ export function createTauriLoadbotAdapter(
         throw nativeError(error, 'Could not open the project folder.');
       }
     },
-    async openProjectTerminal(project) {
-      try { await management.openProjectTerminal?.(project); }
-      catch (error: unknown) { throw nativeError(error, 'Could not open a terminal for the project.'); }
+    async createProjectTerminalLaunch(project) {
+      try { return interactiveLaunch(await management.createProjectTerminalLaunch?.(project)); }
+      catch (error: unknown) { throw nativeError(error, 'Could not create a terminal for the project.'); }
     },
     async pullProject(project, onActivity) {
       try { return projectIdentity(await management.pullProject?.(project, onActivity)); }

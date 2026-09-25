@@ -16,7 +16,7 @@ const tauri = vi.hoisted(() => ({
 vi.mock('@tauri-apps/api/core', () => tauri);
 const management = (names: readonly string[] = ['personal']): ManagementBridge => ({
   readCatalogs: async () => names.map((name, index) => ({ name, url: 'test', writable: true, state: 'installed', default: index === 0 })),
-  openProjectTerminal: vi.fn(), pullProject: vi.fn(), updateProject: vi.fn(), removeProject: vi.fn(), reinstallProject: vi.fn(),
+  createProjectTerminalLaunch: vi.fn(), pullProject: vi.fn(), updateProject: vi.fn(), removeProject: vi.fn(), reinstallProject: vi.fn(),
   addCatalog: vi.fn(), addProject: vi.fn(), addShortcut: vi.fn(), addRecipeShortcut: vi.fn(), updateRecipeShortcut: vi.fn(),
   chooseProjectFile: vi.fn(), chooseProjectDirectory: vi.fn(), viewShortcutHelp: vi.fn(), deleteShortcuts: vi.fn(), syncCatalog: vi.fn(),
 });
@@ -142,6 +142,7 @@ describe('one platform-neutral real read adapter', () => {
       if (command === 'read_loadbot_catalogs') return [{ name: 'personal', url: 'repo', writable: true, state: 'installed', default: true }];
       if (command === 'add_loadbot_catalog') return { catalog: input?.name };
       if (command === 'add_loadbot_project') return { catalog: input?.catalog, tool: input?.name };
+      if (command === 'create_loadbot_project_terminal_launch') return { launchId: 'terminal-launch', label: 'Project terminal — demo' };
       if (['pull_loadbot_project', 'update_loadbot_project', 'remove_loadbot_project', 'reinstall_loadbot_project'].includes(command)) {
         const channel = input?.onActivity as InstanceType<typeof tauri.Channel>;
         channel.onmessage({ kind: 'log', stream: 'command', text: `git ${command}` } as never);
@@ -173,7 +174,9 @@ describe('one platform-neutral real read adapter', () => {
     await expect(adapter.readCatalogs()).resolves.toEqual([{ name: 'personal', url: 'repo', writable: true, state: 'installed', default: true }]);
     await adapter.addCatalog({ name: 'other', url: 'other-repo', writable: false });
     await adapter.addProject({ catalog: 'personal', name: 'demo', url: 'tool-repo', commit: false, push: false });
-    await adapter.openProjectTerminal?.({ catalog: 'personal', tool: 'demo' });
+    await expect(adapter.createProjectTerminalLaunch?.({ catalog: 'personal', tool: 'demo' })).resolves.toEqual({
+      launchId: 'terminal-launch', label: 'Project terminal — demo',
+    });
     const projectActivity = vi.fn();
     await adapter.pullProject?.({ catalog: 'personal', tool: 'demo' }, projectActivity);
     await adapter.updateProject?.({ catalog: 'personal', tool: 'demo' }, projectActivity);
@@ -203,7 +206,7 @@ describe('one platform-neutral real read adapter', () => {
     expect(tauri.invoke.mock.calls.slice(1)).toEqual([
       ['add_loadbot_catalog', { name: 'other', url: 'other-repo', writable: false }],
       ['add_loadbot_project', { catalog: 'personal', name: 'demo', url: 'tool-repo', revision: undefined, commit: false, push: false }],
-      ['open_loadbot_project_terminal', { catalog: 'personal', tool: 'demo' }],
+      ['create_loadbot_project_terminal_launch', { catalog: 'personal', tool: 'demo' }],
       ['pull_loadbot_project', { catalog: 'personal', tool: 'demo', onActivity: expect.any(tauri.Channel) }],
       ['update_loadbot_project', { catalog: 'personal', tool: 'demo', onActivity: expect.any(tauri.Channel) }],
       ['remove_loadbot_project', { catalog: 'personal', tool: 'demo', onActivity: expect.any(tauri.Channel) }],

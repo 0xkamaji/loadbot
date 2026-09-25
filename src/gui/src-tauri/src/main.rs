@@ -109,7 +109,11 @@ struct InteractiveLaunchCapability {
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
-#[serde(tag = "kind", rename_all = "kebab-case")]
+#[serde(
+    tag = "kind",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase"
+)]
 enum BackendInteractiveEvent {
     Output {
         session_id: String,
@@ -1419,6 +1423,30 @@ mod tests {
         assert!(format!("{error:#}").contains("launch is unavailable"));
     }
 
+    #[test]
+    fn interactive_events_use_the_frontend_wire_contract() {
+        use tauri::ipc::InvokeResponseBody;
+
+        let (sender, receiver) = mpsc::channel();
+        let channel = Channel::<BackendInteractiveEvent>::new(move |body| {
+            let InvokeResponseBody::Json(json) = body else {
+                panic!("expected JSON interactive event")
+            };
+            sender.send(json).unwrap();
+            Ok(())
+        });
+        let event = BackendInteractiveEvent::Output {
+            session_id: "session-1".into(),
+            bytes: b"prompt> ".to_vec(),
+        };
+        channel.send(event).unwrap();
+        let json = receiver.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(json.contains(r#""kind":"output""#));
+        assert!(json.contains(r#""sessionId":"session-1""#));
+        assert!(!json.contains("session_id"));
+        assert!(json.contains(r#""bytes":[112,114,111,109,112,116,62,32]"#));
+    }
+
     #[cfg(unix)]
     #[test]
     fn interactive_bridge_routes_output_input_exit_and_removes_the_session() {
@@ -1441,7 +1469,10 @@ mod tests {
             )
             .unwrap();
         let first = receiver.recv_timeout(Duration::from_secs(5)).unwrap();
-        assert!(matches!(first, BackendInteractiveEvent::Output { .. }));
+        let BackendInteractiveEvent::Output { bytes, .. } = first else {
+            panic!("expected immediate startup output")
+        };
+        assert!(String::from_utf8_lossy(&bytes).contains("bridge-ready"));
         sessions
             .session(&started.session_id)
             .unwrap()
@@ -1466,6 +1497,11 @@ mod tests {
             exit,
             BackendInteractiveEvent::Exited { code: 0, .. }
         ));
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        while sessions.session(&started.session_id).is_ok() && std::time::Instant::now() < deadline
+        {
+            std::thread::yield_now();
+        }
         assert!(sessions.session(&started.session_id).is_err());
     }
 

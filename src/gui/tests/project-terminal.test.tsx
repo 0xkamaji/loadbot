@@ -106,13 +106,24 @@ describe('embedded project terminal', () => {
     expect(screen.queryByRole('textbox', { name: 'Project terminal input' })).not.toBeInTheDocument();
     expect(screen.getByRole('tabpanel', { name: 'Terminal' }).querySelector('form')).toBeNull();
 
-    act(() => xterm.MockTerminal.instances[0].emitData('pwd\r'));
-    await waitFor(() => expect(host.sendInteractiveInput).toHaveBeenCalledWith('session-terminal-alpha-1', 'pwd\r'));
+    act(() => {
+      xterm.MockTerminal.instances[0].emitData('p');
+      xterm.MockTerminal.instances[0].emitData('w');
+      xterm.MockTerminal.instances[0].emitData('d');
+      xterm.MockTerminal.instances[0].emitData('\r');
+    });
+    await waitFor(() => {
+      expect(host.sendInteractiveInput).toHaveBeenNthCalledWith(1, 'session-terminal-alpha-1', 'p');
+      expect(host.sendInteractiveInput).toHaveBeenNthCalledWith(2, 'session-terminal-alpha-1', 'w');
+      expect(host.sendInteractiveInput).toHaveBeenNthCalledWith(3, 'session-terminal-alpha-1', 'd');
+      expect(host.sendInteractiveInput).toHaveBeenNthCalledWith(4, 'session-terminal-alpha-1', '\r');
+    });
     act(() => xterm.MockTerminal.instances[0].emitData('\u0003'));
-    await waitFor(() => expect(host.sendInteractiveInput).toHaveBeenCalledWith('session-terminal-alpha-1', '\u0003'));
+    await waitFor(() => expect(host.sendInteractiveInput).toHaveBeenNthCalledWith(5, 'session-terminal-alpha-1', '\u0003'));
     act(() => host.sinks.get('terminal-alpha-1')?.({
       kind: 'output', sessionId: 'session-terminal-alpha-1', text: 'pwd\r\n/project/alpha\r\nnext-prompt> ',
     }));
+    expect(screen.getByRole('application', { name: 'Project terminal' })).toHaveTextContent('pwd');
     expect(screen.getByRole('application', { name: 'Project terminal' })).toHaveTextContent('/project/alpha');
     act(() => xterm.MockTerminal.instances[0].emitResize(113, 37));
     expect(host.resizeInteractiveSession).toHaveBeenCalledWith('session-terminal-alpha-1', 37, 113);

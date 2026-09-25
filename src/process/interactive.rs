@@ -55,10 +55,11 @@ impl InteractiveCommand {
         self
     }
 
-    /// Build the user's normal shell without forcing login-shell behavior.
+    /// Build the user's normal shell as an interactive, non-login shell.
     /// `portable-pty` resolves `$SHELL` and the account shell on Unix, and
-    /// `%ComSpec%` (falling back to `cmd.exe`) on Windows. Creating an explicit
-    /// command after that lookup avoids its default-program login-shell mode.
+    /// `%ComSpec%` (falling back to `cmd.exe`) on Windows. Known Unix shells
+    /// receive their standard interactive flag; unknown and Windows shells are
+    /// left unchanged rather than receiving an unsafe platform-specific flag.
     pub fn user_shell_in(directory: impl AsRef<Path>) -> Result<Self> {
         let directory = directory.as_ref();
         anyhow::ensure!(
@@ -67,8 +68,14 @@ impl InteractiveCommand {
         );
         let shell = CommandBuilder::new_default_prog().get_shell();
         anyhow::ensure!(!shell.is_empty(), "could not determine the user's shell");
+        #[cfg(unix)]
+        let interactive_flag = supports_interactive_flag(OsStr::new(&shell));
         let mut command = Self::new(shell);
         command.current_dir(directory).env("TERM", "xterm-256color");
+        #[cfg(unix)]
+        if interactive_flag {
+            command.arg("-i");
+        }
         Ok(command)
     }
 
@@ -91,6 +98,29 @@ impl InteractiveCommand {
     pub(crate) fn environment(&self, key: impl AsRef<OsStr>) -> Option<&OsStr> {
         self.command.get_env(key)
     }
+}
+
+#[cfg(unix)]
+fn supports_interactive_flag(shell: &OsStr) -> bool {
+    Path::new(shell)
+        .file_name()
+        .and_then(OsStr::to_str)
+        .is_some_and(|name| {
+            matches!(
+                name,
+                "ash"
+                    | "bash"
+                    | "csh"
+                    | "dash"
+                    | "fish"
+                    | "ksh"
+                    | "mksh"
+                    | "sh"
+                    | "tcsh"
+                    | "yash"
+                    | "zsh"
+            )
+        })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -473,6 +503,102 @@ mod tests {
         assert!(!cancelled);
         assert!(session.is_finished());
         assert_ne!(session.process_id(), ProcessId::default());
+    }
+
+    #[test]
+    fn known_unix_shells_are_explicitly_interactive() {
+        for shell in [
+            "/bin/sh",
+            "/bin/bash",
+            "/usr/bin/fish",
+            "/usr/bin/zsh",
+            "/bin/dash",
+            "/bin/ksh",
+        ] {
+            assert!(supports_interactive_flag(OsStr::new(shell)), "{shell}");
+        }
+        assert!(!supports_interactive_flag(OsStr::new("/opt/custom-shell")));
+    }
+
+    #[test]
+    fn real_user_shell_emits_a_prompt_and_accepts_interactive_io() {
+        fn receive_until(
+            receiver: &mpsc::Receiver<InteractiveSessionEvent>,
+            output: &mut Vec<u8>,
+            needle: &str,
+            occurrences: usize,
+        ) {
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while String::from_utf8_lossy(output).matches(needle).count() < occurrences {
+                let remaining = deadline
+                    .checked_duration_since(std::time::Instant::now())
+                    .expect("timed out waiting for interactive shell output");
+                match receiver.recv_timeout(remaining).unwrap() {
+                    InteractiveSessionEvent::Output { bytes, .. } => output.extend(bytes),
+                    InteractiveSessionEvent::Exited { status, .. } => {
+                        panic!("interactive shell exited early: {status:?}")
+                    }
+                    InteractiveSessionEvent::Failed { diagnostic, .. } => panic!("{diagnostic}"),
+                }
+            }
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        let command = InteractiveCommand::user_shell_in(directory.path()).unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let session = InteractiveSession::start(
+            command,
+            &Control::default(),
+            OperationId::random(),
+            Arc::new(move |event| {
+                let _ = sender.send(event);
+            }),
+        )
+        .unwrap();
+
+        let mut output = Vec::new();
+        match receiver.recv_timeout(Duration::from_secs(5)).unwrap() {
+            InteractiveSessionEvent::Output { bytes, .. } => {
+                assert!(
+                    !bytes.is_empty(),
+                    "interactive shell emitted an empty prompt"
+                );
+                output.extend(bytes);
+            }
+            event => panic!("expected initial interactive shell output, got {event:?}"),
+        }
+
+        session
+            .send_input(b"stty -a; printf 'LOADBOT_NATIVE_OK\\n'\r")
+            .unwrap();
+        receive_until(&receiver, &mut output, "LOADBOT_NATIVE_OK", 2);
+        let terminal_modes = String::from_utf8_lossy(&output);
+        assert!(
+            terminal_modes
+                .split_whitespace()
+                .any(|mode| mode == "echo" || mode == "echo;"),
+            "terminal echo was not enabled: {terminal_modes}"
+        );
+
+        session
+            .send_input(b"printf 'LOADBOT_SECOND_OK\\n'\r")
+            .unwrap();
+        receive_until(&receiver, &mut output, "LOADBOT_SECOND_OK", 2);
+        assert!(!session.is_finished());
+
+        session.send_input(b"sleep 30\r").unwrap();
+        receive_until(&receiver, &mut output, "sleep 30", 1);
+        std::thread::sleep(Duration::from_millis(100));
+        session.send_input(b"\x03").unwrap();
+        session
+            .send_input(b"printf 'LOADBOT_AFTER_INTERRUPT_OK\\n'\r")
+            .unwrap();
+        receive_until(&receiver, &mut output, "LOADBOT_AFTER_INTERRUPT_OK", 2);
+
+        session.send_input(b"exit\r").unwrap();
+        let (_, status, cancelled) = output_until_exit(&receiver);
+        assert!(status.success());
+        assert!(!cancelled);
     }
 
     #[test]

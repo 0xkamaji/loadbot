@@ -2962,6 +2962,9 @@ mod tests {
             Some(fs::canonicalize(destination).unwrap().as_path())
         );
         assert!(!command.program().is_empty());
+        #[cfg(unix)]
+        assert_eq!(command.arguments().collect::<Vec<_>>(), [OsStr::new("-i")]);
+        #[cfg(windows)]
         assert_eq!(command.arguments().count(), 0);
         assert_eq!(
             command.environment("PATH"),

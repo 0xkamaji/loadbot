@@ -320,6 +320,11 @@ pub enum Notice {
         name: String,
         catalog_name: String,
     },
+    ToolCommitted {
+        name: String,
+        catalog_name: String,
+        commit_hash: String,
+    },
     SkippedCatalog {
         name: String,
         diagnostic: String,
@@ -338,6 +343,10 @@ pub enum ToolOperation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolOperationStage {
     ValidatingCheckout,
+    InspectingRepository,
+    AwaitingCommit,
+    StagingChanges,
+    CreatingCommit,
     CloningProject,
     ValidatingFreshCheckout,
     FetchingAndUpdating,
@@ -409,6 +418,7 @@ impl Notice {
                 | Self::PushUrlConfigured { .. }
                 | Self::ToolReconciled { .. }
                 | Self::ToolUpdated { .. }
+                | Self::ToolCommitted { .. }
                 | Self::ToolPushed { .. }
         )
     }

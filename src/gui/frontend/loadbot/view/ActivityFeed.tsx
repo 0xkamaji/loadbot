@@ -41,6 +41,12 @@ function description(entry: ActivityEntry): string {
     case 'current': return `Catalog is already current: ${entry.catalog}${entry.detail ? ` (${entry.detail})` : ''}`;
     case 'updated': return `Catalog updated: ${entry.catalog}${entry.detail ? ` (${entry.detail})` : ''}`;
     case 'validating-checkout': return `Validating existing checkout: ${target}`;
+    case 'inspecting-repository': return `Inspecting repository changes: ${target}`;
+    case 'awaiting-commit': return `Awaiting Commit & Push confirmation: ${target}`;
+    case 'staging-changes': return `Staging selected changes: ${target}`;
+    case 'creating-commit': return `Creating commit: ${target}`;
+    case 'pushing-commits': return `Pushing commits: ${target}`;
+    case 'interactive-authentication': return 'Interactive authentication required';
     case 'cloning-project': return `${entry.operation === 'project-reinstall' ? 'Cloning fresh checkout' : 'Cloning project'}: ${target}`;
     case 'validating-fresh-checkout': return `Validating fresh checkout: ${target}`;
     case 'fetching-and-updating': return `Fetching remote and updating checkout: ${target}`;

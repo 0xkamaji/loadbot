@@ -14,6 +14,10 @@ export function ManagementDialogs({ dialog, state, actions, onClose }: {
       actions.cancelProjectAction();
       return;
     }
+    if (state.pendingCommitPush) {
+      actions.cancelCommitPush();
+      return;
+    }
     if (state.shortcutManagement.pendingDelete) {
       actions.cancelShortcutDeletion();
       return;
@@ -23,11 +27,12 @@ export function ManagementDialogs({ dialog, state, actions, onClose }: {
     onClose();
   }
   useEffect(() => {
-    if (!dialog && !state.recipeEditor && !state.shortcutManagement.pendingDelete && !state.pendingProjectAction) return;
+    if (!dialog && !state.recipeEditor && !state.shortcutManagement.pendingDelete && !state.pendingProjectAction && !state.pendingCommitPush) return;
     const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') close(); };
     window.addEventListener('keydown', escape);
     return () => window.removeEventListener('keydown', escape);
-  }, [dialog, onClose, state.management.status, state.recipeEditor, state.shortcutManagement.pendingDelete, state.pendingProjectAction]);
+  }, [dialog, onClose, state.management.status, state.recipeEditor, state.shortcutManagement.pendingDelete, state.pendingProjectAction, state.pendingCommitPush]);
+  if (state.pendingCommitPush) return <CommitPushDialog state={state} actions={actions} />;
   if (state.pendingProjectAction) return <ProjectActionConfirmation state={state} actions={actions} />;
   if (state.shortcutManagement.pendingDelete) return <DeleteShortcutConfirmation state={state} actions={actions} />;
   if (!dialog && !state.recipeEditor) return null;
@@ -35,6 +40,37 @@ export function ManagementDialogs({ dialog, state, actions, onClose }: {
   if (dialog === 'add-catalog') return <AddCatalogForm state={state} actions={actions} onClose={close} onDone={onClose} />;
   if (dialog === 'add-project') return <AddProjectForm state={state} actions={actions} onClose={close} onDone={onClose} />;
   return null;
+}
+
+function CommitPushDialog({ state, actions }: { state: LoadbotState; actions: LoadbotActions }) {
+  const pending = state.pendingCommitPush!;
+  const busy = state.management.status === 'submitting';
+  const valid = pending.selectedPaths.length > 0 && pending.commitMessage.trim().length > 0;
+  function submit(event: FormEvent) {
+    event.preventDefault();
+    if (valid) void actions.confirmCommitPush();
+  }
+  return <Dialog label="Commit & Push" onClose={actions.cancelCommitPush}>
+    <h2>COMMIT &amp; PUSH</h2>
+    <p>Project: <strong>{pending.project.tool}</strong></p>
+    <form onSubmit={submit}>
+      <fieldset className="lb-commit-files" disabled={busy}>
+        <legend>Changed files</legend>
+        {pending.changedFiles.map((change) => <label key={change.path}>
+          <input type="checkbox" checked={pending.selectedPaths.includes(change.path)}
+            onChange={() => actions.toggleCommitPushPath(change.path)} />
+          <span><strong>{change.status}</strong> {change.originalPath ? `${change.originalPath} → ` : ''}{change.path}</span>
+        </label>)}
+      </fieldset>
+      {!pending.selectedPaths.length && <StatusDisplay>Select at least one changed file.</StatusDisplay>}
+      <InputControl autoFocus label="Commit message" value={pending.commitMessage}
+        onChange={(event) => actions.setCommitPushMessage(event.target.value)} required disabled={busy} />
+      <div className="lb-dialog-actions">
+        <Button onClick={actions.cancelCommitPush} disabled={busy}>CANCEL</Button>
+        <Button type="submit" disabled={busy || !valid}>{busy ? <BusyLabel text="COMMITTING…" /> : 'Commit & Push'}</Button>
+      </div>
+    </form>
+  </Dialog>;
 }
 
 function ProjectActionConfirmation({ state, actions }: { state: LoadbotState; actions: LoadbotActions }) {

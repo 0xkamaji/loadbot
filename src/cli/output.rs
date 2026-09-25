@@ -158,6 +158,13 @@ impl Renderer {
             Notice::ToolPushed { name, catalog_name } => {
                 println!("pushed tool '{name}' from catalog '{catalog_name}'")
             }
+            Notice::ToolCommitted {
+                name,
+                catalog_name,
+                commit_hash,
+            } => println!(
+                "committed selected changes for tool '{name}' from catalog '{catalog_name}' at {commit_hash}"
+            ),
             Notice::SkippedCatalog { name, diagnostic } => eprintln!(
                 "warning: skipping catalog '{name}': {diagnostic}; run 'loadbot catalog status {name}' for details"
             ),

@@ -34,6 +34,24 @@ pub struct RepositoryStatus {
     pub push_url: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RepositoryChangeKind {
+    Modified,
+    Added,
+    Deleted,
+    Renamed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepositoryChange {
+    pub path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub original_path: Option<String>,
+    pub status: RepositoryChangeKind,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ManagedCheckout {
     ExpectedTransport,
@@ -265,6 +283,75 @@ pub fn working_tree_changes(path: &Path) -> Result<String> {
     query(path, &["status", "--porcelain", "--untracked-files=normal"])
 }
 
+/// Return path-safe, structured working-tree changes from Git porcelain output.
+/// Non-UTF-8 paths fail closed because GUI transports cannot round-trip them.
+pub fn repository_changes(path: &Path) -> Result<Vec<RepositoryChange>> {
+    let output = checked_output([
+        OsStr::new("-C"),
+        path.as_os_str(),
+        OsStr::new("status"),
+        OsStr::new("--porcelain=v1"),
+        OsStr::new("-z"),
+        OsStr::new("--untracked-files=all"),
+    ])?;
+    parse_porcelain_changes(&output.stdout)
+}
+
+fn parse_porcelain_changes(output: &[u8]) -> Result<Vec<RepositoryChange>> {
+    let mut fields = output.split(|byte| *byte == 0).peekable();
+    let mut changes = Vec::new();
+    while let Some(entry) = fields.next() {
+        if entry.is_empty() {
+            if fields.peek().is_none() {
+                break;
+            }
+            bail!("Git returned an invalid empty status entry");
+        }
+        if entry.len() < 4 || entry[2] != b' ' {
+            bail!("Git returned an invalid porcelain status entry");
+        }
+        let index = entry[0];
+        let worktree = entry[1];
+        if index == b'U'
+            || worktree == b'U'
+            || matches!((index, worktree), (b'A', b'A') | (b'D', b'D'))
+        {
+            bail!("repository has unmerged changes; resolve them before Commit & Push");
+        }
+        let path = std::str::from_utf8(&entry[3..])
+            .context("repository contains a changed path that is not valid UTF-8")?
+            .to_owned();
+        let renamed = index == b'R' || worktree == b'R';
+        let original_path = if renamed || index == b'C' || worktree == b'C' {
+            let original = fields
+                .next()
+                .context("Git omitted the original path for a renamed file")?;
+            Some(
+                std::str::from_utf8(original)
+                    .context("repository contains a renamed path that is not valid UTF-8")?
+                    .to_owned(),
+            )
+        } else {
+            None
+        };
+        let status = if renamed {
+            RepositoryChangeKind::Renamed
+        } else if index == b'?' || index == b'A' || worktree == b'A' || index == b'C' {
+            RepositoryChangeKind::Added
+        } else if index == b'D' || worktree == b'D' {
+            RepositoryChangeKind::Deleted
+        } else {
+            RepositoryChangeKind::Modified
+        };
+        changes.push(RepositoryChange {
+            path,
+            original_path,
+            status,
+        });
+    }
+    Ok(changes)
+}
+
 pub fn tracked_files(path: &Path) -> Result<Vec<String>> {
     Ok(query(path, &["ls-files"])?
         .lines()
@@ -404,6 +491,58 @@ pub fn commit_file_with_interaction(
         &["commit", "--only", "-m", message, "--", file],
         interaction,
     )?;
+    let _completed_step = crate::process::critical_scope();
+    query(path, &["rev-parse", "--short", "HEAD"])
+}
+
+pub fn commit_paths_with_interaction(
+    path: &Path,
+    stage_files: &[String],
+    commit_files: &[String],
+    message: &str,
+    interaction: &mut dyn Interaction,
+) -> Result<String> {
+    if stage_files.is_empty() || commit_files.is_empty() {
+        bail!("select at least one changed file to commit");
+    }
+    if message.trim().is_empty() {
+        bail!("commit message must not be empty");
+    }
+    // The structured UI already reports staging/commit stages. Keep paths and
+    // the commit message out of persistent process logs while preserving the
+    // caller's cancellation and execution policy.
+    let mut control = interaction.process_control();
+    control.observer = None;
+
+    let mut add = vec![
+        OsString::from("--literal-pathspecs"),
+        OsString::from("-C"),
+        path.as_os_str().to_owned(),
+        OsString::from("add"),
+        OsString::from("--all"),
+        OsString::from("--"),
+    ];
+    add.extend(stage_files.iter().map(OsString::from));
+    let output = raw_output_control(add, &control)?;
+    if !output.status.success() {
+        bail!("{}", git_error_message(&output));
+    }
+
+    let mut commit = vec![
+        OsString::from("--literal-pathspecs"),
+        OsString::from("-C"),
+        path.as_os_str().to_owned(),
+        OsString::from("commit"),
+        OsString::from("--only"),
+        OsString::from("-m"),
+        OsString::from(message),
+        OsString::from("--"),
+    ];
+    commit.extend(commit_files.iter().map(OsString::from));
+    let output = raw_output_control(commit, &control)?;
+    if !output.status.success() {
+        bail!("{}", git_error_message(&output));
+    }
     let _completed_step = crate::process::critical_scope();
     query(path, &["rev-parse", "--short", "HEAD"])
 }

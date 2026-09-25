@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -52,6 +52,13 @@ pub struct ToolStatus {
     pub path: PathBuf,
     pub installed: bool,
     pub repository: Option<git::RepositoryStatus>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolPushInspection {
+    pub changed_files: Vec<git::RepositoryChange>,
+    pub commits_ahead: bool,
 }
 
 /// Lazily resolves verified Rot aliases for one managed-tool operation.
@@ -1432,7 +1439,10 @@ pub fn tool_push(
         name: tool.name.clone(),
         catalog_name: tool.catalog.clone(),
     });
-    validate_push_checkout(paths, &tool, &destination, context, &mut repositories)?;
+    validate_managed_push_checkout(paths, &tool, &destination, context, &mut repositories)?;
+    if git::status(&destination)?.dirty {
+        bail!("working tree has local changes; commit or discard them explicitly before retrying");
+    }
     context.record(Notice::ToolOperationStage {
         operation: ToolOperation::Push,
         stage: ToolOperationStage::PushingCommits,
@@ -1441,6 +1451,154 @@ pub fn tool_push(
     });
     git::push_origin(&destination, context)
         .with_context(|| format!("could not push tool '{name}'"))?;
+    context.record(Notice::ToolPushed {
+        name: tool.name,
+        catalog_name: tool.catalog,
+    });
+    Ok(context.outcome_since(notice_start))
+}
+
+/// Inspect the shared, managed checkout state used by GUI Push routing.
+/// This is read-only; commit selection is revalidated by `tool_commit_and_push`.
+pub fn tool_push_inspect(
+    paths: &Paths,
+    name: &str,
+    catalog_name: Option<&str>,
+    context: &mut OperationContext<'_>,
+) -> Result<ToolPushInspection> {
+    let _process_scope = crate::process::scope(&context.process);
+    let mut repositories = ManagedToolRepositories::new();
+    context.process.cancellation.check()?;
+    let tool = resolve_tool(paths, name, catalog_name, context)?;
+    let destination = paths.tool(&tool.catalog, &tool.name)?;
+    let _repository_lease = context.lease(&destination)?;
+    let _configuration_snapshot = context.watch(&paths.config())?;
+    let _catalog_snapshot = context.watch(&paths.catalog_file(&tool.catalog))?;
+    context.record(Notice::ToolOperationStage {
+        operation: ToolOperation::Push,
+        stage: ToolOperationStage::ValidatingCheckout,
+        name: tool.name.clone(),
+        catalog_name: tool.catalog.clone(),
+    });
+    validate_managed_push_checkout(paths, &tool, &destination, context, &mut repositories)?;
+    context.record(Notice::ToolOperationStage {
+        operation: ToolOperation::Push,
+        stage: ToolOperationStage::InspectingRepository,
+        name: tool.name.clone(),
+        catalog_name: tool.catalog.clone(),
+    });
+    let changed_files = git::repository_changes(&destination)?;
+    let commits_ahead = git::has_local_commits_not_on_origin(&destination)?;
+    if !changed_files.is_empty() {
+        context.record(Notice::ToolOperationStage {
+            operation: ToolOperation::Push,
+            stage: ToolOperationStage::AwaitingCommit,
+            name: tool.name,
+            catalog_name: tool.catalog,
+        });
+    }
+    Ok(ToolPushInspection {
+        changed_files,
+        commits_ahead,
+    })
+}
+
+/// Commit explicitly selected working-tree changes and continue through the
+/// normal shared Push transport/authentication path. Unselected changes remain.
+pub fn tool_commit_and_push(
+    paths: &Paths,
+    name: &str,
+    catalog_name: Option<&str>,
+    selected_paths: &[String],
+    message: &str,
+    context: &mut OperationContext<'_>,
+) -> Result<MutationOutcome> {
+    let _process_scope = crate::process::scope(&context.process);
+    let mut repositories = ManagedToolRepositories::new();
+    context.process.cancellation.check()?;
+    if selected_paths.is_empty() {
+        bail!("select at least one changed file to commit");
+    }
+    if message.trim().is_empty() {
+        bail!("commit message must not be empty");
+    }
+    let notice_start = context.notices.len();
+    let tool = resolve_tool(paths, name, catalog_name, context)?;
+    let destination = paths.tool(&tool.catalog, &tool.name)?;
+    let _repository_lease = context.lease(&destination)?;
+    let _configuration_snapshot = context.watch(&paths.config())?;
+    let _catalog_snapshot = context.watch(&paths.catalog_file(&tool.catalog))?;
+    context.record(Notice::ToolOperationStage {
+        operation: ToolOperation::Push,
+        stage: ToolOperationStage::ValidatingCheckout,
+        name: tool.name.clone(),
+        catalog_name: tool.catalog.clone(),
+    });
+    validate_managed_push_checkout(paths, &tool, &destination, context, &mut repositories)?;
+
+    let current_changes = git::repository_changes(&destination)?;
+    let mut selected = BTreeSet::new();
+    for path in selected_paths {
+        if !selected.insert(path.as_str()) {
+            bail!("changed path '{path}' was selected more than once");
+        }
+    }
+    let mut stage_paths = Vec::new();
+    let mut commit_paths = Vec::new();
+    for path in selected {
+        let change = current_changes
+            .iter()
+            .find(|change| change.path == path)
+            .with_context(|| {
+                format!("selected path '{path}' is no longer in the working-tree change set")
+            })?;
+        // A porcelain rename is already represented in Git's index. Re-adding
+        // its missing source path fails, but `commit --only` needs both names
+        // to include the deletion and destination in the selected commit.
+        stage_paths.push(change.path.clone());
+        if let Some(original) = &change.original_path {
+            commit_paths.push(original.clone());
+        }
+        commit_paths.push(change.path.clone());
+    }
+
+    context.record(Notice::ToolOperationStage {
+        operation: ToolOperation::Push,
+        stage: ToolOperationStage::StagingChanges,
+        name: tool.name.clone(),
+        catalog_name: tool.catalog.clone(),
+    });
+    context.record(Notice::ToolOperationStage {
+        operation: ToolOperation::Push,
+        stage: ToolOperationStage::CreatingCommit,
+        name: tool.name.clone(),
+        catalog_name: tool.catalog.clone(),
+    });
+    let commit_hash = git::commit_paths_with_interaction(
+        &destination,
+        &stage_paths,
+        &commit_paths,
+        message,
+        context,
+    )
+    .with_context(|| format!("could not commit selected changes for tool '{name}'"))?;
+    context.record(Notice::ToolCommitted {
+        name: tool.name.clone(),
+        catalog_name: tool.catalog.clone(),
+        commit_hash: commit_hash.clone(),
+    });
+
+    context.process.cancellation.check()?;
+    validate_managed_push_checkout(paths, &tool, &destination, context, &mut repositories)?;
+    context.record(Notice::ToolOperationStage {
+        operation: ToolOperation::Push,
+        stage: ToolOperationStage::PushingCommits,
+        name: tool.name.clone(),
+        catalog_name: tool.catalog.clone(),
+    });
+    git::push_origin(&destination, context).with_context(|| {
+        format!("commit {commit_hash} remains local, but pushing tool '{name}' failed")
+    })?;
     context.record(Notice::ToolPushed {
         name: tool.name,
         catalog_name: tool.catalog,
@@ -1629,10 +1787,9 @@ fn validate_destructive_checkout(
     Ok(())
 }
 
-/// Validate a checkout for push operations.
-/// Unlike validate_destructive_checkout, this allows local commits not on origin
-/// (since push is exactly how those commits get to the remote).
-fn validate_push_checkout(
+/// Validate repository identity and installation for all push variants.
+/// Callers separately decide whether a dirty tree is valid for their workflow.
+fn validate_managed_push_checkout(
     paths: &Paths,
     tool: &ResolvedTool,
     destination: &Path,
@@ -1660,11 +1817,6 @@ fn validate_push_checkout(
     if !repositories.is_managed_checkout(destination, &tool.definition.url)? {
         bail!("refusing to push a checkout that is not the configured Git repository");
     }
-    if git::status(destination)?.dirty {
-        bail!("working tree has local changes; commit or discard them explicitly before retrying");
-    }
-    // Unlike destructive operations, push ALLOWS local commits not on origin.
-    // That is the purpose of push.
     Ok(())
 }
 
@@ -2152,6 +2304,20 @@ mod tests {
         );
     }
 
+    fn query_git(directory: &Path, arguments: &[&str]) -> String {
+        let output = Command::new("git")
+            .args(arguments)
+            .current_dir(directory)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "Git failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap()
+    }
+
     fn empty_remote(base: &Path, name: &str) -> PathBuf {
         let remote = base.join(format!("{name}.git"));
         git(
@@ -2441,6 +2607,318 @@ mod tests {
         assert!(
             error.to_string().contains("catalog") && error.to_string().contains("not configured")
         );
+    }
+
+    #[test]
+    fn push_inspection_reports_structured_modified_untracked_and_deleted_files() {
+        let (_temporary, paths, destination) = lifecycle_fixture();
+        fs::write(destination.join("README.md"), "modified\n").unwrap();
+        fs::write(destination.join("new file.txt"), "untracked\n").unwrap();
+        fs::write(destination.join("deleted.txt"), "tracked\n").unwrap();
+        fs::write(destination.join("rename-me.txt"), "tracked\n").unwrap();
+        git(["add", "deleted.txt", "rename-me.txt"], Some(&destination));
+        git(["config", "user.name", "Loadbot Tests"], Some(&destination));
+        git(
+            ["config", "user.email", "loadbot@example.test"],
+            Some(&destination),
+        );
+        git(
+            ["commit", "-m", "track deleted fixture"],
+            Some(&destination),
+        );
+        git(["push", "origin", "HEAD"], Some(&destination));
+        fs::remove_file(destination.join("deleted.txt")).unwrap();
+        git(
+            ["mv", "rename-me.txt", "renamed file.txt"],
+            Some(&destination),
+        );
+
+        let mut policy = crate::interaction::Unattended;
+        let mut context = OperationContext::background(&mut policy);
+        let inspection = tool_push_inspect(&paths, "demo", Some("personal"), &mut context).unwrap();
+        assert!(!inspection.commits_ahead);
+        assert!(inspection.changed_files.contains(&git::RepositoryChange {
+            path: "README.md".into(),
+            original_path: None,
+            status: git::RepositoryChangeKind::Modified,
+        }));
+        assert!(inspection.changed_files.contains(&git::RepositoryChange {
+            path: "new file.txt".into(),
+            original_path: None,
+            status: git::RepositoryChangeKind::Added,
+        }));
+        assert!(inspection.changed_files.contains(&git::RepositoryChange {
+            path: "deleted.txt".into(),
+            original_path: None,
+            status: git::RepositoryChangeKind::Deleted,
+        }));
+        assert!(inspection.changed_files.contains(&git::RepositoryChange {
+            path: "renamed file.txt".into(),
+            original_path: Some("rename-me.txt".into()),
+            status: git::RepositoryChangeKind::Renamed,
+        }));
+    }
+
+    #[test]
+    fn commit_and_push_commits_only_selected_paths_with_literal_message() {
+        let (temporary, paths, destination) = lifecycle_fixture();
+        git(["config", "user.name", "Loadbot Tests"], Some(&destination));
+        git(
+            ["config", "user.email", "loadbot@example.test"],
+            Some(&destination),
+        );
+        let selected = ":(glob)* chosen file.txt";
+        fs::write(destination.join(selected), "selected\n").unwrap();
+        fs::remove_file(destination.join("README.md")).unwrap();
+        fs::write(destination.join("left staged.txt"), "leave me\n").unwrap();
+        git(["add", "left staged.txt"], Some(&destination));
+        let injected = temporary.path().join("message-was-shell");
+        let message = format!("literal $(touch {}) ; commit", injected.display());
+
+        let mut policy = crate::interaction::Unattended;
+        let mut context = OperationContext::background(&mut policy);
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let observed_events = events.clone();
+        context.process.observer = Some(Arc::new(move |event| {
+            observed_events.lock().unwrap().push(event);
+        }));
+        tool_commit_and_push(
+            &paths,
+            "demo",
+            Some("personal"),
+            &[selected.to_owned(), "README.md".into()],
+            &message,
+            &mut context,
+        )
+        .unwrap();
+
+        assert_eq!(
+            Command::new("git")
+                .args([
+                    "-C",
+                    destination.to_str().unwrap(),
+                    "show",
+                    "-s",
+                    "--format=%s",
+                    "HEAD"
+                ])
+                .output()
+                .map(|output| String::from_utf8(output.stdout).unwrap().trim().to_owned())
+                .unwrap(),
+            message
+        );
+        assert!(!injected.exists());
+        assert!(!format!("{:?}", events.lock().unwrap()).contains(&message));
+        assert!(!destination.join("README.md").exists());
+        assert!(
+            git::working_tree_changes(&destination)
+                .unwrap()
+                .contains("left staged.txt")
+        );
+        assert!(
+            query_git(&destination, &["diff", "--cached", "--name-only"])
+                .lines()
+                .any(|path| path == "left staged.txt")
+        );
+        assert!(!git::has_local_commits_not_on_origin(&destination).unwrap());
+    }
+
+    #[test]
+    fn commit_and_push_rejects_empty_or_stale_selection_and_empty_message() {
+        let (_temporary, paths, destination) = lifecycle_fixture();
+        fs::write(destination.join("dirty.txt"), "dirty\n").unwrap();
+        for (selected, message, expected) in [
+            (Vec::<String>::new(), "message", "select at least one"),
+            (vec!["dirty.txt".into()], "   ", "message must not be empty"),
+            (vec!["not-dirty.txt".into()], "message", "no longer"),
+        ] {
+            let mut policy = crate::interaction::Unattended;
+            let mut context = OperationContext::background(&mut policy);
+            let error = tool_commit_and_push(
+                &paths,
+                "demo",
+                Some("personal"),
+                &selected,
+                message,
+                &mut context,
+            )
+            .unwrap_err();
+            assert!(format!("{error:#}").contains(expected), "{error:#}");
+        }
+        assert!(git::head_commit(&destination).unwrap().is_some());
+        assert!(destination.join("dirty.txt").exists());
+    }
+
+    #[test]
+    fn commit_and_push_expands_a_selected_rename_to_both_paths() {
+        let (_temporary, paths, destination) = lifecycle_fixture();
+        git(["config", "user.name", "Loadbot Tests"], Some(&destination));
+        git(
+            ["config", "user.email", "loadbot@example.test"],
+            Some(&destination),
+        );
+        git(["mv", "README.md", "renamed readme.md"], Some(&destination));
+        let mut policy = crate::interaction::Unattended;
+        let mut context = OperationContext::background(&mut policy);
+        tool_commit_and_push(
+            &paths,
+            "demo",
+            Some("personal"),
+            &["renamed readme.md".into()],
+            "rename readme",
+            &mut context,
+        )
+        .unwrap();
+        assert!(!git::status(&destination).unwrap().dirty);
+        assert_eq!(
+            query_git(&destination, &["show", "HEAD:renamed readme.md"]),
+            "existing data\n"
+        );
+        let old = Command::new("git")
+            .args(["show", "HEAD:README.md"])
+            .current_dir(&destination)
+            .output()
+            .unwrap();
+        assert!(!old.status.success());
+    }
+
+    #[test]
+    fn push_inspection_detects_nothing_to_push_and_clean_commits_ahead() {
+        let (_temporary, paths, destination) = lifecycle_fixture();
+        let mut policy = crate::interaction::Unattended;
+        let mut context = OperationContext::background(&mut policy);
+        let current = tool_push_inspect(&paths, "demo", Some("personal"), &mut context).unwrap();
+        assert!(current.changed_files.is_empty());
+        assert!(!current.commits_ahead);
+
+        git(["config", "user.name", "Loadbot Tests"], Some(&destination));
+        git(
+            ["config", "user.email", "loadbot@example.test"],
+            Some(&destination),
+        );
+        fs::write(destination.join("ahead.txt"), "ahead\n").unwrap();
+        git(["add", "ahead.txt"], Some(&destination));
+        git(["commit", "-m", "ahead"], Some(&destination));
+        let mut policy = crate::interaction::Unattended;
+        let mut context = OperationContext::background(&mut policy);
+        let ahead = tool_push_inspect(&paths, "demo", Some("personal"), &mut context).unwrap();
+        assert!(ahead.changed_files.is_empty());
+        assert!(ahead.commits_ahead);
+    }
+
+    #[test]
+    fn commit_remains_local_when_the_following_push_fails() {
+        let (temporary, paths, destination) = lifecycle_fixture();
+        git(["config", "user.name", "Loadbot Tests"], Some(&destination));
+        git(
+            ["config", "user.email", "loadbot@example.test"],
+            Some(&destination),
+        );
+        fs::write(destination.join("committed.txt"), "keep commit\n").unwrap();
+        let before = git::head_commit(&destination).unwrap();
+        let missing = temporary.path().join("missing.git");
+        git(
+            [
+                OsStr::new("remote"),
+                OsStr::new("set-url"),
+                OsStr::new("--push"),
+                OsStr::new("origin"),
+                missing.as_os_str(),
+            ],
+            Some(&destination),
+        );
+        let mut policy = crate::interaction::Unattended;
+        let mut context = OperationContext::background(&mut policy);
+        let error = tool_commit_and_push(
+            &paths,
+            "demo",
+            Some("personal"),
+            &["committed.txt".into()],
+            "commit before failed push",
+            &mut context,
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("remains local"));
+        assert_ne!(git::head_commit(&destination).unwrap(), before);
+        assert!(git::has_local_commits_not_on_origin(&destination).unwrap());
+        assert!(!git::status(&destination).unwrap().dirty);
+    }
+
+    #[test]
+    fn commit_and_push_revalidates_managed_repository_identity() {
+        let (temporary, paths, destination) = lifecycle_fixture();
+        let wrong = populated_remote(temporary.path(), "wrong-push-tool");
+        git(
+            [
+                OsStr::new("remote"),
+                OsStr::new("set-url"),
+                OsStr::new("origin"),
+                wrong.as_os_str(),
+            ],
+            Some(&destination),
+        );
+        fs::write(destination.join("dirty.txt"), "dirty\n").unwrap();
+        let mut policy = crate::interaction::Unattended;
+        let mut context = OperationContext::background(&mut policy);
+        let error = tool_commit_and_push(
+            &paths,
+            "demo",
+            Some("personal"),
+            &["dirty.txt".into()],
+            "must not commit",
+            &mut context,
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("not the configured Git repository"));
+        assert!(git::status(&destination).unwrap().dirty);
+    }
+
+    #[test]
+    fn commit_and_push_uses_the_existing_interactive_push_executor() {
+        let (temporary, paths, destination) = lifecycle_fixture();
+        git(["config", "user.name", "Loadbot Tests"], Some(&destination));
+        git(
+            ["config", "user.email", "loadbot@example.test"],
+            Some(&destination),
+        );
+        fs::write(destination.join("interactive.txt"), "commit first\n").unwrap();
+        let missing = temporary.path().join("interactive-missing.git");
+        git(
+            [
+                OsStr::new("remote"),
+                OsStr::new("set-url"),
+                OsStr::new("--push"),
+                OsStr::new("origin"),
+                missing.as_os_str(),
+            ],
+            Some(&destination),
+        );
+        let invoked = Arc::new(Mutex::new(false));
+        let observed = invoked.clone();
+        let mut policy = crate::interaction::Unattended;
+        let mut context = OperationContext::background(&mut policy);
+        context.process.interactive_executor = Some(Arc::new(move |command, _| {
+            assert!(command.arguments().any(|argument| argument == "push"));
+            *observed.lock().unwrap() = true;
+            Ok(crate::process::InteractiveExecutionOutput {
+                status: crate::process::InteractiveExitStatus {
+                    code: 0,
+                    signal: None,
+                },
+                output: Vec::new(),
+                cancelled: false,
+            })
+        }));
+        tool_commit_and_push(
+            &paths,
+            "demo",
+            Some("personal"),
+            &["interactive.txt".into()],
+            "interactive push",
+            &mut context,
+        )
+        .unwrap();
+        assert!(*invoked.lock().unwrap());
     }
 
     #[test]

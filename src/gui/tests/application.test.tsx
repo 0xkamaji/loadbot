@@ -254,6 +254,136 @@ describe('headless capability and application boundary', () => {
     expect(readInventory).toHaveBeenCalledTimes(2);
   });
 
+  it('inspects dirty Push state, requires explicit selection and message, then commits and pushes', async () => {
+    const project = { catalog: 'one', tool: 'radio-configs', installed: true, entries: [] };
+    const readInventory = vi.fn(async () => [project]);
+    const inspectProjectPush: NonNullable<LoadbotAdapter['inspectProjectPush']> = vi.fn(async (_identity, onActivity) => {
+      onActivity?.({ stage: 'inspecting-repository', catalog: 'one', tool: 'radio-configs' });
+      onActivity?.({ stage: 'awaiting-commit', catalog: 'one', tool: 'radio-configs' });
+      return {
+        changedFiles: [
+          { path: 'src/main.rs', status: 'modified' as const },
+          { path: 'notes/new file.txt', status: 'added' as const },
+        ],
+        commitsAhead: false,
+      };
+    });
+    const pushProject = vi.fn(async (identity) => identity);
+    const commitAndPushProject: NonNullable<LoadbotAdapter['commitAndPushProject']> = vi.fn(async (input, onActivity) => {
+      onActivity?.({ stage: 'staging-changes', catalog: input.catalog, tool: input.tool });
+      onActivity?.({ stage: 'creating-commit', catalog: input.catalog, tool: input.tool });
+      onActivity?.({ stage: 'pushing-commits', catalog: input.catalog, tool: input.tool });
+      return input;
+    });
+    const application = createLoadbotApplication({
+      ...adapter(readInventory), inspectProjectPush, pushProject, commitAndPushProject,
+    });
+    application.start();
+    await vi.waitFor(() => expect(application.getSnapshot().inventory.status).toBe('ready'));
+
+    expect(await application.actions.pushProject()).toBe(true);
+    expect(pushProject).not.toHaveBeenCalled();
+    expect(application.getSnapshot().pendingCommitPush).toMatchObject({
+      project,
+      selectedPaths: ['src/main.rs', 'notes/new file.txt'],
+      commitMessage: '',
+    });
+    application.actions.toggleCommitPushPath('src/main.rs');
+    application.actions.toggleCommitPushPath('notes/new file.txt');
+    expect(await application.actions.confirmCommitPush()).toBe(false);
+    expect(commitAndPushProject).not.toHaveBeenCalled();
+    application.actions.toggleCommitPushPath('notes/new file.txt');
+    expect(await application.actions.confirmCommitPush()).toBe(false);
+    application.actions.setCommitPushMessage('Add release notes');
+    expect(application.getSnapshot().command.history).toEqual([]);
+    expect(await application.actions.confirmCommitPush()).toBe(true);
+    expect(commitAndPushProject).toHaveBeenCalledWith({
+      catalog: 'one', tool: 'radio-configs', selectedPaths: ['notes/new file.txt'], commitMessage: 'Add release notes',
+    }, expect.any(Function));
+    expect(application.getSnapshot().pendingCommitPush).toBeUndefined();
+    expect(application.getSnapshot().command.history).toEqual([]);
+    expect(application.getSnapshot().management.status).toBe('success');
+    expect(readInventory).toHaveBeenCalledTimes(2);
+    expect(application.getSnapshot().activity).toEqual(expect.arrayContaining([
+      expect.objectContaining({ operation: 'project-push', stage: 'inspecting-repository' }),
+      expect.objectContaining({ operation: 'project-push', stage: 'staging-changes' }),
+      expect.objectContaining({ operation: 'project-push', stage: 'creating-commit' }),
+      expect.objectContaining({ operation: 'project-push', stage: 'pushing-commits' }),
+      expect.objectContaining({ operation: 'project-push', stage: 'completed', status: 'success' }),
+    ]));
+  });
+
+  it('cancels Commit & Push before mutation and distinguishes ahead from current clean repositories', async () => {
+    const project = { catalog: 'one', tool: 'radio-configs', installed: true, entries: [] };
+    const readInventory = vi.fn(async () => [project]);
+    const inspectProjectPush: NonNullable<LoadbotAdapter['inspectProjectPush']> = vi.fn()
+      .mockResolvedValueOnce({ changedFiles: [{ path: 'dirty.txt', status: 'modified' }], commitsAhead: false })
+      .mockResolvedValueOnce({ changedFiles: [], commitsAhead: true })
+      .mockResolvedValueOnce({ changedFiles: [], commitsAhead: false });
+    const pushProject = vi.fn(async (identity) => identity);
+    const commitAndPushProject: NonNullable<LoadbotAdapter['commitAndPushProject']> = vi.fn(async (input) => input);
+    const application = createLoadbotApplication({
+      ...adapter(readInventory), inspectProjectPush, pushProject, commitAndPushProject,
+    });
+    application.start();
+    await vi.waitFor(() => expect(application.getSnapshot().inventory.status).toBe('ready'));
+
+    expect(await application.actions.pushProject()).toBe(true);
+    application.actions.cancelCommitPush();
+    expect(commitAndPushProject).not.toHaveBeenCalled();
+    expect(application.getSnapshot().pendingCommitPush).toBeUndefined();
+    expect(application.getSnapshot().management).toMatchObject({ status: 'cancelled' });
+
+    expect(await application.actions.pushProject()).toBe(true);
+    expect(pushProject).toHaveBeenCalledOnce();
+    expect(readInventory).toHaveBeenCalledTimes(2);
+
+    expect(await application.actions.pushProject()).toBe(true);
+    expect(pushProject).toHaveBeenCalledOnce();
+    expect(readInventory).toHaveBeenCalledTimes(3);
+    expect(application.getSnapshot().management).toMatchObject({
+      status: 'success', message: 'Nothing to push. Project is already current.',
+    });
+  });
+
+  it('continues Commit & Push through interactive auth and reports a later push failure without rollback claims', async () => {
+    const project = { catalog: 'one', tool: 'radio-configs', installed: true, entries: [] };
+    const readInventory = vi.fn(async () => [project]);
+    let rejectPush!: (error: unknown) => void;
+    const commitAndPushProject: NonNullable<LoadbotAdapter['commitAndPushProject']> = vi.fn((_input, onActivity) => {
+      onActivity?.({ stage: 'creating-commit', catalog: 'one', tool: 'radio-configs' });
+      onActivity?.({ kind: 'interactive-launch', launchId: 'commit-push-launch', label: 'Git push — radio-configs' });
+      return new Promise<{ catalog: string; tool: string }>((_resolve, reject) => { rejectPush = reject; });
+    });
+    let sessionEvent: InteractiveSessionEventSink = () => {};
+    const application = createLoadbotApplication({
+      ...adapter(readInventory),
+      inspectProjectPush: vi.fn(async () => ({ changedFiles: [{ path: 'dirty.txt', status: 'modified' as const }], commitsAhead: false })),
+      pushProject: vi.fn(), commitAndPushProject,
+      startInteractiveSession: vi.fn(async (_launch, sink) => {
+        sessionEvent = sink;
+        return { sessionId: 'commit-push-session', processId: 'commit-push-process' };
+      }),
+      sendInteractiveInput: vi.fn(async () => {}), terminateInteractiveSession: vi.fn(async () => {}),
+    });
+    application.start();
+    await vi.waitFor(() => expect(application.getSnapshot().inventory.status).toBe('ready'));
+    await application.actions.pushProject();
+    application.actions.setCommitPushMessage('Commit before auth');
+    const confirming = application.actions.confirmCommitPush();
+    await vi.waitFor(() => expect(application.getSnapshot().command.interactive?.status).toBe('active'));
+    expect(application.getSnapshot().bottomView).toBe('command');
+    expect(application.getSnapshot().pendingCommitPush).toBeUndefined();
+    sessionEvent({ kind: 'exited', sessionId: 'commit-push-session', code: 1, cancelled: false });
+    rejectPush(new Error('commit abc123 remains local, but pushing tool failed'));
+    expect(await confirming).toBe(false);
+    expect(readInventory).toHaveBeenCalledTimes(2);
+    expect(application.getSnapshot().management).toMatchObject({
+      status: 'error', message: 'commit abc123 remains local, but pushing tool failed',
+    });
+    expect(application.getSnapshot().activity.at(-1)).toMatchObject({ stage: 'failed', status: 'error' });
+  });
+
   it('serializes consecutive backend-issued Push sessions such as a Rot retry', async () => {
     const project = { catalog: 'one', tool: 'radio-configs', installed: true, entries: [] };
     let resolvePush!: (identity: { catalog: string; tool: string }) => void;

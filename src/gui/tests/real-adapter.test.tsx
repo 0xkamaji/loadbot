@@ -276,6 +276,41 @@ describe('one platform-neutral real read adapter', () => {
     expect(JSON.stringify(request)).not.toMatch(/program|arguments|shell/);
   });
 
+  it('transports only semantic Push inspection and Commit & Push fields', async () => {
+    tauri.invoke.mockReset();
+    tauri.invoke.mockImplementation(async (command: string, input?: Record<string, unknown>) => {
+      const channel = input?.onActivity as InstanceType<typeof tauri.Channel>;
+      if (command === 'inspect_loadbot_project_push') {
+        channel.onmessage({ stage: 'inspecting-repository', catalog: 'personal', tool: 'demo' } as never);
+        return {
+          changedFiles: [{ path: 'a file.txt', originalPath: 'old.txt', status: 'renamed' }],
+          commitsAhead: false,
+        };
+      }
+      expect(command).toBe('commit_and_push_loadbot_project');
+      channel.onmessage({ stage: 'creating-commit', catalog: 'personal', tool: 'demo' } as never);
+      return { catalog: 'personal', tool: 'demo' };
+    });
+    const adapter = createTauriLoadbotAdapter();
+    const activity = vi.fn();
+    await expect(adapter.inspectProjectPush?.({ catalog: 'personal', tool: 'demo' }, activity)).resolves.toEqual({
+      changedFiles: [{ path: 'a file.txt', originalPath: 'old.txt', status: 'renamed' }], commitsAhead: false,
+    });
+    await expect(adapter.commitAndPushProject?.({
+      catalog: 'personal', tool: 'demo', selectedPaths: ['a file.txt'], commitMessage: 'Rename safely; $(opaque)',
+    }, activity)).resolves.toEqual({ catalog: 'personal', tool: 'demo' });
+    expect(activity).toHaveBeenCalledWith({ stage: 'inspecting-repository', catalog: 'personal', tool: 'demo' });
+    expect(activity).toHaveBeenCalledWith({ stage: 'creating-commit', catalog: 'personal', tool: 'demo' });
+    const commitRequest = tauri.invoke.mock.calls[1][1] as Record<string, unknown>;
+    expect(commitRequest).toEqual({
+      request: {
+        catalog: 'personal', tool: 'demo', selectedPaths: ['a file.txt'], commitMessage: 'Rename safely; $(opaque)',
+      },
+      onActivity: expect.any(tauri.Channel),
+    });
+    expect(JSON.stringify(commitRequest)).not.toMatch(/program|arguments|shell/);
+  });
+
   it('rejects malformed payloads and unavailable hosts rather than substituting fixtures', async () => {
     for (const invalid of [{ projects: [] }, [{ catalog: 'a', tool: 'b' }], [{ catalog: 'a', tool: 'b', entries: [{ name: 'x', path: 'x', source: 'unknown' }] }]]) {
       await expect(createTauriLoadbotAdapter(async () => invalid).readInventory()).rejects.toThrow(/Invalid inventory/);

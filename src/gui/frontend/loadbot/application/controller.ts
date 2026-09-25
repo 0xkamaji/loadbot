@@ -2,7 +2,7 @@ import type {
   AddCatalogInput, AddProjectInput, AddShortcutInput, CatalogSyncActivityEvent, CatalogSyncStage, LoadbotAdapter, LoadbotCatalog,
   InteractiveLaunch, InteractiveSessionEvent, LoadbotProject, LoadbotShortcut,
   LoadbotRecipe, LoadbotRecipeArgument, LoadbotRunner, OperationLogActivity, ProjectOperationActivityEvent, ProjectOperationStage,
-  ShortcutHelpResult, ShortcutIdentity,
+  RepositoryChange, ShortcutHelpResult, ShortcutIdentity,
 } from '../contract';
 import { projectKey, selectionKey, shortcutKey } from '../identity';
 import { completeLoadbotCommand, executeLoadbotCommand, type CommandCompletion, type CommandResult } from './command';
@@ -118,6 +118,13 @@ export interface LoadbotState {
     readonly message?: string;
   };
   readonly pendingProjectAction?: { readonly action: ProjectLifecycleAction; readonly project: LoadbotProject };
+  readonly pendingCommitPush?: {
+    readonly project: LoadbotProject;
+    readonly changedFiles: readonly RepositoryChange[];
+    readonly selectedPaths: readonly string[];
+    readonly commitMessage: string;
+    readonly operationId: string;
+  };
 }
 
 export interface LoadbotActions {
@@ -130,6 +137,10 @@ export interface LoadbotActions {
   openProjectTerminal(id: string): void;
   pullProject(project?: LoadbotProject): Promise<boolean>;
   pushProject(project?: LoadbotProject): Promise<boolean>;
+  toggleCommitPushPath(path: string): void;
+  setCommitPushMessage(message: string): void;
+  cancelCommitPush(): void;
+  confirmCommitPush(): Promise<boolean>;
   updateProject(project?: LoadbotProject): Promise<boolean>;
   removeProject(project?: LoadbotProject): Promise<boolean>;
   reinstallProject(project?: LoadbotProject): Promise<boolean>;
@@ -356,6 +367,49 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
     }
   }
 
+  async function completeProjectPush(
+    id: string,
+    target: LoadbotProject,
+    operation: () => Promise<{ catalog: string; tool: string }>,
+  ): Promise<boolean> {
+    const context = { catalog: target.catalog, project: target.tool };
+    try {
+      const pushed = await operation();
+      appendActivity({ operationId: id, operation: 'project-push', stage: 'authoritative-reload', status: 'in-progress', ...context });
+      const reloaded = await beginWorkspaceRead({ catalog: pushed.catalog, projectId: projectKey(pushed) });
+      const message = reloaded
+        ? `Project ${target.tool} pushed.`
+        : `Project ${target.tool} pushed. Local state could not be reread; use Reload.`;
+      publish({
+        ...state,
+        pendingCommitPush: undefined,
+        management: reloaded
+          ? { status: 'success', kind: 'push-project', message }
+          : { status: 'error', kind: 'push-project', message },
+      });
+      appendActivity({
+        operationId: id, operation: 'project-push', stage: reloaded ? 'completed' : 'failed',
+        status: reloaded ? 'success' : 'error', ...context, detail: message,
+      });
+      return reloaded;
+    } catch (error: unknown) {
+      const message = errorMessage(error, 'The Push operation failed.');
+      const wasCancelled = cancelled(error);
+      appendActivity({ operationId: id, operation: 'project-push', stage: 'authoritative-reload', status: 'in-progress', ...context });
+      await beginWorkspaceRead();
+      publish({
+        ...state,
+        pendingCommitPush: undefined,
+        management: { status: wasCancelled ? 'cancelled' : 'error', kind: 'push-project', message },
+      });
+      appendActivity({
+        operationId: id, operation: 'project-push', stage: wasCancelled ? 'cancelled' : 'failed',
+        status: wasCancelled ? 'cancelled' : 'error', ...context, detail: message,
+      });
+      return false;
+    }
+  }
+
   const actions: LoadbotActions = {
     selectCatalog(name) {
       if (state.catalogState.status !== 'ready' || !state.catalogState.catalogs.some((item) => item.name === name)) return;
@@ -462,10 +516,95 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
     async pushProject(project?: LoadbotProject) {
       const target = project ?? state.project;
       if (!target || target.installed === false || !adapter.pushProject || state.command.interactive) return false;
-      return mutation('push-project', 'project-push', `Pushing ${target.tool}…`, `Project ${target.tool} pushed.`, { catalog: target.catalog, project: target.tool }, async (operation) => {
-        const pushed = await adapter.pushProject!({ catalog: target.catalog, tool: target.tool }, projectProgress(operation, 'project-push'));
-        return { catalog: pushed.catalog, projectId: projectKey(pushed) };
+      if (!adapter.inspectProjectPush) {
+        return mutation('push-project', 'project-push', `Pushing ${target.tool}…`, `Project ${target.tool} pushed.`, { catalog: target.catalog, project: target.tool }, async (operation) => {
+          const pushed = await adapter.pushProject!({ catalog: target.catalog, tool: target.tool }, projectProgress(operation, 'project-push'));
+          return { catalog: pushed.catalog, projectId: projectKey(pushed) };
+        });
+      }
+      if (state.management.status === 'submitting' || state.pendingCommitPush) return false;
+      publish({ ...state, management: { status: 'submitting', kind: 'push-project', message: `Inspecting ${target.tool}…` } });
+      const id = beginActivity({ operation: 'project-push', stage: 'started', status: 'in-progress', catalog: target.catalog, project: target.tool });
+      try {
+        const inspection = await adapter.inspectProjectPush(
+          { catalog: target.catalog, tool: target.tool },
+          projectProgress(id, 'project-push'),
+        );
+        if (inspection.changedFiles.length) {
+          publish({
+            ...state,
+            management: { status: 'success', kind: 'push-project', message: 'Review changed files before committing.' },
+            pendingCommitPush: {
+              project: target,
+              changedFiles: inspection.changedFiles,
+              selectedPaths: inspection.changedFiles.map((change) => change.path),
+              commitMessage: '',
+              operationId: id,
+            },
+          });
+          return true;
+        }
+        if (!inspection.commitsAhead) {
+          const current = 'Nothing to push. Project is already current.';
+          appendActivity({ operationId: id, operation: 'project-push', stage: 'authoritative-reload', status: 'in-progress', catalog: target.catalog, project: target.tool });
+          const reloaded = await beginWorkspaceRead({ catalog: target.catalog, projectId: projectKey(target) });
+          const message = reloaded ? current : `${current} Local state could not be reread; use Reload.`;
+          publish({ ...state, management: { status: reloaded ? 'success' : 'error', kind: 'push-project', message } });
+          appendActivity({
+            operationId: id, operation: 'project-push', stage: reloaded ? 'completed' : 'failed',
+            status: reloaded ? 'success' : 'error', catalog: target.catalog, project: target.tool, detail: message,
+          });
+          return reloaded;
+        }
+        publish({ ...state, management: { status: 'submitting', kind: 'push-project', message: `Pushing ${target.tool}…` } });
+        return completeProjectPush(id, target, () => adapter.pushProject!(
+          { catalog: target.catalog, tool: target.tool }, projectProgress(id, 'project-push'),
+        ));
+      } catch (error: unknown) {
+        const message = errorMessage(error, 'Could not inspect the project for Push.');
+        publish({ ...state, management: { status: 'error', kind: 'push-project', message } });
+        appendActivity({ operationId: id, operation: 'project-push', stage: 'failed', status: 'error', catalog: target.catalog, project: target.tool, detail: message });
+        return false;
+      }
+    },
+    toggleCommitPushPath(path) {
+      const pending = state.pendingCommitPush;
+      if (!pending || state.management.status === 'submitting' || !pending.changedFiles.some((change) => change.path === path)) return;
+      const selectedPaths = pending.selectedPaths.includes(path)
+        ? pending.selectedPaths.filter((selected) => selected !== path)
+        : [...pending.selectedPaths, path];
+      publish({ ...state, pendingCommitPush: { ...pending, selectedPaths } });
+    },
+    setCommitPushMessage(message) {
+      const pending = state.pendingCommitPush;
+      if (!pending || state.management.status === 'submitting') return;
+      publish({ ...state, pendingCommitPush: { ...pending, commitMessage: message } });
+    },
+    cancelCommitPush() {
+      const pending = state.pendingCommitPush;
+      if (!pending || state.management.status === 'submitting') return;
+      publish({ ...state, pendingCommitPush: undefined, management: { status: 'cancelled', kind: 'push-project', message: 'Commit & Push cancelled; no Git changes were made.' } });
+      appendActivity({
+        operationId: pending.operationId, operation: 'project-push', stage: 'cancelled', status: 'cancelled',
+        catalog: pending.project.catalog, project: pending.project.tool,
+        detail: 'Commit & Push cancelled before confirmation.',
       });
+    },
+    async confirmCommitPush() {
+      const pending = state.pendingCommitPush;
+      if (!pending || state.management.status === 'submitting' || !adapter.commitAndPushProject
+        || !pending.selectedPaths.length || !pending.commitMessage.trim()) return false;
+      publish({
+        ...state,
+        pendingCommitPush: undefined,
+        management: { status: 'submitting', kind: 'push-project', message: `Committing and pushing ${pending.project.tool}…` },
+      });
+      return completeProjectPush(pending.operationId, pending.project, () => adapter.commitAndPushProject!({
+        catalog: pending.project.catalog,
+        tool: pending.project.tool,
+        selectedPaths: pending.selectedPaths,
+        commitMessage: pending.commitMessage,
+      }, projectProgress(pending.operationId, 'project-push')));
     },
     async removeProject(project?: LoadbotProject) {
       const target = project ?? state.project;

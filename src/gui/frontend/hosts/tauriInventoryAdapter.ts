@@ -5,7 +5,8 @@ import type {
   LoadbotInterpreterRunner, LoadbotRecipeArgument, LoadbotRunner, LoadbotShortcut,
   InteractiveLaunch, InteractiveSessionEvent, InteractiveSessionEventSink, InteractiveSessionStarted,
   OperationLogActivity, ProjectIdentity, ShortcutIdentity,
-  ProjectOperationActivity, ProjectOperationActivitySink, RecipeShortcutInput, ShortcutHelpRequest, ShortcutHelpResult,
+  ProjectOperationActivity, ProjectOperationActivitySink, ProjectPushInspection, CommitAndPushInput,
+  RecipeShortcutInput, ShortcutHelpRequest, ShortcutHelpResult,
 } from '../loadbot/contract';
 
 /** One query seam for tests/host composition, not a generic RPC interface. */
@@ -15,7 +16,9 @@ export interface ManagementBridge {
   readCatalogs(): Promise<unknown>;
   openProjectTerminal?(project: ProjectIdentity): Promise<unknown>;
   pullProject?(project: ProjectIdentity, onActivity?: ProjectOperationActivitySink): Promise<unknown>;
+  inspectProjectPush?(project: ProjectIdentity, onActivity?: ProjectOperationActivitySink): Promise<unknown>;
   pushProject?(project: ProjectIdentity, onActivity?: ProjectOperationActivitySink): Promise<unknown>;
+  commitAndPushProject?(input: CommitAndPushInput, onActivity?: ProjectOperationActivitySink): Promise<unknown>;
   updateProject?(project: ProjectIdentity, onActivity?: ProjectOperationActivitySink): Promise<unknown>;
   removeProject?(project: ProjectIdentity, onActivity?: ProjectOperationActivitySink): Promise<unknown>;
   reinstallProject?(project: ProjectIdentity, onActivity?: ProjectOperationActivitySink): Promise<unknown>;
@@ -58,7 +61,13 @@ const nativeManagementBridge: ManagementBridge = {
     return invoke('open_loadbot_project_terminal', { ...project });
   },
   async pullProject(project, onActivity) { return invokeProjectOperation('pull_loadbot_project', project, onActivity); },
+  async inspectProjectPush(project, onActivity) { return invokeProjectOperation('inspect_loadbot_project_push', project, onActivity); },
   async pushProject(project, onActivity) { return invokeProjectOperation('push_loadbot_project', project, onActivity); },
+  async commitAndPushProject(input, onActivity) {
+    requireTauri('Project management');
+    const channel = projectActivityChannel(onActivity);
+    return invoke('commit_and_push_loadbot_project', { request: input, onActivity: channel });
+  },
   async updateProject(project, onActivity) { return invokeProjectOperation('update_loadbot_project', project, onActivity); },
   async removeProject(project, onActivity) { return invokeProjectOperation('remove_loadbot_project', project, onActivity); },
   async reinstallProject(project, onActivity) { return invokeProjectOperation('reinstall_loadbot_project', project, onActivity); },
@@ -136,11 +145,16 @@ const nativeInteractiveSessionBridge: InteractiveSessionBridge = {
 
 function invokeProjectOperation(command: string, project: ProjectIdentity, onActivity?: ProjectOperationActivitySink) {
   requireTauri('Project management');
+  const channel = projectActivityChannel(onActivity);
+  return invoke(command, { ...project, onActivity: channel });
+}
+
+function projectActivityChannel(onActivity?: ProjectOperationActivitySink) {
   const channel = new Channel<unknown>();
   channel.onmessage = (value) => onActivity?.(
     operationLogActivity(value) ?? interactiveLaunchActivity(value) ?? projectOperationActivity(value),
   );
-  return invoke(command, { ...project, onActivity: channel });
+  return channel;
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -329,11 +343,30 @@ function interactiveLaunchActivity(value: unknown): (InteractiveLaunch & { reado
 function projectOperationActivity(value: unknown): ProjectOperationActivity {
   const item = record(value);
   const stage = text(item.stage);
-  if (!['validating-checkout', 'cloning-project', 'validating-fresh-checkout', 'fetching-and-updating', 'removing-checkout', 'replacing-checkout'].includes(stage)) {
+  if (!['validating-checkout', 'inspecting-repository', 'awaiting-commit', 'staging-changes', 'creating-commit',
+    'cloning-project', 'validating-fresh-checkout', 'fetching-and-updating', 'pushing-commits', 'removing-checkout', 'replacing-checkout'].includes(stage)) {
     throw new Error('Invalid project operation activity stage.');
   }
   return {
     stage: stage as ProjectOperationActivity['stage'], catalog: text(item.catalog), tool: text(item.tool),
+  };
+}
+
+function projectPushInspection(value: unknown): ProjectPushInspection {
+  const item = record(value);
+  if (!Array.isArray(item.changedFiles) || typeof item.commitsAhead !== 'boolean') {
+    throw new Error('Invalid project Push inspection response.');
+  }
+  return {
+    commitsAhead: item.commitsAhead,
+    changedFiles: item.changedFiles.map((value) => {
+      const change = record(value);
+      const status = text(change.status);
+      if (!['modified', 'added', 'deleted', 'renamed'].includes(status)) {
+        throw new Error('Invalid repository change status.');
+      }
+      return { path: text(change.path), originalPath: optionalText(change.originalPath), status: status as ProjectPushInspection['changedFiles'][number]['status'] };
+    }),
   };
 }
 
@@ -394,6 +427,10 @@ export function createTauriLoadbotAdapter(
       try { return projectIdentity(await management.pullProject?.(project, onActivity)); }
       catch (error: unknown) { throw nativeError(error, 'Could not pull the project.'); }
     },
+    async inspectProjectPush(project, onActivity) {
+      try { return projectPushInspection(await management.inspectProjectPush?.(project, onActivity)); }
+      catch (error: unknown) { throw nativeError(error, 'Could not inspect the project for Push.'); }
+    },
     async updateProject(project, onActivity) {
       try { return projectIdentity(await management.updateProject?.(project, onActivity)); }
       catch (error: unknown) { throw nativeError(error, 'Could not update the project.'); }
@@ -401,6 +438,10 @@ export function createTauriLoadbotAdapter(
     async pushProject(project, onActivity) {
       try { return projectIdentity(await management.pushProject?.(project, onActivity)); }
       catch (error: unknown) { throw nativeError(error, 'Could not push the project.'); }
+    },
+    async commitAndPushProject(input, onActivity) {
+      try { return projectIdentity(await management.commitAndPushProject?.(input, onActivity)); }
+      catch (error: unknown) { throw nativeError(error, 'Could not commit and push the project.'); }
     },
     async removeProject(project, onActivity) {
       try { return projectIdentity(await management.removeProject?.(project, onActivity)); }

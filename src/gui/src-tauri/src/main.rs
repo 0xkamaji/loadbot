@@ -84,6 +84,15 @@ struct InteractiveLaunchRequest {
     launch_id: String,
 }
 
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CommitPushRequest {
+    catalog: String,
+    tool: String,
+    selected_paths: Vec<String>,
+    commit_message: String,
+}
+
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct InteractiveSessionStarted {
@@ -406,6 +415,10 @@ fn backend_activity(notice: &Notice) -> Option<BackendActivity> {
         } => BackendActivity::Progress {
             stage: match stage {
                 ToolOperationStage::ValidatingCheckout => "validating-checkout",
+                ToolOperationStage::InspectingRepository => "inspecting-repository",
+                ToolOperationStage::AwaitingCommit => "awaiting-commit",
+                ToolOperationStage::StagingChanges => "staging-changes",
+                ToolOperationStage::CreatingCommit => "creating-commit",
                 ToolOperationStage::CloningProject => "cloning-project",
                 ToolOperationStage::ValidatingFreshCheckout => "validating-fresh-checkout",
                 ToolOperationStage::FetchingAndUpdating => "fetching-and-updating",
@@ -695,17 +708,38 @@ async fn update_loadbot_project(
 }
 
 #[tauri::command]
-async fn push_loadbot_project(
+async fn inspect_loadbot_project_push(
     catalog: String,
     tool: String,
     on_activity: Channel<BackendActivity>,
-    sessions: tauri::State<'_, InteractiveSessions>,
+) -> Result<operations::ToolPushInspection, DesktopError> {
+    run_loadbot_worker_with_activity(
+        "project push inspection",
+        Some(on_activity),
+        move |paths, context| operations::tool_push_inspect(paths, &tool, Some(&catalog), context),
+    )
+    .await
+}
+
+enum ProjectPush {
+    ExistingCommits,
+    Commit {
+        selected_paths: Vec<String>,
+        message: String,
+    },
+}
+
+async fn project_push_operation(
+    catalog: String,
+    tool: String,
+    on_activity: Channel<BackendActivity>,
+    sessions: InteractiveSessions,
+    push: ProjectPush,
 ) -> Result<ProjectIdentity, DesktopError> {
     let identity = ProjectIdentity {
         catalog: catalog.clone(),
         tool: tool.clone(),
     };
-    let sessions = sessions.inner().clone();
     let launch_activity = on_activity.clone();
     let session_label = format!("Git push — {tool}");
     run_loadbot_worker_with_activity("project push", Some(on_activity), move |paths, context| {
@@ -719,9 +753,62 @@ async fn push_loadbot_project(
                 launch_activity.clone(),
             )
         }));
-        operations::tool_push(paths, &tool, Some(&catalog), context)?;
+        match push {
+            ProjectPush::ExistingCommits => {
+                operations::tool_push(paths, &tool, Some(&catalog), context)?;
+            }
+            ProjectPush::Commit {
+                selected_paths,
+                message,
+            } => {
+                operations::tool_commit_and_push(
+                    paths,
+                    &tool,
+                    Some(&catalog),
+                    &selected_paths,
+                    &message,
+                    context,
+                )?;
+            }
+        }
         Ok(identity)
     })
+    .await
+}
+
+#[tauri::command]
+async fn push_loadbot_project(
+    catalog: String,
+    tool: String,
+    on_activity: Channel<BackendActivity>,
+    sessions: tauri::State<'_, InteractiveSessions>,
+) -> Result<ProjectIdentity, DesktopError> {
+    project_push_operation(
+        catalog,
+        tool,
+        on_activity,
+        sessions.inner().clone(),
+        ProjectPush::ExistingCommits,
+    )
+    .await
+}
+
+#[tauri::command]
+async fn commit_and_push_loadbot_project(
+    request: CommitPushRequest,
+    on_activity: Channel<BackendActivity>,
+    sessions: tauri::State<'_, InteractiveSessions>,
+) -> Result<ProjectIdentity, DesktopError> {
+    project_push_operation(
+        request.catalog,
+        request.tool,
+        on_activity,
+        sessions.inner().clone(),
+        ProjectPush::Commit {
+            selected_paths: request.selected_paths,
+            message: request.commit_message,
+        },
+    )
     .await
 }
 
@@ -1113,7 +1200,9 @@ fn main() {
             add_loadbot_project,
             pull_loadbot_project,
             update_loadbot_project,
+            inspect_loadbot_project_push,
             push_loadbot_project,
+            commit_and_push_loadbot_project,
             remove_loadbot_project,
             reinstall_loadbot_project,
             add_loadbot_shortcut,

@@ -401,6 +401,57 @@ describe('injected menu outside Tauri', () => {
     expect(screen.queryByRole('button', { name: 'Push' })).not.toBeInTheDocument();
   });
 
+  it('uses one Push entry point for the structured Commit & Push dialog', async () => {
+    const user = userEvent.setup();
+    const project: LoadbotProject = { catalog: 'personal', tool: 'demo', installed: true, entries: [] };
+    const commitAndPushProject: NonNullable<LoadbotAdapter['commitAndPushProject']> = vi.fn(async (input) => input);
+    const managed: LoadbotAdapter = {
+      ...adapter([project]),
+      inspectProjectPush: vi.fn(async () => ({
+        changedFiles: [
+          { path: 'src/main.rs', status: 'modified' as const },
+          { path: 'notes/new file.txt', status: 'added' as const },
+        ],
+        commitsAhead: false,
+      })),
+      pushProject: vi.fn(async (identity) => identity),
+      commitAndPushProject,
+    };
+    render(<LoadbotMenu adapter={managed} />);
+    await projectRows().findByRole('button', { name: 'demo personal' });
+    expect(screen.getAllByRole('button', { name: 'Push' })).toHaveLength(1);
+
+    await user.click(screen.getByRole('button', { name: 'Push' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Commit & Push' });
+    expect(within(dialog).getByText('demo')).toBeInTheDocument();
+    const modified = within(dialog).getByRole('checkbox', { name: /modified src\/main\.rs/i });
+    const added = within(dialog).getByRole('checkbox', { name: /added notes\/new file\.txt/i });
+    expect(modified).toBeChecked();
+    expect(added).toBeChecked();
+    expect(within(dialog).getByRole('button', { name: 'Commit & Push' })).toBeDisabled();
+    await user.type(within(dialog).getByLabelText('Commit message *'), 'Ship selected change');
+    await user.click(modified);
+    await user.click(added);
+    expect(within(dialog).getByText('Select at least one changed file.')).toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: 'Commit & Push' })).toBeDisabled();
+    await user.click(added);
+    expect(within(dialog).getByRole('button', { name: 'Commit & Push' })).toBeEnabled();
+    await user.click(within(dialog).getByRole('button', { name: 'CANCEL' }));
+    expect(screen.queryByRole('dialog', { name: 'Commit & Push' })).not.toBeInTheDocument();
+    expect(commitAndPushProject).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole('button', { name: 'Push' }));
+    const reopened = await screen.findByRole('dialog', { name: 'Commit & Push' });
+    expect(within(reopened).getAllByRole('checkbox')).toHaveLength(2);
+    expect(within(reopened).getAllByRole('checkbox').every((checkbox) => (checkbox as HTMLInputElement).checked)).toBe(true);
+    await user.type(within(reopened).getByLabelText('Commit message *'), 'Commit both files');
+    await user.click(within(reopened).getByRole('button', { name: 'Commit & Push' }));
+    await vi.waitFor(() => expect(commitAndPushProject).toHaveBeenCalledWith({
+      catalog: 'personal', tool: 'demo', selectedPaths: ['src/main.rs', 'notes/new file.txt'], commitMessage: 'Commit both files',
+    }, expect.any(Function)));
+    expect(screen.queryByRole('dialog', { name: 'Commit & Push' })).not.toBeInTheDocument();
+  });
+
   it('shows project lifecycle busy labels, real stages, completion, and failure', async () => {
     const user = userEvent.setup();
     let projects: LoadbotProject[] = [

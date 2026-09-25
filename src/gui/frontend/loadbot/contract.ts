@@ -103,7 +103,8 @@ export interface OperationLogActivity {
 export type CatalogSyncActivityEvent = CatalogSyncActivity | OperationLogActivity;
 export type CatalogSyncActivitySink = (activity: CatalogSyncActivityEvent) => void;
 export type ProjectOperationStage = 'validating-checkout' | 'cloning-project' | 'validating-fresh-checkout'
-  | 'fetching-and-updating' | 'removing-checkout' | 'replacing-checkout';
+  | 'inspecting-repository' | 'awaiting-commit' | 'staging-changes' | 'creating-commit'
+  | 'fetching-and-updating' | 'pushing-commits' | 'removing-checkout' | 'replacing-checkout';
 export interface ProjectOperationActivity extends ProjectIdentity {
   readonly stage: ProjectOperationStage;
 }
@@ -112,6 +113,21 @@ export interface InteractiveLaunchActivity extends InteractiveLaunch {
 }
 export type ProjectOperationActivityEvent = ProjectOperationActivity | OperationLogActivity | InteractiveLaunchActivity;
 export type ProjectOperationActivitySink = (activity: ProjectOperationActivityEvent) => void;
+
+export type RepositoryChangeStatus = 'modified' | 'added' | 'deleted' | 'renamed';
+export interface RepositoryChange {
+  readonly path: string;
+  readonly originalPath?: string;
+  readonly status: RepositoryChangeStatus;
+}
+export interface ProjectPushInspection {
+  readonly changedFiles: readonly RepositoryChange[];
+  readonly commitsAhead: boolean;
+}
+export interface CommitAndPushInput extends ProjectIdentity {
+  readonly selectedPaths: readonly string[];
+  readonly commitMessage: string;
+}
 
 /** Opaque, single-use capability created by a Rust backend operation. */
 export interface InteractiveLaunch {
@@ -141,7 +157,9 @@ export interface LoadbotAdapter {
   openProjectFolder(project: Pick<LoadbotProject, 'catalog' | 'tool'>): Promise<void>;
   openProjectTerminal?(project: ProjectIdentity): Promise<void>;
   pullProject?(project: ProjectIdentity, onActivity?: ProjectOperationActivitySink): Promise<ProjectIdentity>;
+  inspectProjectPush?(project: ProjectIdentity, onActivity?: ProjectOperationActivitySink): Promise<ProjectPushInspection>;
   pushProject?(project: ProjectIdentity, onActivity?: ProjectOperationActivitySink): Promise<ProjectIdentity>;
+  commitAndPushProject?(input: CommitAndPushInput, onActivity?: ProjectOperationActivitySink): Promise<ProjectIdentity>;
   updateProject?(project: ProjectIdentity, onActivity?: ProjectOperationActivitySink): Promise<ProjectIdentity>;
   removeProject?(project: ProjectIdentity, onActivity?: ProjectOperationActivitySink): Promise<ProjectIdentity>;
   reinstallProject?(project: ProjectIdentity, onActivity?: ProjectOperationActivitySink): Promise<ProjectIdentity>;

@@ -66,6 +66,9 @@
 .lb-project-overflow > div { position: absolute; z-index: 12; top: 100%; right: 0; min-width: 120px; padding: 3px; background: var(--lb-surface); border: 1px solid var(--lb-disabled-text); }
 .lb-project-overflow [role='menuitem'] { display: block; width: 100%; border: 0; padding: 7px; background: transparent; color: var(--lb-text); text-align: left; cursor: pointer; }
 .lb-project-overflow [role='menuitem']:hover { background: var(--lb-disabled-text); color: var(--lb-selected-text); }
+.lb-commit-files { display: grid; gap: var(--lb-space-1); max-height: 240px; margin: var(--lb-space-2) 0; overflow: auto; }
+.lb-commit-files label { display: flex; align-items: flex-start; gap: var(--lb-space-1); overflow-wrap: anywhere; }
+.lb-commit-files strong { text-transform: uppercase; }
 .lb-shortcut-list h2 span { font-size: 14px; }
 .lb-selected-shortcut { overflow: auto; }
 .lb-selected-shortcut > h2 { margin-bottom: var(--lb-space-2); }

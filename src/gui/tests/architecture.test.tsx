@@ -61,6 +61,23 @@ it('keeps command candidates horizontally wrapping and vertically bounded', () =
   expect(field).not.toMatch(/grid-template-columns|white-space:\s*nowrap/);
 });
 
+it('keeps the embedded terminal inside the shrinkable Console pane', () => {
+  const menu = readFileSync(join(root, 'loadbot/view/menu.css'), 'utf8');
+  const rule = (selector: string) => menu.match(new RegExp(`${selector}\\s*\\{([^}]*)\\}`))?.[1] ?? '';
+  const drawer = rule('\\.lb-main-console > \\.lb-drawer');
+  const pane = rule('\\.lb-project-terminal');
+  const host = rule('\\.lb-terminal-emulator');
+  const xterm = rule('\\.lb-terminal-emulator \\.xterm');
+
+  for (const boundary of [drawer, pane, host]) {
+    expect(boundary).toContain('min-height: 0');
+    expect(boundary).toContain('overflow: hidden');
+  }
+  expect(host).toContain('flex: 1 1 0');
+  expect(xterm).toContain('height: 100%');
+  expect(xterm).toContain('overflow: hidden');
+});
+
 it('keeps every registered custom Tauri command in the app manifest and an ACL allowlist', () => {
   const tauriRoot = join(guiRoot, 'src-tauri');
   const tauriMain = readFileSync(join(tauriRoot, 'src/main.rs'), 'utf8');

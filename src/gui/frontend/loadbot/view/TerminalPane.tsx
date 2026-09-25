@@ -1,32 +1,132 @@
-import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
-import type { LoadbotActions, LoadbotState } from '../application/controller';
+import { useEffect, useRef } from 'react';
+import { FitAddon } from '@xterm/addon-fit';
+import { Terminal } from '@xterm/xterm';
+import '@xterm/xterm/css/xterm.css';
+import type { LoadbotActions, LoadbotState, ProjectTerminalState } from '../application/controller';
 
-export function TerminalPane({ state, actions }: { state: LoadbotState; actions: LoadbotActions }) {
+function TerminalSurface({ terminalState, actions, visible }: {
+  terminalState: ProjectTerminalState;
+  actions: LoadbotActions;
+  visible: boolean;
+}) {
+  const host = useRef<HTMLDivElement>(null);
+  const terminal = useRef<Terminal | undefined>(undefined);
+  const fit = useRef<FitAddon | undefined>(undefined);
+  const written = useRef('');
+  const sessionKey = useRef('');
+  const visibleRef = useRef(visible);
+  const lastSize = useRef('');
+
+  visibleRef.current = visible;
+
+  useEffect(() => {
+    if (!host.current) return undefined;
+    const emulator = new Terminal({
+      allowTransparency: true,
+      convertEol: false,
+      cursorBlink: true,
+      fontFamily: '"DejaVu Sans Mono", "Liberation Mono", monospace',
+      fontSize: 12,
+      scrollback: 5000,
+      theme: {
+        background: '#00000000',
+        foreground: '#e8eadf',
+        cursor: '#e8eadf',
+        selectionBackground: '#5f6f6355',
+      },
+    });
+    const fitAddon = new FitAddon();
+    emulator.loadAddon(fitAddon);
+    emulator.open(host.current);
+    terminal.current = emulator;
+    fit.current = fitAddon;
+
+    const reportSize = () => {
+      const dimensions = `${emulator.cols}x${emulator.rows}`;
+      if (dimensions !== lastSize.current && actions.resizeProjectTerminal(emulator.cols, emulator.rows)) {
+        lastSize.current = dimensions;
+      }
+    };
+    const fitToHost = () => {
+      if (!visibleRef.current || !host.current?.clientWidth || !host.current.clientHeight) return;
+      try {
+        fitAddon.fit();
+        reportSize();
+      } catch {
+        // A hidden or transitioning pane can be temporarily unmeasurable.
+      }
+    };
+    const input = emulator.onData((data) => {
+      actions.sendProjectTerminalInput(data);
+    });
+    const resized = emulator.onResize(reportSize);
+    const observer = typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(fitToHost);
+    observer?.observe(host.current);
+    fitToHost();
+
+    return () => {
+      observer?.disconnect();
+      resized.dispose();
+      input.dispose();
+      emulator.dispose();
+      terminal.current = undefined;
+      fit.current = undefined;
+    };
+  }, [actions]);
+
+  useEffect(() => {
+    const emulator = terminal.current;
+    if (!emulator) return;
+    const key = terminalState.launchId ?? `${terminalState.project?.catalog}/${terminalState.project?.tool}`;
+    if (key !== sessionKey.current) {
+      emulator.reset();
+      sessionKey.current = key;
+      written.current = '';
+    }
+    if (terminalState.transcript === written.current) return;
+    if (terminalState.transcript.startsWith(written.current)) {
+      emulator.write(terminalState.transcript.slice(written.current.length));
+    } else {
+      // The controller bounds retained output. Rebuild only when the oldest
+      // retained bytes roll off; normal streaming remains incremental.
+      emulator.reset();
+      emulator.write(terminalState.transcript);
+    }
+    written.current = terminalState.transcript;
+  }, [terminalState.launchId, terminalState.project, terminalState.transcript]);
+
+  useEffect(() => {
+    if (!visible || !terminal.current || !fit.current) return;
+    const frame = requestAnimationFrame(() => {
+      if (!host.current?.clientWidth || !host.current.clientHeight) return;
+      try {
+        fit.current?.fit();
+        if (terminalState.status === 'active'
+          && actions.resizeProjectTerminal(terminal.current!.cols, terminal.current!.rows)) {
+          lastSize.current = `${terminal.current!.cols}x${terminal.current!.rows}`;
+        }
+        terminal.current?.focus();
+      } catch {
+        // Layout may still be settling while the drawer opens.
+      }
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [actions, terminalState.status, visible]);
+
+  return <div ref={host} className="lb-terminal-emulator" role="application" aria-label="Project terminal" />;
+}
+
+export function TerminalPane({ state, actions, visible = true }: {
+  state: LoadbotState;
+  actions: LoadbotActions;
+  visible?: boolean;
+}) {
   const terminal = state.projectTerminal;
   const selected = state.project;
-  const output = useRef<HTMLPreElement>(null);
-  const [input, setInput] = useState('');
   const boundToSelection = Boolean(terminal.project && selected
     && terminal.project.catalog === selected.catalog && terminal.project.tool === selected.tool);
 
-  useEffect(() => {
-    if (output.current) output.current.scrollTop = output.current.scrollHeight;
-  }, [terminal.transcript]);
-
-  function submit(event: FormEvent) {
-    event.preventDefault();
-    if (!input || !actions.sendProjectTerminalInput(`${input}\r`)) return;
-    setInput('');
-  }
-
-  function control(event: KeyboardEvent<HTMLInputElement>) {
-    if (event.ctrlKey && !event.altKey && !event.metaKey && event.key.toLowerCase() === 'c') {
-      event.preventDefault();
-      if (actions.sendProjectTerminalInput('\u0003')) setInput('');
-    }
-  }
-
-  if (!terminal.project) return <section className="lb-bottom-content lb-project-terminal" role="tabpanel" aria-label="Terminal">
+  if (!terminal.project) return <section hidden={!visible} className="lb-bottom-content lb-project-terminal" role="tabpanel" aria-label="Terminal">
     <h2>TERMINAL / PROJECT</h2>
     {!selected && <p className="lb-metadata">Select a project to open its terminal.</p>}
     {selected?.installed === false && <p className="lb-metadata">Install this project before opening a terminal.</p>}
@@ -39,7 +139,7 @@ export function TerminalPane({ state, actions }: { state: LoadbotState; actions:
         : terminal.status === 'exited' ? `EXITED ${terminal.exitCode ?? ''}`.trim()
           : terminal.status === 'error' ? 'ERROR' : 'IDLE';
 
-  return <section className="lb-bottom-content lb-project-terminal" role="tabpanel" aria-label="Terminal">
+  return <section hidden={!visible} className="lb-bottom-content lb-project-terminal" role="tabpanel" aria-label="Terminal">
     <header>
       <div><h2>TERMINAL / {terminal.project.tool}</h2>
         <span className="lb-metadata">{terminal.project.catalog} / {terminal.project.tool}</span></div>
@@ -55,11 +155,6 @@ export function TerminalPane({ state, actions }: { state: LoadbotState; actions:
       This terminal remains bound to {terminal.project.catalog} / {terminal.project.tool}. Close it before starting a terminal for {selected.catalog} / {selected.tool}.
     </p>}
     {terminal.message && <p className="lb-command-error" role="alert">{terminal.message}</p>}
-    <pre ref={output} className="lb-terminal-transcript" aria-label="Project terminal output" aria-live="polite">{terminal.transcript}</pre>
-    <form className="lb-command-form" onSubmit={submit}>
-      <span aria-hidden="true">$</span>
-      <input aria-label="Project terminal input" value={input} onChange={(event) => setInput(event.currentTarget.value)}
-        onKeyDown={control} disabled={terminal.status !== 'active'} autoComplete="off" autoCapitalize="none" spellCheck={false} />
-    </form>
+    <TerminalSurface terminalState={terminal} actions={actions} visible={visible} />
   </section>;
 }

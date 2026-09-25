@@ -37,6 +37,7 @@ export interface ManagementBridge {
 export interface InteractiveSessionBridge {
   start(launch: InteractiveLaunch, onEvent: InteractiveSessionEventSink): Promise<unknown>;
   sendInput(sessionId: string, input: string): Promise<unknown>;
+  resize(sessionId: string, rows: number, columns: number): Promise<unknown>;
   terminate(sessionId: string): Promise<unknown>;
 }
 
@@ -136,6 +137,10 @@ const nativeInteractiveSessionBridge: InteractiveSessionBridge = {
   async sendInput(sessionId, input) {
     requireTauri('Interactive sessions');
     return invoke('send_loadbot_interactive_input', { sessionId, input });
+  },
+  async resize(sessionId, rows, columns) {
+    requireTauri('Interactive sessions');
+    return invoke('resize_loadbot_interactive_session', { sessionId, rows, columns });
   },
   async terminate(sessionId) {
     requireTauri('Interactive sessions');
@@ -463,6 +468,10 @@ export function createTauriLoadbotAdapter(
     async sendInteractiveInput(sessionId, input) {
       try { await interactive.sendInput(sessionId, input); }
       catch (error: unknown) { throw nativeError(error, 'Could not send interactive input.'); }
+    },
+    async resizeInteractiveSession(sessionId, rows, columns) {
+      try { await interactive.resize(sessionId, rows, columns); }
+      catch (error: unknown) { throw nativeError(error, 'Could not resize the interactive session.'); }
     },
     async terminateInteractiveSession(sessionId) {
       try { await interactive.terminate(sessionId); }

@@ -168,6 +168,7 @@ export interface LoadbotAdapter {
     onEvent: InteractiveSessionEventSink,
   ): Promise<InteractiveSessionStarted>;
   sendInteractiveInput?(sessionId: string, input: string): Promise<void>;
+  resizeInteractiveSession?(sessionId: string, rows: number, columns: number): Promise<void>;
   terminateInteractiveSession?(sessionId: string): Promise<void>;
   addCatalog(input: AddCatalogInput): Promise<CatalogIdentity>;
   addProject(input: AddProjectInput): Promise<ProjectIdentity>;

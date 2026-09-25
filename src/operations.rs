@@ -2967,6 +2967,10 @@ mod tests {
             command.environment("PATH"),
             std::env::var_os("PATH").as_deref()
         );
+        assert_eq!(
+            command.environment("TERM"),
+            Some(OsStr::new("xterm-256color"))
+        );
     }
 
     #[test]
@@ -3037,7 +3041,7 @@ mod tests {
         )
         .unwrap();
         session
-            .send_input(b"printf 'loadbot-terminal:%s\\n' \"$PWD\"\nexit\n")
+            .send_input(b"printf 'loadbot-terminal:%s\\n' \"$PWD\"\rexit\r")
             .unwrap();
         let mut output = Vec::new();
         loop {

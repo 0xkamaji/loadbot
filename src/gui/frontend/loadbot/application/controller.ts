@@ -191,6 +191,7 @@ export interface LoadbotActions {
   startInteractiveSession(launch: InteractiveLaunch): Promise<boolean>;
   cancelInteractiveSession(): Promise<boolean>;
   sendProjectTerminalInput(input: string): boolean;
+  resizeProjectTerminal(columns: number, rows: number): boolean;
   closeProjectTerminal(): Promise<boolean>;
   restartProjectTerminal(): Promise<boolean>;
   changeSampleInput(id: string, value: string | boolean): void;
@@ -215,6 +216,7 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
   let generation = 0;
   let folderGeneration = 0;
   let terminalGeneration = 0;
+  let terminalInputChain = Promise.resolve();
   let activityId = 0;
   let operationId = 0;
   let activityLogId = 0;
@@ -1136,13 +1138,33 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
       const terminal = state.projectTerminal;
       if (terminal.status !== 'active' || !terminal.sessionId || !adapter.sendInteractiveInput || !input) return false;
       const generation = terminalGeneration;
-      void adapter.sendInteractiveInput(terminal.sessionId, input).catch((error: unknown) => {
+      const sessionId = terminal.sessionId;
+      terminalInputChain = terminalInputChain.then(() => adapter.sendInteractiveInput!(sessionId, input)).catch((error: unknown) => {
         if (generation === terminalGeneration && state.projectTerminal.sessionId === terminal.sessionId) {
           publish({
             ...state,
             projectTerminal: {
               ...state.projectTerminal,
               message: errorMessage(error, 'Could not send terminal input.'),
+            },
+          });
+        }
+      });
+      return true;
+    },
+    resizeProjectTerminal(columns, rows) {
+      const terminal = state.projectTerminal;
+      if (terminal.status !== 'active' || !terminal.sessionId || !adapter.resizeInteractiveSession
+        || !Number.isInteger(columns) || !Number.isInteger(rows)
+        || columns < 1 || rows < 1 || columns > 0xffff || rows > 0xffff) return false;
+      const generation = terminalGeneration;
+      void adapter.resizeInteractiveSession(terminal.sessionId, rows, columns).catch((error: unknown) => {
+        if (generation === terminalGeneration && state.projectTerminal.sessionId === terminal.sessionId) {
+          publish({
+            ...state,
+            projectTerminal: {
+              ...state.projectTerminal,
+              message: errorMessage(error, 'Could not resize the project terminal.'),
             },
           });
         }

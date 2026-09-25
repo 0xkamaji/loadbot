@@ -536,6 +536,19 @@ fn send_loadbot_interactive_input(
 }
 
 #[tauri::command]
+fn resize_loadbot_interactive_session(
+    session_id: String,
+    rows: u16,
+    columns: u16,
+    sessions: tauri::State<'_, InteractiveSessions>,
+) -> Result<(), DesktopError> {
+    sessions
+        .session(&session_id)
+        .and_then(|session| session.resize(rows, columns))
+        .map_err(interactive_error)
+}
+
+#[tauri::command]
 fn terminate_loadbot_interactive_session(
     session_id: String,
     sessions: tauri::State<'_, InteractiveSessions>,
@@ -1162,6 +1175,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             start_loadbot_interactive_session,
             send_loadbot_interactive_input,
+            resize_loadbot_interactive_session,
             terminate_loadbot_interactive_session,
             read_loadbot_inventory,
             read_loadbot_catalogs,
@@ -1414,7 +1428,7 @@ mod tests {
         let mut command = InteractiveCommand::new("sh");
         command.args([
             "-c",
-            "printf 'bridge-ready\\n'; IFS= read -r value; printf 'bridge:%s\\n' \"$value\"",
+            "printf 'bridge-ready\\n'; IFS= read -r value; printf 'bridge:%s\\n' \"$value\"; stty size",
         ]);
         sessions.register_test_launch("issued-by-backend", command);
         let (sender, receiver) = mpsc::channel();
@@ -1431,6 +1445,11 @@ mod tests {
         sessions
             .session(&started.session_id)
             .unwrap()
+            .resize(31, 99)
+            .unwrap();
+        sessions
+            .session(&started.session_id)
+            .unwrap()
             .send_input(b"opaque-value\n")
             .unwrap();
         let mut output = Vec::new();
@@ -1442,6 +1461,7 @@ mod tests {
             }
         };
         assert!(String::from_utf8_lossy(&output).contains("bridge:opaque-value"));
+        assert!(String::from_utf8_lossy(&output).contains("31 99"));
         assert!(matches!(
             exit,
             BackendInteractiveEvent::Exited { code: 0, .. }

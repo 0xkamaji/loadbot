@@ -9,7 +9,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use portable_pty::{ChildKiller, CommandBuilder, PtySize, native_pty_system};
+use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
 #[cfg(test)]
 use std::ffi::OsString;
 
@@ -68,7 +68,7 @@ impl InteractiveCommand {
         let shell = CommandBuilder::new_default_prog().get_shell();
         anyhow::ensure!(!shell.is_empty(), "could not determine the user's shell");
         let mut command = Self::new(shell);
-        command.current_dir(directory);
+        command.current_dir(directory).env("TERM", "xterm-256color");
         Ok(command)
     }
 
@@ -145,6 +145,7 @@ pub enum InteractiveSessionEvent {
 struct SessionInner {
     process_id: ProcessId,
     pid: Option<u32>,
+    master: Mutex<Box<dyn MasterPty + Send>>,
     writer: Mutex<Option<Box<dyn Write + Send>>>,
     killer: Mutex<Option<Box<dyn ChildKiller + Send + Sync>>>,
     finished: AtomicBool,
@@ -230,6 +231,7 @@ impl InteractiveSession {
         let inner = Arc::new(SessionInner {
             process_id,
             pid,
+            master: Mutex::new(pair.master),
             writer: Mutex::new(Some(writer)),
             killer: Mutex::new(Some(child.clone_killer())),
             finished: AtomicBool::new(false),
@@ -353,6 +355,26 @@ impl InteractiveSession {
         writer.flush().context("could not flush interactive input")
     }
 
+    /// Resize the terminal viewport. Dimensions are typed and scoped to this
+    /// session; callers cannot use this API to alter the launched command.
+    pub fn resize(&self, rows: u16, cols: u16) -> Result<()> {
+        anyhow::ensure!(rows > 0 && cols > 0, "terminal dimensions must be non-zero");
+        if self.is_finished() {
+            anyhow::bail!("interactive process has exited");
+        }
+        self.inner
+            .master
+            .lock()
+            .map_err(|_| anyhow::anyhow!("interactive terminal resize lock is unavailable"))?
+            .resize(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .context("could not resize interactive terminal")
+    }
+
     pub fn terminate(&self) -> Result<()> {
         if self.is_finished() {
             return Ok(());
@@ -451,6 +473,66 @@ mod tests {
         assert!(!cancelled);
         assert!(session.is_finished());
         assert_ne!(session.process_id(), ProcessId::default());
+    }
+
+    #[test]
+    fn streams_echo_and_output_across_multiple_terminal_commands() {
+        let (session, receiver) = start(
+            "printf 'prompt-one>'; IFS= read -r first; printf 'output:%s\\nprompt-two>' \"$first\"; IFS= read -r second; printf 'output:%s\\n' \"$second\"",
+            &Control::default(),
+        );
+        session.send_input(b"first-command\r").unwrap();
+        assert!(!session.is_finished());
+        session.send_input(b"second-command\r").unwrap();
+        let (output, status, cancelled) = output_until_exit(&receiver);
+        let output = String::from_utf8_lossy(&output);
+        assert!(output.contains("prompt-one>"));
+        assert!(output.contains("first-command"));
+        assert!(output.contains("output:first-command"));
+        assert!(output.contains("prompt-two>"));
+        assert!(output.contains("second-command"));
+        assert!(output.contains("output:second-command"));
+        assert!(status.success());
+        assert!(!cancelled);
+    }
+
+    #[test]
+    fn control_c_interrupts_the_foreground_terminal_process() {
+        let (session, receiver) = start(
+            "trap 'printf interrupted\\n; exit 0' INT; printf ready\\n; while :; do sleep 1; done",
+            &Control::default(),
+        );
+        let first = receiver.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(matches!(first, InteractiveSessionEvent::Output { .. }));
+        session.send_input(b"\x03").unwrap();
+        let (mut output, status, cancelled) = output_until_exit(&receiver);
+        if let InteractiveSessionEvent::Output { bytes, .. } = first {
+            output.splice(0..0, bytes);
+        }
+        let output = String::from_utf8_lossy(&output);
+        assert!(output.contains("ready"));
+        assert!(output.contains("^C"));
+        assert!(output.contains("interrupted"));
+        assert!(status.success());
+        assert!(!cancelled);
+    }
+
+    #[test]
+    fn resizes_the_live_terminal() {
+        let (session, receiver) = start(
+            "printf ready\\n; IFS= read -r value; stty size",
+            &Control::default(),
+        );
+        let first = receiver.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(matches!(first, InteractiveSessionEvent::Output { .. }));
+        session.resize(37, 113).unwrap();
+        session.send_input(b"continue\r").unwrap();
+        let (mut output, status, _) = output_until_exit(&receiver);
+        if let InteractiveSessionEvent::Output { bytes, .. } = first {
+            output.splice(0..0, bytes);
+        }
+        assert!(String::from_utf8_lossy(&output).contains("37 113"));
+        assert!(status.success());
     }
 
     #[test]

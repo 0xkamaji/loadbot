@@ -119,14 +119,14 @@ export function BottomWorkspace({ state, actions }: { state: LoadbotState; actio
       <button type="button" role="tab" aria-selected={state.bottomView === 'activity'} onClick={() => actions.selectBottomView('activity')}>ACTIVITY</button>
       <button type="button" role="tab" aria-selected={state.bottomView === 'terminal'} onClick={() => actions.selectBottomView('terminal')}>TERMINAL</button>
     </div>
-    {state.bottomView === 'command' ? <CommandPane state={state} actions={actions} />
-      : state.bottomView === 'terminal' ? <TerminalPane state={state} actions={actions} />
-        : <section className="lb-bottom-content lb-activity" role="tabpanel" aria-label="Activity">
+    {state.bottomView === 'command' && <CommandPane state={state} actions={actions} />}
+    {state.bottomView === 'activity' && <section className="lb-bottom-content lb-activity" role="tabpanel" aria-label="Activity">
       <h2>ACTIVITY / THIS SESSION</h2>
       {!groups.length && <p className="lb-metadata">No activity yet.</p>}
       <ol className="lb-activity-groups" aria-live="polite">
         {groups.map((group) => <ActivityGroupView group={group} key={group.id} />)}
       </ol>
     </section>}
+    <TerminalPane state={state} actions={actions} visible={state.bottomView === 'terminal'} />
   </>;
 }

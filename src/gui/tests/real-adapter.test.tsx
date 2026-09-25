@@ -244,12 +244,14 @@ describe('one platform-neutral real read adapter', () => {
       { kind: 'exited', sessionId: 'session-1', code: 0, signal: undefined, cancelled: false },
     ]);
     await adapter.sendInteractiveInput?.('session-1', 'opaque value\r');
+    await adapter.resizeInteractiveSession?.('session-1', 37, 113);
     await adapter.terminateInteractiveSession?.('session-1');
     expect(tauri.invoke.mock.calls).toEqual([
       ['start_loadbot_interactive_session', {
         request: { launchId: 'backend-token' }, onEvent: expect.any(tauri.Channel),
       }],
       ['send_loadbot_interactive_input', { sessionId: 'session-1', input: 'opaque value\r' }],
+      ['resize_loadbot_interactive_session', { sessionId: 'session-1', rows: 37, columns: 113 }],
       ['terminate_loadbot_interactive_session', { sessionId: 'session-1' }],
     ]);
     expect(tauri.invoke.mock.calls[0][1]).not.toHaveProperty('program');

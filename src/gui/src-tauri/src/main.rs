@@ -8,8 +8,8 @@ use loadbot::{
     operations::{self, CatalogState, ShortcutHelpRequest, ShortcutIdentity},
     paths::Paths,
     process::{
-        Control, ExecutionPolicy, InteractiveCommand, InteractiveSession, InteractiveSessionEvent,
-        OperationId,
+        Control, ExecutionPolicy, InteractiveCommand, InteractiveExecutionOutput,
+        InteractiveSession, InteractiveSessionEvent, OperationId,
     },
     recipe::RecipeDefinition,
 };
@@ -20,7 +20,8 @@ use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
+use std::time::Duration;
 use tauri::Manager;
 use tauri::ipc::Channel;
 use tauri_plugin_dialog::DialogExt;
@@ -69,6 +70,11 @@ enum BackendActivity {
         stream: &'static str,
         text: String,
     },
+    InteractiveLaunch {
+        #[serde(rename = "launchId")]
+        launch_id: String,
+        label: String,
+    },
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -107,8 +113,15 @@ enum BackendInteractiveEvent {
 
 #[derive(Clone, Default)]
 struct InteractiveSessions {
-    pending: Arc<Mutex<HashMap<String, InteractiveCommand>>>,
+    pending: Arc<Mutex<HashMap<String, PendingInteractiveLaunch>>>,
     active: Arc<Mutex<HashMap<String, InteractiveSession>>>,
+}
+
+struct PendingInteractiveLaunch {
+    command: InteractiveCommand,
+    control: Control,
+    operation_id: OperationId,
+    completion: Option<mpsc::SyncSender<anyhow::Result<InteractiveExecutionOutput>>>,
 }
 
 impl InteractiveSessions {
@@ -117,33 +130,77 @@ impl InteractiveSessions {
         launch_id: &str,
         observer: Arc<dyn Fn(BackendInteractiveEvent) + Send + Sync>,
     ) -> anyhow::Result<InteractiveSessionStarted> {
-        let command = self
+        let pending = self
             .pending
             .lock()
             .map_err(|_| anyhow::anyhow!("interactive launch registry is unavailable"))?
             .remove(launch_id)
             .context("interactive launch is unavailable or has already been used")?;
         let registry = self.clone();
+        let completion = Arc::new(Mutex::new(pending.completion));
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let observer_completion = completion.clone();
+        let observer_captured = captured.clone();
         let session = InteractiveSession::start(
-            command,
-            &Control {
-                policy: ExecutionPolicy::Interactive,
-                ..Control::default()
-            },
-            OperationId::random(),
+            pending.command,
+            &pending.control,
+            pending.operation_id,
             Arc::new(move |event| {
                 let terminal = matches!(
                     event,
                     InteractiveSessionEvent::Exited { .. } | InteractiveSessionEvent::Failed { .. }
                 );
+                if let InteractiveSessionEvent::Output { bytes, .. } = &event
+                    && let Ok(mut output) = observer_captured.lock()
+                {
+                    const MAX_CAPTURE: usize = 4 * 1024 * 1024;
+                    let remaining = MAX_CAPTURE.saturating_sub(output.len());
+                    output.extend_from_slice(&bytes[..bytes.len().min(remaining)]);
+                }
                 let event = backend_interactive_event(event);
                 let session_id = event.session_id().to_owned();
-                observer(event);
+                observer(event.clone());
+                if terminal
+                    && let Ok(mut sender) = observer_completion.lock()
+                    && let Some(sender) = sender.take()
+                {
+                    let result = match event {
+                        BackendInteractiveEvent::Exited {
+                            code,
+                            signal,
+                            cancelled,
+                            ..
+                        } => Ok(InteractiveExecutionOutput {
+                            status: loadbot::process::InteractiveExitStatus { code, signal },
+                            output: observer_captured
+                                .lock()
+                                .map(|output| output.clone())
+                                .unwrap_or_default(),
+                            cancelled,
+                        }),
+                        BackendInteractiveEvent::Failed { message, .. } => {
+                            Err(anyhow::anyhow!(message))
+                        }
+                        BackendInteractiveEvent::Output { .. } => unreachable!(),
+                    };
+                    let _ = sender.send(result);
+                }
                 if terminal && let Ok(mut active) = registry.active.lock() {
                     active.remove(&session_id);
                 }
             }),
-        )?;
+        );
+        let session = match session {
+            Ok(session) => session,
+            Err(error) => {
+                if let Ok(mut sender) = completion.lock()
+                    && let Some(sender) = sender.take()
+                {
+                    let _ = sender.send(Err(anyhow::anyhow!("{error:#}")));
+                }
+                return Err(error);
+            }
+        };
         let session_id = session_key(session.process_id());
         let started = InteractiveSessionStarted {
             session_id: session_id.clone(),
@@ -173,12 +230,79 @@ impl InteractiveSessions {
             .context("interactive session is not active")
     }
 
-    #[cfg(test)]
-    fn register_test_launch(&self, launch_id: &str, command: InteractiveCommand) {
+    fn execute(
+        &self,
+        command: InteractiveCommand,
+        control: Control,
+        operation_id: OperationId,
+        label: String,
+        activity: Channel<BackendActivity>,
+    ) -> anyhow::Result<InteractiveExecutionOutput> {
+        let launch_id = format!("launch-{:016x}", OperationId::random().0);
+        let (sender, receiver) = mpsc::sync_channel(1);
         self.pending
             .lock()
-            .unwrap()
-            .insert(launch_id.to_owned(), command);
+            .map_err(|_| anyhow::anyhow!("interactive launch registry is unavailable"))?
+            .insert(
+                launch_id.clone(),
+                PendingInteractiveLaunch {
+                    command,
+                    control: Control {
+                        policy: ExecutionPolicy::Interactive,
+                        interactive_executor: None,
+                        ..control.clone()
+                    },
+                    operation_id,
+                    completion: Some(sender),
+                },
+            );
+        if activity
+            .send(BackendActivity::InteractiveLaunch {
+                launch_id: launch_id.clone(),
+                label,
+            })
+            .is_err()
+        {
+            self.pending
+                .lock()
+                .ok()
+                .and_then(|mut pending| pending.remove(&launch_id));
+            anyhow::bail!("could not deliver the interactive launch to the GUI");
+        }
+
+        loop {
+            match receiver.recv_timeout(Duration::from_millis(100)) {
+                Ok(result) => return result,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    if control.cancellation.is_cancelled() {
+                        self.pending
+                            .lock()
+                            .ok()
+                            .and_then(|mut pending| pending.remove(&launch_id));
+                        return Err(loadbot::process::Cancelled.into());
+                    }
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    anyhow::bail!("interactive session completion was disconnected")
+                }
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn register_test_launch(&self, launch_id: &str, command: InteractiveCommand) {
+        self.pending.lock().unwrap().insert(
+            launch_id.to_owned(),
+            PendingInteractiveLaunch {
+                command,
+                control: Control {
+                    policy: ExecutionPolicy::Interactive,
+                    ..Control::default()
+                },
+                operation_id: OperationId::random(),
+                completion: None,
+            },
+        );
     }
 }
 
@@ -575,14 +699,29 @@ async fn push_loadbot_project(
     catalog: String,
     tool: String,
     on_activity: Channel<BackendActivity>,
+    sessions: tauri::State<'_, InteractiveSessions>,
 ) -> Result<ProjectIdentity, DesktopError> {
-    project_operation(
-        "project push",
-        catalog,
-        tool,
-        on_activity,
-        operations::tool_push,
-    )
+    let identity = ProjectIdentity {
+        catalog: catalog.clone(),
+        tool: tool.clone(),
+    };
+    let sessions = sessions.inner().clone();
+    let launch_activity = on_activity.clone();
+    let session_label = format!("Git push — {tool}");
+    run_loadbot_worker_with_activity("project push", Some(on_activity), move |paths, context| {
+        let session_control = context.process.clone();
+        context.process.interactive_executor = Some(Arc::new(move |command, operation_id| {
+            sessions.execute(
+                command,
+                session_control.clone(),
+                operation_id,
+                session_label.clone(),
+                launch_activity.clone(),
+            )
+        }));
+        operations::tool_push(paths, &tool, Some(&catalog), context)?;
+        Ok(identity)
+    })
     .await
 }
 
@@ -1192,5 +1331,53 @@ mod tests {
             BackendInteractiveEvent::Exited { code: 0, .. }
         ));
         assert!(sessions.session(&started.session_id).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn backend_issued_launch_completes_only_after_the_pty_exits() {
+        use tauri::ipc::InvokeResponseBody;
+
+        let sessions = InteractiveSessions::default();
+        let worker_sessions = sessions.clone();
+        let (launch_sender, launch_receiver) = mpsc::channel();
+        let activity = Channel::<BackendActivity>::new(move |body| {
+            let InvokeResponseBody::Json(json) = body else {
+                panic!("expected JSON activity")
+            };
+            launch_sender.send(json).unwrap();
+            Ok(())
+        });
+        let worker = std::thread::spawn(move || {
+            let mut command = InteractiveCommand::new("sh");
+            command.args(["-c", "printf 'push-finished\\n'"]);
+            worker_sessions.execute(
+                command,
+                Control::default(),
+                OperationId::random(),
+                "Git push — demo".into(),
+                activity,
+            )
+        });
+
+        let activity = launch_receiver
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+        assert!(activity.contains("interactive-launch"));
+        assert!(activity.contains("Git push — demo"));
+        let launch_id = sessions
+            .pending
+            .lock()
+            .unwrap()
+            .keys()
+            .next()
+            .unwrap()
+            .clone();
+        assert!(!worker.is_finished());
+        sessions.start(&launch_id, Arc::new(|_| {})).unwrap();
+        let result = worker.join().unwrap().unwrap();
+        assert!(result.status.success());
+        assert!(!result.cancelled);
+        assert!(String::from_utf8_lossy(&result.output).contains("push-finished"));
     }
 }

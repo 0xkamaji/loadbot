@@ -253,6 +253,29 @@ describe('one platform-neutral real read adapter', () => {
     expect(tauri.invoke.mock.calls[0][1]).not.toHaveProperty('arguments');
   });
 
+  it('delivers a backend-issued Push launch without exposing its executable or arguments', async () => {
+    tauri.invoke.mockReset();
+    tauri.invoke.mockImplementation(async (command: string, input?: Record<string, unknown>) => {
+      expect(command).toBe('push_loadbot_project');
+      const channel = input?.onActivity as InstanceType<typeof tauri.Channel>;
+      channel.onmessage({
+        kind: 'interactive-launch', launchId: 'backend-push-token', label: 'Git push — demo',
+      } as never);
+      return { catalog: 'personal', tool: 'demo' };
+    });
+    const adapter = createTauriLoadbotAdapter();
+    const activity = vi.fn();
+
+    await expect(adapter.pushProject?.({ catalog: 'personal', tool: 'demo' }, activity))
+      .resolves.toEqual({ catalog: 'personal', tool: 'demo' });
+    expect(activity).toHaveBeenCalledWith({
+      kind: 'interactive-launch', launchId: 'backend-push-token', label: 'Git push — demo',
+    });
+    const request = tauri.invoke.mock.calls[0][1] as Record<string, unknown>;
+    expect(request).toEqual({ catalog: 'personal', tool: 'demo', onActivity: expect.any(tauri.Channel) });
+    expect(JSON.stringify(request)).not.toMatch(/program|arguments|shell/);
+  });
+
   it('rejects malformed payloads and unavailable hosts rather than substituting fixtures', async () => {
     for (const invalid of [{ projects: [] }, [{ catalog: 'a', tool: 'b' }], [{ catalog: 'a', tool: 'b', entries: [{ name: 'x', path: 'x', source: 'unknown' }] }]]) {
       await expect(createTauriLoadbotAdapter(async () => invalid).readInventory()).rejects.toThrow(/Invalid inventory/);

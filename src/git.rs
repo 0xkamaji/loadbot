@@ -838,14 +838,44 @@ fn checked_network_output(
     interaction: &mut dyn Interaction,
 ) -> Result<Output> {
     let control = interaction.process_control();
-    checked_network_output_with(
+    let original_arguments = arguments.clone();
+    let without_interactive_executor = crate::process::Control {
+        interactive_executor: None,
+        ..control.clone()
+    };
+    let mut first_attempt = true;
+    let result = checked_network_output_with(
         arguments,
         canonical_url,
-        |arguments| raw_network_output_control(arguments, &control),
+        |arguments| {
+            let attempt_control = if first_attempt {
+                first_attempt = false;
+                &without_interactive_executor
+            } else {
+                &control
+            };
+            raw_network_output_control(arguments, attempt_control)
+        },
         query_rot_identities,
         interaction.can_choose(),
         interaction,
-    )
+    );
+    match result {
+        Ok(output) => Ok(output),
+        Err(original_error) if control.interactive_executor.is_some() => {
+            let output = raw_interactive_network_output_control(&original_arguments, &control)?
+                .expect("interactive executor was checked");
+            if output.status.success() {
+                Ok(output)
+            } else {
+                Err(original_error.context(format!(
+                    "Interactive Git retry failed: {}",
+                    git_error_message(&output)
+                )))
+            }
+        }
+        Err(error) => Err(error),
+    }
 }
 
 fn checked_read_network_output(
@@ -1120,7 +1150,11 @@ where
     S: AsRef<OsStr>,
 {
     let noninteractive = matches!(control.policy, crate::process::ExecutionPolicy::Background);
-    let mut command = network_git_command(arguments, noninteractive);
+    let arguments = arguments
+        .into_iter()
+        .map(|argument| argument.as_ref().to_owned())
+        .collect::<Vec<_>>();
+    let mut command = network_git_command(&arguments, noninteractive);
     let mode = crate::process::Mode::Capture {
         limit: 4 * 1024 * 1024,
     };
@@ -1136,9 +1170,59 @@ where
     } else {
         crate::process::execute(&mut command, mode, control, operation_id)
     };
-    output.context(
+    let output = output.context(
         "could not execute network Git operation (ensure Git and SSH are available in PATH)",
-    )
+    )?;
+    if output.status.success() || !noninteractive {
+        return Ok(output);
+    }
+    let Some(output) = raw_interactive_network_output_control(&arguments, control)? else {
+        return Ok(output);
+    };
+
+    Ok(output)
+}
+
+fn raw_interactive_network_output_control(
+    arguments: &[OsString],
+    control: &crate::process::Control,
+) -> Result<Option<Output>> {
+    let Some(executor) = &control.interactive_executor else {
+        return Ok(None);
+    };
+    // The background attempt deliberately disables prompting. If it cannot
+    // complete, retry the exact backend-built command with terminal access.
+    // This avoids guessing which credential helper or SSH implementation will
+    // prompt, and keeps executable/argv ownership entirely in Rust.
+    let mut command = crate::process::InteractiveCommand::new("git");
+    command.args(arguments);
+    let result = executor(command, crate::process::OperationId::random())
+        .context("interactive Git execution failed")?;
+    if result.cancelled {
+        return Err(crate::process::Cancelled.into());
+    }
+    let code = if result.status.success() {
+        0
+    } else {
+        result.status.code.max(1)
+    };
+    Ok(Some(Output {
+        status: interactive_exit_status(code),
+        stdout: Vec::new(),
+        stderr: result.output,
+    }))
+}
+
+#[cfg(unix)]
+fn interactive_exit_status(code: u32) -> std::process::ExitStatus {
+    use std::os::unix::process::ExitStatusExt;
+    std::process::ExitStatus::from_raw((code.min(255) as i32) << 8)
+}
+
+#[cfg(windows)]
+fn interactive_exit_status(code: u32) -> std::process::ExitStatus {
+    use std::os::windows::process::ExitStatusExt;
+    std::process::ExitStatus::from_raw(code)
 }
 
 fn network_git_command<I, S>(arguments: I, noninteractive: bool) -> Command

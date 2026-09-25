@@ -107,7 +107,10 @@ export type ProjectOperationStage = 'validating-checkout' | 'cloning-project' | 
 export interface ProjectOperationActivity extends ProjectIdentity {
   readonly stage: ProjectOperationStage;
 }
-export type ProjectOperationActivityEvent = ProjectOperationActivity | OperationLogActivity;
+export interface InteractiveLaunchActivity extends InteractiveLaunch {
+  readonly kind: 'interactive-launch';
+}
+export type ProjectOperationActivityEvent = ProjectOperationActivity | OperationLogActivity | InteractiveLaunchActivity;
 export type ProjectOperationActivitySink = (activity: ProjectOperationActivityEvent) => void;
 
 /** Opaque, single-use capability created by a Rust backend operation. */

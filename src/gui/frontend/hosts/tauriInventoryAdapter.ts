@@ -137,7 +137,9 @@ const nativeInteractiveSessionBridge: InteractiveSessionBridge = {
 function invokeProjectOperation(command: string, project: ProjectIdentity, onActivity?: ProjectOperationActivitySink) {
   requireTauri('Project management');
   const channel = new Channel<unknown>();
-  channel.onmessage = (value) => onActivity?.(operationLogActivity(value) ?? projectOperationActivity(value));
+  channel.onmessage = (value) => onActivity?.(
+    operationLogActivity(value) ?? interactiveLaunchActivity(value) ?? projectOperationActivity(value),
+  );
   return invoke(command, { ...project, onActivity: channel });
 }
 
@@ -316,6 +318,12 @@ function operationLogActivity(value: unknown): OperationLogActivity | undefined 
     throw new Error('Invalid operation log stream.');
   }
   return { kind: 'log', stream: stream as OperationLogActivity['stream'], text: text(item.text) };
+}
+
+function interactiveLaunchActivity(value: unknown): (InteractiveLaunch & { readonly kind: 'interactive-launch' }) | undefined {
+  const item = record(value);
+  if (item.kind !== 'interactive-launch') return undefined;
+  return { kind: 'interactive-launch', launchId: text(item.launchId), label: text(item.label) };
 }
 
 function projectOperationActivity(value: unknown): ProjectOperationActivity {

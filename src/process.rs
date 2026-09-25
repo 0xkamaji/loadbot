@@ -12,8 +12,16 @@ use anyhow::{Context, Result};
 
 mod interactive;
 pub use interactive::{
-    InteractiveCommand, InteractiveExitStatus, InteractiveSession, InteractiveSessionEvent,
+    InteractiveCommand, InteractiveExecutionOutput, InteractiveExitStatus, InteractiveSession,
+    InteractiveSessionEvent,
 };
+
+/// Adapter-provided execution capability for a backend-created interactive
+/// command. GUI adapters may turn this into an opaque launch; CLI contexts
+/// leave it unset and continue using the user's terminal.
+pub type InteractiveExecutor = Arc<
+    dyn Fn(InteractiveCommand, OperationId) -> Result<InteractiveExecutionOutput> + Send + Sync,
+>;
 
 thread_local! {
     static CURRENT: std::cell::RefCell<Control> = std::cell::RefCell::new(Control::default());
@@ -197,6 +205,7 @@ pub enum ExecutionPolicy {
 pub struct Control {
     pub cancellation: Cancellation,
     pub observer: Option<Arc<dyn Fn(Event) + Send + Sync>>,
+    pub interactive_executor: Option<InteractiveExecutor>,
     /// Execution policy governing stdio, terminal access, credentials, and platform flags.
     pub policy: ExecutionPolicy,
 }
@@ -205,6 +214,7 @@ impl Default for Control {
         Self {
             cancellation: Cancellation::default(),
             observer: None,
+            interactive_executor: None,
             policy: ExecutionPolicy::Interactive,
         }
     }

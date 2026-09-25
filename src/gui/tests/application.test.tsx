@@ -143,6 +143,152 @@ describe('headless capability and application boundary', () => {
     expect(application.getSnapshot().command.interactiveTranscript.at(-1)?.text).toContain('cancelled');
   });
 
+  it('keeps Push pending through interactive success, routes opaque input, and reloads authority', async () => {
+    const project = { catalog: 'one', tool: 'radio-configs', installed: true, entries: [] };
+    const readInventory = vi.fn(async () => [project]);
+    let pushResolve!: (identity: { catalog: string; tool: string }) => void;
+    const pushProject: NonNullable<LoadbotAdapter['pushProject']> = vi.fn((_identity, onActivity) => {
+      onActivity?.({ kind: 'interactive-launch', launchId: 'push-launch', label: 'Git push — radio-configs' });
+      return new Promise<{ catalog: string; tool: string }>((resolve) => { pushResolve = resolve; });
+    });
+    let sessionEvent: InteractiveSessionEventSink = () => {};
+    const sendInteractiveInput: NonNullable<LoadbotAdapter['sendInteractiveInput']> = vi.fn(async () => {});
+    const managed: LoadbotAdapter = {
+      ...adapter(readInventory), pushProject,
+      startInteractiveSession: vi.fn(async (_launch, sink) => {
+        sessionEvent = sink;
+        return { sessionId: 'push-session', processId: 'push-process' };
+      }),
+      sendInteractiveInput,
+      terminateInteractiveSession: vi.fn(async () => {}),
+    };
+    const application = createLoadbotApplication(managed);
+    application.start();
+    await vi.waitFor(() => expect(application.getSnapshot().inventory.status).toBe('ready'));
+
+    const pushing = application.actions.pushProject();
+    await vi.waitFor(() => expect(application.getSnapshot().command.interactive).toMatchObject({
+      status: 'active', launchId: 'push-launch', label: 'Git push — radio-configs',
+    }));
+    expect(application.getSnapshot().bottomView).toBe('command');
+    expect(application.getSnapshot().management.status).toBe('submitting');
+    sessionEvent({ kind: 'output', sessionId: 'push-session', text: 'Enter passphrase: ' });
+    expect(application.getSnapshot().command.interactiveTranscript.at(-1)?.text).toBe('Enter passphrase: ');
+    application.actions.submitCommand('not-retained');
+    await vi.waitFor(() => expect(sendInteractiveInput).toHaveBeenCalledWith('push-session', 'not-retained\r'));
+    expect(application.getSnapshot().command.history).toEqual([]);
+    expect(JSON.stringify(application.getSnapshot())).not.toContain('not-retained');
+
+    sessionEvent({ kind: 'exited', sessionId: 'push-session', code: 0, cancelled: false });
+    expect(application.getSnapshot().management.status).toBe('submitting');
+    pushResolve({ catalog: project.catalog, tool: project.tool });
+    expect(await pushing).toBe(true);
+    expect(readInventory).toHaveBeenCalledTimes(2);
+    expect(application.getSnapshot().management.status).toBe('success');
+    expect(application.getSnapshot().activity).toEqual(expect.arrayContaining([
+      expect.objectContaining({ operation: 'project-push', stage: 'interactive-authentication', status: 'in-progress' }),
+      expect.objectContaining({ operation: 'project-push', stage: 'authoritative-reload', status: 'in-progress' }),
+      expect.objectContaining({ operation: 'project-push', stage: 'completed', status: 'success' }),
+    ]));
+  });
+
+  it.each([
+    { cancelled: false, terminal: { kind: 'exited' as const, sessionId: 'push-session', code: 1, cancelled: false }, status: 'error', stage: 'failed' },
+    { cancelled: true, terminal: { kind: 'exited' as const, sessionId: 'push-session', code: 1, cancelled: true }, status: 'cancelled', stage: 'cancelled' },
+  ])('finishes interactive Push as $status and reloads authority', async ({ cancelled, terminal, status, stage }) => {
+    const project = { catalog: 'one', tool: 'radio-configs', installed: true, entries: [] };
+    const readInventory = vi.fn(async () => [project]);
+    let rejectPush!: (error: unknown) => void;
+    const pushProject: NonNullable<LoadbotAdapter['pushProject']> = vi.fn((_identity, onActivity) => {
+      onActivity?.({ kind: 'interactive-launch', launchId: 'push-launch', label: 'Git push — radio-configs' });
+      return new Promise<{ catalog: string; tool: string }>((_resolve, reject) => { rejectPush = reject; });
+    });
+    let sessionEvent: InteractiveSessionEventSink = () => {};
+    const terminateInteractiveSession: NonNullable<LoadbotAdapter['terminateInteractiveSession']> = vi.fn(async () => {});
+    const managed: LoadbotAdapter = {
+      ...adapter(readInventory), pushProject,
+      startInteractiveSession: vi.fn(async (_launch, sink) => {
+        sessionEvent = sink;
+        return { sessionId: 'push-session', processId: 'push-process' };
+      }),
+      sendInteractiveInput: vi.fn(async () => {}), terminateInteractiveSession,
+    };
+    const application = createLoadbotApplication(managed);
+    application.start();
+    await vi.waitFor(() => expect(application.getSnapshot().inventory.status).toBe('ready'));
+
+    const pushing = application.actions.pushProject();
+    await vi.waitFor(() => expect(application.getSnapshot().command.interactive?.status).toBe('active'));
+    if (cancelled) {
+      expect(await application.actions.cancelInteractiveSession()).toBe(true);
+      expect(terminateInteractiveSession).toHaveBeenCalledWith('push-session');
+    }
+    sessionEvent(terminal);
+    rejectPush(cancelled ? { kind: 'cancelled', message: 'operation cancelled' } : new Error('Git push failed with status 1'));
+
+    expect(await pushing).toBe(false);
+    expect(readInventory).toHaveBeenCalledTimes(2);
+    expect(application.getSnapshot().management.status).toBe(status);
+    expect(application.getSnapshot().command.interactive).toBeUndefined();
+    expect(application.getSnapshot().activity.at(-1)).toMatchObject({
+      operation: 'project-push', stage, status,
+    });
+  });
+
+  it('completes a noninteractive Push without entering COMMAND and still reloads', async () => {
+    const project = { catalog: 'one', tool: 'radio-configs', installed: true, entries: [] };
+    const readInventory = vi.fn(async () => [project]);
+    const startInteractiveSession = vi.fn();
+    const managed: LoadbotAdapter = {
+      ...adapter(readInventory),
+      pushProject: vi.fn(async (identity) => identity),
+      startInteractiveSession,
+    };
+    const application = createLoadbotApplication(managed);
+    application.start();
+    await vi.waitFor(() => expect(application.getSnapshot().inventory.status).toBe('ready'));
+
+    expect(await application.actions.pushProject()).toBe(true);
+    expect(startInteractiveSession).not.toHaveBeenCalled();
+    expect(application.getSnapshot().command.interactive).toBeUndefined();
+    expect(readInventory).toHaveBeenCalledTimes(2);
+  });
+
+  it('serializes consecutive backend-issued Push sessions such as a Rot retry', async () => {
+    const project = { catalog: 'one', tool: 'radio-configs', installed: true, entries: [] };
+    let resolvePush!: (identity: { catalog: string; tool: string }) => void;
+    const pushProject: NonNullable<LoadbotAdapter['pushProject']> = vi.fn((_identity, onActivity) => {
+      onActivity?.({ kind: 'interactive-launch', launchId: 'canonical-attempt', label: 'Git push — radio-configs' });
+      onActivity?.({ kind: 'interactive-launch', launchId: 'rot-attempt', label: 'Git push — radio-configs' });
+      return new Promise<{ catalog: string; tool: string }>((resolve) => { resolvePush = resolve; });
+    });
+    const events: InteractiveSessionEventSink[] = [];
+    const startInteractiveSession: NonNullable<LoadbotAdapter['startInteractiveSession']> = vi.fn(async (launch, sink) => {
+      events.push(sink);
+      return { sessionId: `session-${launch.launchId}`, processId: `process-${launch.launchId}` };
+    });
+    const application = createLoadbotApplication({
+      ...adapter(vi.fn(async () => [project])), pushProject, startInteractiveSession,
+      sendInteractiveInput: vi.fn(async () => {}), terminateInteractiveSession: vi.fn(async () => {}),
+    });
+    application.start();
+    await vi.waitFor(() => expect(application.getSnapshot().inventory.status).toBe('ready'));
+
+    const pushing = application.actions.pushProject();
+    await vi.waitFor(() => expect(startInteractiveSession).toHaveBeenCalledTimes(1));
+    expect(startInteractiveSession).toHaveBeenNthCalledWith(
+      1, expect.objectContaining({ launchId: 'canonical-attempt' }), expect.any(Function),
+    );
+    events[0]({ kind: 'exited', sessionId: 'session-canonical-attempt', code: 1, cancelled: false });
+    await vi.waitFor(() => expect(startInteractiveSession).toHaveBeenCalledTimes(2));
+    expect(startInteractiveSession).toHaveBeenNthCalledWith(
+      2, expect.objectContaining({ launchId: 'rot-attempt' }), expect.any(Function),
+    );
+    events[1]({ kind: 'exited', sessionId: 'session-rot-attempt', code: 0, cancelled: false });
+    resolvePush({ catalog: project.catalog, tool: project.tool });
+    expect(await pushing).toBe(true);
+  });
+
   it('routes lifecycle command targets through adapters and the shared destructive confirmation flow', async () => {
     const projects: readonly LoadbotProject[] = [
       { catalog: 'personal', tool: 'Project-A', installed: true, entries: [] },

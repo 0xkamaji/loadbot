@@ -10,6 +10,8 @@ use std::{
 
 use anyhow::{Context, Result};
 use portable_pty::{ChildKiller, CommandBuilder, PtySize, native_pty_system};
+#[cfg(test)]
+use std::ffi::OsString;
 
 use super::{Control, Event, OperationId, ProcessId};
 
@@ -52,12 +54,32 @@ impl InteractiveCommand {
         self.command.env(key, value);
         self
     }
+
+    #[cfg(test)]
+    pub(crate) fn program(&self) -> &OsStr {
+        self.command.get_argv()[0].as_os_str()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn arguments(&self) -> impl Iterator<Item = &OsStr> {
+        self.command.get_argv()[1..].iter().map(OsString::as_os_str)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InteractiveExitStatus {
     pub code: u32,
     pub signal: Option<String>,
+}
+
+/// Terminal result returned to the backend operation that requested an
+/// interactive execution. Output is transient and exists only so domain code
+/// can report a useful process failure; stdin is never included here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InteractiveExecutionOutput {
+    pub status: InteractiveExitStatus,
+    pub output: Vec<u8>,
+    pub cancelled: bool,
 }
 
 impl InteractiveExitStatus {

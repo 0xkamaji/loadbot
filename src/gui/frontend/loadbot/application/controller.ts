@@ -34,7 +34,8 @@ export type ManagementState =
 export type ActivityOperation = 'catalog-sync' | 'catalog-add' | 'project-add' | 'shortcut-add' | 'shortcut-update' | 'shortcut-delete' | 'local-reload'
   | 'project-folder-open' | 'project-terminal-open' | 'project-pull' | 'project-push' | 'project-update' | 'project-remove' | 'project-reinstall';
 export type ActivityStatus = 'in-progress' | 'info' | 'success' | 'error' | 'cancelled';
-export type ActivityStage = CatalogSyncStage | ProjectOperationStage | 'started' | 'authoritative-reload' | 'catalog-state' | 'completed' | 'failed' | 'cancelled';
+export type ActivityStage = CatalogSyncStage | ProjectOperationStage | 'started' | 'interactive-authentication'
+  | 'authoritative-reload' | 'catalog-state' | 'completed' | 'failed' | 'cancelled';
 export interface ActivityEntry {
   readonly id: number;
   readonly operationId: string;
@@ -197,6 +198,7 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
   let commandId = 0;
   let interactiveTranscriptId = 0;
   let interactiveGeneration = 0;
+  const pendingInteractiveLaunches: InteractiveLaunch[] = [];
   let recipeArgumentKey = 1000;
   let recipeHelpGeneration = 0;
   const publish = (next: LoadbotState) => {
@@ -237,7 +239,15 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
   };
   const cancelled = (error: unknown) => Boolean(error && typeof error === 'object' && 'kind' in error && error.kind === 'cancelled');
   const projectProgress = (id: string, operation: ActivityOperation) => (activity: ProjectOperationActivityEvent) => {
-    if ('kind' in activity) appendLog(id, activity);
+    if ('kind' in activity && activity.kind === 'log') appendLog(id, activity);
+    else if ('kind' in activity && activity.kind === 'interactive-launch') {
+      appendActivity({
+        operationId: id, operation, stage: 'interactive-authentication', status: 'in-progress',
+        detail: 'Interactive authentication required.',
+      });
+      if (state.command.interactive) pendingInteractiveLaunches.push(activity);
+      else void actions.startInteractiveSession(activity);
+    }
     else appendActivity({
       operationId: id, operation, stage: activity.stage, status: 'in-progress', catalog: activity.catalog, project: activity.tool,
     });
@@ -451,7 +461,7 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
     },
     async pushProject(project?: LoadbotProject) {
       const target = project ?? state.project;
-      if (!target || target.installed === false || !adapter.pushProject) return false;
+      if (!target || target.installed === false || !adapter.pushProject || state.command.interactive) return false;
       return mutation('push-project', 'project-push', `Pushing ${target.tool}…`, `Project ${target.tool} pushed.`, { catalog: target.catalog, project: target.tool }, async (operation) => {
         const pushed = await adapter.pushProject!({ catalog: target.catalog, tool: target.tool }, projectProgress(operation, 'project-push'));
         return { catalog: pushed.catalog, projectId: projectKey(pushed) };
@@ -840,6 +850,8 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
             interactiveTranscript: [...state.command.interactiveTranscript, entry].slice(-INTERACTIVE_TRANSCRIPT_LIMIT),
           },
         });
+        const next = pendingInteractiveLaunches.shift();
+        if (next) void actions.startInteractiveSession(next);
       };
       try {
         const started = await adapter.startInteractiveSession(launch, onEvent);

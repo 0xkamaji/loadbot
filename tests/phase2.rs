@@ -313,6 +313,7 @@ fn cancellation_stops_and_reaps_process_tree_and_preserves_output() {
     let control = Control {
         cancellation,
         policy: ExecutionPolicy::Background,
+        interactive_executor: None,
         observer: Some(Arc::new(move |event| {
             if let Event::Output { bytes: chunk, .. } = event {
                 let mut bytes = bytes.lock().unwrap();

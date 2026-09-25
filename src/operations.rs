@@ -2070,6 +2070,8 @@ mod tests {
     use std::collections::VecDeque;
     use std::ffi::OsStr;
     use std::process::Command;
+    use std::sync::{Arc, Mutex, mpsc};
+    use std::time::Duration;
 
     use tempfile::TempDir;
 
@@ -2260,6 +2262,162 @@ mod tests {
         );
         assert!(destination.join("local.txt").exists());
         assert!(!git::has_local_commits_not_on_origin(&destination).unwrap());
+    }
+
+    #[test]
+    fn interactive_push_keeps_the_shared_operation_pending_until_success() {
+        let (temporary, paths, destination) = lifecycle_fixture();
+        git(["config", "user.name", "Loadbot Tests"], Some(&destination));
+        git(
+            ["config", "user.email", "loadbot@example.test"],
+            Some(&destination),
+        );
+        fs::write(destination.join("local.txt"), "local commit\n").unwrap();
+        git(["add", "local.txt"], Some(&destination));
+        git(["commit", "-m", "local work"], Some(&destination));
+        let missing = temporary.path().join("missing-remote.git");
+        git(
+            [
+                OsStr::new("remote"),
+                OsStr::new("set-url"),
+                OsStr::new("--push"),
+                OsStr::new("origin"),
+                missing.as_os_str(),
+            ],
+            Some(&destination),
+        );
+
+        let (started_sender, started_receiver) = mpsc::channel();
+        let (finish_sender, finish_receiver) = mpsc::channel();
+        let finish_receiver = Arc::new(Mutex::new(finish_receiver));
+        let worker = std::thread::spawn(move || {
+            let mut policy = crate::interaction::Unattended;
+            let mut context = OperationContext::background(&mut policy);
+            context.process.interactive_executor = Some(Arc::new(move |command, _| {
+                assert_eq!(command.program(), OsStr::new("git"));
+                assert_eq!(
+                    command.arguments().collect::<Vec<_>>(),
+                    [
+                        OsStr::new("-C"),
+                        destination.as_os_str(),
+                        OsStr::new("push"),
+                        OsStr::new("origin"),
+                        OsStr::new("HEAD")
+                    ]
+                );
+                started_sender.send(()).unwrap();
+                finish_receiver.lock().unwrap().recv().unwrap();
+                Ok(crate::process::InteractiveExecutionOutput {
+                    status: crate::process::InteractiveExitStatus {
+                        code: 0,
+                        signal: None,
+                    },
+                    output: b"push completed".to_vec(),
+                    cancelled: false,
+                })
+            }));
+            tool_push(&paths, "demo", Some("personal"), &mut context)
+        });
+
+        started_receiver
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+        assert!(
+            !worker.is_finished(),
+            "push completed before the PTY exited"
+        );
+        finish_sender.send(()).unwrap();
+        let outcome = worker.join().unwrap().unwrap();
+        assert!(outcome.notices.iter().any(|notice| matches!(
+            notice,
+            Notice::ToolPushed { name, .. } if name == "demo"
+        )));
+    }
+
+    #[test]
+    fn interactive_push_nonzero_and_cancellation_fail_the_shared_operation() {
+        for (cancelled, expected) in [(false, "interactive push rejected"), (true, "cancelled")] {
+            let (temporary, paths, destination) = lifecycle_fixture();
+            let missing = temporary.path().join("missing-remote.git");
+            git(
+                [
+                    OsStr::new("remote"),
+                    OsStr::new("set-url"),
+                    OsStr::new("--push"),
+                    OsStr::new("origin"),
+                    missing.as_os_str(),
+                ],
+                Some(&destination),
+            );
+            let mut policy = crate::interaction::Unattended;
+            let mut context = OperationContext::background(&mut policy);
+            context.process.interactive_executor = Some(Arc::new(move |_, _| {
+                Ok(crate::process::InteractiveExecutionOutput {
+                    status: crate::process::InteractiveExitStatus {
+                        code: 23,
+                        signal: None,
+                    },
+                    output: b"interactive push rejected".to_vec(),
+                    cancelled,
+                })
+            }));
+
+            let error = tool_push(&paths, "demo", Some("personal"), &mut context).unwrap_err();
+            assert!(format!("{error:#}").to_ascii_lowercase().contains(expected));
+            if cancelled {
+                assert!(error.downcast_ref::<crate::process::Cancelled>().is_some());
+            }
+        }
+    }
+
+    #[test]
+    fn push_honors_a_rot_alias_push_url_without_requiring_rot_at_runtime() {
+        let (temporary, paths, destination) = lifecycle_fixture();
+        let alternate = empty_remote(temporary.path(), "rot-target");
+        let alias_url = "git@github-kamaji:owner/rot-target.git";
+        let rewrite_key = format!("url.{}/.insteadOf", temporary.path().display());
+        git(
+            ["config", rewrite_key.as_str(), "git@github-kamaji:owner/"],
+            Some(&destination),
+        );
+        git(
+            [
+                OsStr::new("remote"),
+                OsStr::new("set-url"),
+                OsStr::new("--push"),
+                OsStr::new("origin"),
+                OsStr::new(alias_url),
+            ],
+            Some(&destination),
+        );
+        assert_eq!(
+            git::push_url(&destination).unwrap().as_deref(),
+            Some(alias_url)
+        );
+        git(["config", "user.name", "Loadbot Tests"], Some(&destination));
+        git(
+            ["config", "user.email", "loadbot@example.test"],
+            Some(&destination),
+        );
+        fs::write(destination.join("push-url.txt"), "alternate\n").unwrap();
+        git(["add", "push-url.txt"], Some(&destination));
+        git(
+            ["commit", "-m", "push to configured URL"],
+            Some(&destination),
+        );
+
+        let mut policy = crate::interaction::Unattended;
+        let mut context = OperationContext::background(&mut policy);
+        tool_push(&paths, "demo", Some("personal"), &mut context).unwrap();
+
+        let output = Command::new("git")
+            .args(["--git-dir"])
+            .arg(&alternate)
+            .args(["show", "HEAD:push-url.txt"])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"alternate\n");
     }
 
     #[test]

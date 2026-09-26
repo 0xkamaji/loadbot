@@ -84,6 +84,7 @@ export interface CommandState {
 export interface ProjectTerminalState {
   readonly status: 'idle' | 'starting' | 'active' | 'terminating' | 'exited' | 'error';
   readonly project?: { readonly catalog: string; readonly tool: string };
+  readonly catalog?: { readonly catalog: string };
   readonly transcript: string;
   readonly launchId?: string;
   readonly sessionId?: string;
@@ -125,6 +126,11 @@ export interface LoadbotState {
     readonly projectId?: string;
     readonly message?: string;
   };
+  readonly catalogFolder: {
+    readonly status: 'idle' | 'opening' | 'opened' | 'error';
+    readonly catalog?: string;
+    readonly message?: string;
+  };
   readonly projectTerminal: ProjectTerminalState;
   readonly pendingProjectAction?: { readonly action: ProjectLifecycleAction; readonly project: LoadbotProject };
   readonly pendingCommitPush?: {
@@ -144,6 +150,8 @@ export interface LoadbotActions {
   reloadInventory(): void;
   openProjectFolder(id: string): void;
   openProjectTerminal(id: string): void;
+  openCatalogFolder(): void;
+  openCatalogTerminal(): void;
   pullProject(project?: LoadbotProject): Promise<boolean>;
   pushProject(project?: LoadbotProject): Promise<boolean>;
   toggleCommitPushPath(path: string): void;
@@ -211,11 +219,12 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
     missingInputIds: [], drawerOpen: true, bottomView: 'command',
     command: { entries: [], history: [], interactiveTranscript: [] },
     activity: [], activityLogs: [], management: { status: 'idle' }, shortcutManagement: { active: false, selected: [] },
-    projectFolder: { status: 'idle' }, projectTerminal: { status: 'idle', transcript: '' },
+    projectFolder: { status: 'idle' }, catalogFolder: { status: 'idle' }, projectTerminal: { status: 'idle', transcript: '' },
   };
   const listeners = new Set<() => void>();
   let generation = 0;
   let folderGeneration = 0;
+  let catalogFolderGeneration = 0;
   let terminalGeneration = 0;
   let terminalInputChain = Promise.resolve();
   let activityId = 0;
@@ -424,34 +433,50 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
     }
   }
 
-  const sameProject = (left: { catalog: string; tool: string } | undefined, right: { catalog: string; tool: string }) =>
-    left?.catalog === right.catalog && left.tool === right.tool;
+  type TerminalTarget =
+    | { readonly kind: 'project'; readonly catalog: string; readonly tool: string }
+    | { readonly kind: 'catalog'; readonly catalog: string };
+  const terminalTarget = (terminal: ProjectTerminalState): TerminalTarget | undefined => terminal.project
+    ? { kind: 'project', ...terminal.project }
+    : terminal.catalog ? { kind: 'catalog', ...terminal.catalog } : undefined;
+  const sameTerminalTarget = (left: TerminalTarget | undefined, right: TerminalTarget) => left?.kind === right.kind
+    && left.catalog === right.catalog && (left.kind !== 'project' || right.kind !== 'project' || left.tool === right.tool);
   const boundedTerminalTranscript = (current: string, text: string) =>
     `${current}${text}`.slice(-TERMINAL_TRANSCRIPT_LIMIT);
 
-  async function startProjectTerminal(
-    project: { catalog: string; tool: string },
+  async function startTerminal(
+    target: TerminalTarget,
     restart = false,
   ): Promise<boolean> {
     const current = state.projectTerminal;
-    if (!restart && current.project) {
-      return sameProject(current.project, project) && current.status === 'active';
+    if (!restart && terminalTarget(current)) {
+      return sameTerminalTarget(terminalTarget(current), target) && current.status === 'active';
     }
-    if (!adapter.createProjectTerminalLaunch || !adapter.startInteractiveSession
+    const createLaunch = target.kind === 'project' ? adapter.createProjectTerminalLaunch : adapter.createCatalogTerminalLaunch;
+    if (!createLaunch || !adapter.startInteractiveSession
       || !adapter.sendInteractiveInput || !adapter.terminateInteractiveSession) {
       publish({
         ...state,
         projectTerminal: {
-          status: 'error', project, transcript: '',
-          message: 'Embedded project terminals are unavailable in this host.',
+          status: 'error', ...(target.kind === 'project'
+            ? { project: { catalog: target.catalog, tool: target.tool } }
+            : { catalog: { catalog: target.catalog } }), transcript: '',
+          message: 'Embedded terminals are unavailable in this host.',
         },
       });
       return false;
     }
     const generation = ++terminalGeneration;
-    publish({ ...state, projectTerminal: { status: 'starting', project, transcript: '' } });
+    publish({
+      ...state,
+      projectTerminal: { status: 'starting', ...(target.kind === 'project'
+        ? { project: { catalog: target.catalog, tool: target.tool } }
+        : { catalog: { catalog: target.catalog } }), transcript: '' },
+    });
     try {
-      const launch = await adapter.createProjectTerminalLaunch(project);
+      const launch = target.kind === 'project'
+        ? await adapter.createProjectTerminalLaunch!({ catalog: target.catalog, tool: target.tool })
+        : await adapter.createCatalogTerminalLaunch!({ catalog: target.catalog });
       if (generation !== terminalGeneration) return false;
       publish({
         ...state,
@@ -460,7 +485,7 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
       const onEvent = (event: InteractiveSessionEvent) => {
         if (generation !== terminalGeneration) return;
         const terminal = state.projectTerminal;
-        if (!sameProject(terminal.project, project)) return;
+        if (!sameTerminalTarget(terminalTarget(terminal), target)) return;
         if (event.kind === 'output') {
           publish({
             ...state,
@@ -504,8 +529,11 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
         publish({
           ...state,
           projectTerminal: {
-            ...state.projectTerminal, status: 'error', project,
-            message: errorMessage(error, 'Could not start the project terminal.'),
+            ...state.projectTerminal, status: 'error',
+            ...(target.kind === 'project'
+              ? { project: { catalog: target.catalog, tool: target.tool } }
+              : { catalog: { catalog: target.catalog } }),
+            message: errorMessage(error, 'Could not start the terminal.'),
           },
         });
       }
@@ -578,9 +606,40 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
       const project = projectsFor(state.inventory.projects, state.currentCatalog).find((item) => projectKey(item) === id);
       if (!project) return;
       publish({ ...state, bottomView: 'terminal', drawerOpen: true });
-      if (project.installed !== false && !state.projectTerminal.project) {
-        void startProjectTerminal({ catalog: project.catalog, tool: project.tool });
+      if (project.installed !== false && !terminalTarget(state.projectTerminal)) {
+        void startTerminal({ kind: 'project', catalog: project.catalog, tool: project.tool });
       }
+    },
+    openCatalogFolder() {
+      const catalog = state.currentCatalog;
+      const available = state.catalogState.status === 'ready'
+        && state.catalogState.catalogs.some((item) => item.name === catalog && item.state === 'installed');
+      if (!catalog || !available) return;
+      const request = ++catalogFolderGeneration;
+      publish({ ...state, catalogFolder: { status: 'opening', catalog } });
+      Promise.resolve().then(() => adapter.openCatalogFolder({ catalog })).then(
+        () => {
+          if (request === catalogFolderGeneration) {
+            publish({ ...state, catalogFolder: { status: 'opened', catalog, message: `Opened ${catalog}.` } });
+          }
+        },
+        (error: unknown) => {
+          if (request === catalogFolderGeneration) {
+            publish({
+              ...state,
+              catalogFolder: { status: 'error', catalog, message: errorMessage(error, 'Could not open the catalog folder.') },
+            });
+          }
+        },
+      );
+    },
+    openCatalogTerminal() {
+      const catalog = state.currentCatalog;
+      const available = state.catalogState.status === 'ready'
+        && state.catalogState.catalogs.some((item) => item.name === catalog && item.state === 'installed');
+      if (!catalog || !available) return;
+      publish({ ...state, bottomView: 'terminal', drawerOpen: true });
+      if (!terminalTarget(state.projectTerminal)) void startTerminal({ kind: 'catalog', catalog });
     },
     async pullProject(project?: LoadbotProject) {
       const target = project ?? state.project;
@@ -988,8 +1047,8 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
     clearManagementStatus() { if (state.management.status !== 'submitting') publish({ ...state, management: { status: 'idle' } }); },
     selectBottomView(view) {
       publish({ ...state, bottomView: view });
-      if (view === 'terminal' && state.project?.installed !== false && !state.projectTerminal.project && state.project) {
-        void startProjectTerminal({ catalog: state.project.catalog, tool: state.project.tool });
+      if (view === 'terminal' && state.project?.installed !== false && !terminalTarget(state.projectTerminal) && state.project) {
+        void startTerminal({ kind: 'project', catalog: state.project.catalog, tool: state.project.tool });
       }
     },
     completeCommand(input, caret) {
@@ -1211,8 +1270,9 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
     },
     async restartProjectTerminal() {
       const terminal = state.projectTerminal;
-      if (!terminal.project || (terminal.status !== 'exited' && terminal.status !== 'error')) return false;
-      return startProjectTerminal(terminal.project, true);
+      const target = terminalTarget(terminal);
+      if (!target || (terminal.status !== 'exited' && terminal.status !== 'error')) return false;
+      return startTerminal(target, true);
     },
     changeSampleInput,
     useSamplePath(id) {

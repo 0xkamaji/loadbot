@@ -67,7 +67,8 @@ function terminalAdapter(projects: readonly LoadbotProject[]) {
   const terminateInteractiveSession: NonNullable<LoadbotAdapter['terminateInteractiveSession']> = vi.fn(async () => {});
   const adapter: LoadbotAdapter = {
     readInventory: async () => projects,
-    readCatalogs: async () => [{ name: 'personal', url: 'fixture', writable: true, state: 'installed', default: true }],
+    readCatalogs: async () => [{ name: 'personal', backend: 'git', url: 'fixture', writable: true, state: 'installed', default: true }],
+    openCatalogFolder: vi.fn(),
     openProjectFolder: vi.fn(), createProjectTerminalLaunch, startInteractiveSession,
     sendInteractiveInput, resizeInteractiveSession, terminateInteractiveSession,
     addCatalog: vi.fn(), createCatalog: vi.fn(), addProject: vi.fn(), addShortcut: vi.fn(), addRecipeShortcut: vi.fn(), updateRecipeShortcut: vi.fn(),

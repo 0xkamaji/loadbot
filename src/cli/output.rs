@@ -42,7 +42,11 @@ impl Renderer {
                 }
                 println!("Name: {name}");
                 println!("Path: {}", path.display());
-                println!("Catalog fetch URL: {}", source.url);
+                if source.backend == loadbot::config::CatalogBackend::Git {
+                    println!("Catalog fetch URL: {}", source.url);
+                } else {
+                    println!("Catalog storage: local only");
+                }
                 println!("Writable: {}", if source.writable { "yes" } else { "no" });
             }
             Notice::ToolResolved { tool, path } => {
@@ -66,7 +70,9 @@ impl Renderer {
             Notice::RepositoryInspected(value) => repository(value.as_ref()),
             Notice::CatalogFileInspected(value) => match value {
                 CatalogValidity::Unmanaged => {
-                    println!("Catalog file: unavailable (destination is not a managed repository)")
+                    println!(
+                        "Catalog file: unavailable (destination is not a managed catalog directory)"
+                    )
                 }
                 CatalogValidity::Missing => println!("Catalog file: missing"),
                 CatalogValidity::Valid => println!("Catalog file: valid"),
@@ -300,7 +306,11 @@ fn catalog_row(row: &CatalogSummary) {
             "read-only"
         },
         if row.default { "yes" } else { "no" },
-        row.source.url
+        if row.source.backend == loadbot::config::CatalogBackend::Git {
+            row.source.url.as_str()
+        } else {
+            "(local)"
+        }
     );
 }
 

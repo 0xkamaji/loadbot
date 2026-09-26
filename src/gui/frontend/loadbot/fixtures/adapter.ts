@@ -59,10 +59,12 @@ export function createFixtureAdapter(): LoadbotAdapter {
   async readInventory() { return structuredClone(inventory); },
   async readCatalogs() {
     return [
-      { name: 'personal', url: 'fixture://personal', writable: true, state: 'installed', default: true },
-      { name: 'community', url: 'fixture://community', writable: false, state: 'installed', default: false },
+      { name: 'personal', backend: 'local' as const, writable: true, state: 'installed' as const, default: true },
+      { name: 'community', backend: 'git' as const, url: 'fixture://community', writable: false, state: 'installed' as const, default: false },
     ];
   },
+  async openCatalogFolder() { throw new Error('Folder opening is unavailable in fixture preview.'); },
+  async createCatalogTerminalLaunch() { throw new Error('Terminal opening is unavailable in fixture preview.'); },
   async openProjectFolder() { throw new Error('Folder opening is unavailable in fixture preview.'); },
   async createProjectTerminalLaunch() { throw new Error('Terminal opening is unavailable in fixture preview.'); },
   async pullProject() { throw new Error('Management is unavailable in fixture preview.'); },

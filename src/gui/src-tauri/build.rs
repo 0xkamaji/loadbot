@@ -9,6 +9,8 @@ fn main() {
             "read_loadbot_catalogs",
             "open_loadbot_project",
             "create_loadbot_project_terminal_launch",
+            "open_loadbot_catalog",
+            "create_loadbot_catalog_terminal_launch",
             "add_loadbot_catalog",
             "create_loadbot_catalog",
             "add_loadbot_project",

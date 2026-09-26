@@ -39,7 +39,9 @@ struct DesktopError {
 #[serde(rename_all = "camelCase")]
 struct CatalogContext {
     name: String,
-    url: String,
+    backend: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    url: Option<String>,
     writable: bool,
     state: &'static str,
     default: bool,
@@ -97,9 +99,20 @@ struct CommitPushRequest {
 #[serde(rename_all = "camelCase")]
 struct CreateCatalogRequest {
     name: String,
-    url: String,
+    backend: CreateCatalogBackend,
+    #[serde(default)]
+    url: Option<String>,
+    #[serde(default)]
     commit: bool,
+    #[serde(default)]
     push: bool,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum CreateCatalogBackend {
+    Local,
+    Git,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -645,13 +658,43 @@ async fn create_loadbot_project_terminal_launch(
 }
 
 #[tauri::command]
+async fn open_loadbot_catalog(catalog: String) -> Result<(), DesktopError> {
+    run_loadbot_worker("catalog folder", move |paths, context| {
+        let directory = operations::installed_catalog_path(paths, &catalog, context)?;
+        open_directory(&directory)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn create_loadbot_catalog_terminal_launch(
+    catalog: String,
+    sessions: tauri::State<'_, InteractiveSessions>,
+) -> Result<InteractiveLaunchCapability, DesktopError> {
+    let sessions = sessions.inner().clone();
+    run_loadbot_worker("catalog terminal", move |paths, context| {
+        let command = operations::catalog_terminal_command(paths, &catalog, context)?;
+        sessions.issue(
+            command,
+            context.process.clone(),
+            OperationId::random(),
+            format!("Catalog terminal — {catalog}"),
+            None,
+        )
+    })
+    .await
+}
+
+#[tauri::command]
 async fn read_loadbot_catalogs() -> Result<Vec<CatalogContext>, DesktopError> {
     run_loadbot_worker("catalog query", move |paths, context| {
         Ok(operations::catalog_list(paths, context)?
             .into_iter()
             .map(|catalog| CatalogContext {
                 name: catalog.name,
-                url: catalog.source.url,
+                backend: catalog.source.backend.as_str(),
+                url: (catalog.source.backend == loadbot::config::CatalogBackend::Git)
+                    .then_some(catalog.source.url),
                 writable: catalog.source.writable,
                 state: match catalog.state {
                     CatalogState::Missing => "missing",
@@ -684,12 +727,26 @@ async fn create_loadbot_catalog(
 ) -> Result<CatalogIdentity, DesktopError> {
     let CreateCatalogRequest {
         name,
+        backend,
         url,
         commit,
         push,
     } = request;
     run_loadbot_worker("catalog create", move |paths, context| {
-        operations::catalog_initialize(paths, &name, url, true, commit, push, context)?;
+        match backend {
+            CreateCatalogBackend::Local => {
+                if url.is_some() || commit || push {
+                    anyhow::bail!(
+                        "local-only catalogs do not accept a Git URL, commit, or push options"
+                    );
+                }
+                operations::catalog_initialize_local(paths, &name, context)?;
+            }
+            CreateCatalogBackend::Git => {
+                let url = url.context("Git-backed catalog creation requires a repository URL")?;
+                operations::catalog_initialize(paths, &name, url, true, commit, push, context)?;
+            }
+        }
         Ok(CatalogIdentity { catalog: name })
     })
     .await
@@ -1179,7 +1236,7 @@ fn open_directory(path: &Path) -> anyhow::Result<()> {
         .spawn()
         .with_context(|| {
             format!(
-                "could not open project directory {} with the system file manager",
+                "could not open directory {} with the system file manager",
                 path.display()
             )
         })?;
@@ -1211,6 +1268,8 @@ fn main() {
             read_loadbot_catalogs,
             open_loadbot_project,
             create_loadbot_project_terminal_launch,
+            open_loadbot_catalog,
+            create_loadbot_catalog_terminal_launch,
             add_loadbot_catalog,
             create_loadbot_catalog,
             add_loadbot_project,

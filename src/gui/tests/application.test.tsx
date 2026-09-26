@@ -11,8 +11,8 @@ import type {
 describe('headless capability and application boundary', () => {
   const adapter = (readInventory: LoadbotAdapter['readInventory'], openProjectFolder: LoadbotAdapter['openProjectFolder'] = vi.fn(async () => {})): LoadbotAdapter => ({
     readInventory,
-    readCatalogs: async () => [{ name: 'personal', url: 'test', writable: true, state: 'installed', default: false }, { name: 'community', url: 'test', writable: false, state: 'installed', default: false }, { name: 'one', url: 'test', writable: true, state: 'installed', default: false }, { name: 'two', url: 'test', writable: true, state: 'installed', default: false }, { name: 'three', url: 'test', writable: true, state: 'installed', default: false }],
-    openProjectFolder,
+    readCatalogs: async () => [{ name: 'personal', backend: 'git', url: 'test', writable: true, state: 'installed', default: false }, { name: 'community', backend: 'git', url: 'test', writable: false, state: 'installed', default: false }, { name: 'one', backend: 'git', url: 'test', writable: true, state: 'installed', default: false }, { name: 'two', backend: 'git', url: 'test', writable: true, state: 'installed', default: false }, { name: 'three', backend: 'git', url: 'test', writable: true, state: 'installed', default: false }],
+    openCatalogFolder: vi.fn(), openProjectFolder,
     addCatalog: vi.fn(), createCatalog: vi.fn(), addProject: vi.fn(), addShortcut: vi.fn(), addRecipeShortcut: vi.fn(), updateRecipeShortcut: vi.fn(),
     chooseProjectFile: vi.fn(), chooseProjectDirectory: vi.fn(), viewShortcutHelp: vi.fn(), deleteShortcuts: vi.fn(), syncCatalog: vi.fn(),
   });
@@ -211,6 +211,33 @@ describe('headless capability and application boundary', () => {
     expect(await application.actions.closeProjectTerminal()).toBe(true);
     expect(terminateInteractiveSession).toHaveBeenCalledWith('session-terminal-alpha-2');
     expect(application.getSnapshot().projectTerminal).toEqual({ status: 'idle', transcript: '' });
+  });
+
+  it('creates a catalog-bound terminal from semantic catalog identity', async () => {
+    const createCatalogTerminalLaunch: NonNullable<LoadbotAdapter['createCatalogTerminalLaunch']> = vi.fn(async ({ catalog }) => ({
+      launchId: `catalog-${catalog}`, label: `Catalog terminal — ${catalog}`,
+    }));
+    const startInteractiveSession: NonNullable<LoadbotAdapter['startInteractiveSession']> = vi.fn(async () => ({
+      sessionId: 'catalog-session', processId: 'catalog-process',
+    }));
+    const application = createLoadbotApplication({
+      ...adapter(async () => [{ catalog: 'personal', tool: 'alpha', entries: [] }]),
+      createCatalogTerminalLaunch,
+      startInteractiveSession,
+      sendInteractiveInput: vi.fn(async () => {}),
+      terminateInteractiveSession: vi.fn(async () => {}),
+    });
+    application.start();
+    await vi.waitFor(() => expect(application.getSnapshot().currentCatalog).toBe('personal'));
+
+    application.actions.openCatalogTerminal();
+    await vi.waitFor(() => expect(application.getSnapshot().projectTerminal.status).toBe('active'));
+
+    expect(createCatalogTerminalLaunch).toHaveBeenCalledWith({ catalog: 'personal' });
+    expect(application.getSnapshot().projectTerminal).toMatchObject({
+      catalog: { catalog: 'personal' }, sessionId: 'catalog-session',
+    });
+    expect(application.getSnapshot().projectTerminal.project).toBeUndefined();
   });
 
   it('keeps Push pending through interactive success, routes opaque input, and reloads authority', async () => {
@@ -549,7 +576,7 @@ describe('headless capability and application boundary', () => {
     }];
     const readInventory = vi.fn(async () => existing);
     const readCatalogs = vi.fn(async () => [{
-      name: 'existing', url: 'https://example.invalid/existing.git', writable: true,
+      name: 'existing', backend: 'git' as const, url: 'https://example.invalid/existing.git', writable: true,
       state: 'installed' as const, default: true,
     }]);
     const existingAdapter = adapter(readInventory);
@@ -784,17 +811,17 @@ describe('headless capability and application boundary', () => {
 
   it('routes management through qualified adapter operations and reloads authoritative state', async () => {
     let projects: LoadbotProject[] = [{ catalog: 'personal', tool: 'existing', entries: [] }];
-    let catalogs = [{ name: 'personal', url: 'catalog', writable: true, state: 'installed' as const, default: true }];
+    let catalogs = [{ name: 'personal', backend: 'git' as const, url: 'catalog', writable: true, state: 'installed' as const, default: true }];
     const managed: LoadbotAdapter = {
       readInventory: vi.fn(async () => structuredClone(projects)),
       readCatalogs: vi.fn(async () => structuredClone(catalogs)),
-      openProjectFolder: vi.fn(),
+      openCatalogFolder: vi.fn(), openProjectFolder: vi.fn(),
       addCatalog: vi.fn(async (input) => {
-        catalogs.push({ name: input.name, url: input.url, writable: input.writable, state: 'installed', default: false });
+        catalogs.push({ name: input.name, backend: 'git', url: input.url, writable: input.writable, state: 'installed', default: false });
         return { catalog: input.name };
       }),
       createCatalog: vi.fn(async (input) => {
-        catalogs.push({ name: input.name, url: input.url, writable: true, state: 'installed', default: false });
+        catalogs.push({ name: input.name, backend: input.backend, url: input.backend === 'git' ? input.url : undefined, writable: true, state: 'installed', default: false });
         return { catalog: input.name };
       }),
       addProject: vi.fn(async (input) => {
@@ -825,8 +852,8 @@ describe('headless capability and application boundary', () => {
     expect(await application.actions.addCatalog({ name: 'other', url: 'other-repo', writable: false })).toBe(true);
     expect(application.getSnapshot().currentCatalog).toBe('other');
     expect(application.getSnapshot().project).toBeUndefined();
-    expect(await application.actions.createCatalog({ name: 'created', url: 'empty-repo', commit: true, push: false })).toBe(true);
-    expect(managed.createCatalog).toHaveBeenCalledWith({ name: 'created', url: 'empty-repo', commit: true, push: false });
+    expect(await application.actions.createCatalog({ name: 'created', backend: 'git', url: 'empty-repo', commit: true, push: false })).toBe(true);
+    expect(managed.createCatalog).toHaveBeenCalledWith({ name: 'created', backend: 'git', url: 'empty-repo', commit: true, push: false });
     expect(application.getSnapshot().currentCatalog).toBe('created');
     expect(application.getSnapshot().project).toBeUndefined();
     expect(await application.actions.syncCatalog()).toBe(true);
@@ -852,9 +879,9 @@ describe('headless capability and application boundary', () => {
     application.start();
     await vi.waitFor(() => expect(application.getSnapshot().inventory.status).toBe('ready'));
 
-    const first = application.actions.createCatalog({ name: 'duplicate', url: 'empty-repo', commit: false, push: false });
+    const first = application.actions.createCatalog({ name: 'duplicate', backend: 'git', url: 'empty-repo', commit: false, push: false });
     expect(application.getSnapshot().management).toMatchObject({ status: 'submitting', kind: 'create-catalog' });
-    expect(await application.actions.createCatalog({ name: 'duplicate', url: 'empty-repo', commit: false, push: false })).toBe(false);
+    expect(await application.actions.createCatalog({ name: 'duplicate', backend: 'git', url: 'empty-repo', commit: false, push: false })).toBe(false);
     expect(managed.createCatalog).toHaveBeenCalledOnce();
     finish();
     expect(await first).toBe(false);
@@ -874,7 +901,7 @@ describe('headless capability and application boundary', () => {
       { name: 'first', path: 'first.sh', source: 'catalog' },
       { name: 'selected', path: 'selected.sh', source: 'personal' },
     ] }];
-    const catalogs = [{ name: 'existing', url: 'catalog', writable: true, state: 'installed' as const, default: true }];
+    const catalogs = [{ name: 'existing', backend: 'git' as const, url: 'catalog', writable: true, state: 'installed' as const, default: true }];
     const syncCatalog: LoadbotAdapter['syncCatalog'] = vi.fn(async (_catalog, onActivity) => {
       onActivity?.({ stage: 'validating', catalog: 'existing' });
       onActivity?.({ stage: 'repository-checked', catalog: 'existing' });

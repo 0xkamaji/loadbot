@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 
 use crate::catalog::{self, CatalogFile, ResolvedTool, Runner, ToolConfig};
-use crate::config::{self, CatalogSource, LocalConfig};
+use crate::config::{self, CatalogBackend, CatalogSource, LocalConfig};
 use crate::git;
 use crate::interaction::{
     Interaction, MutationOutcome, Notice, OperationContext, ToolOperation, ToolOperationStage,
@@ -416,7 +416,14 @@ where
     let existing_differs = local
         .catalogs
         .get(name)
-        .is_some_and(|existing| existing.url != source.url || existing.writable != source.writable);
+        .is_some_and(|existing| !catalog_settings_match(existing, &source));
+    if local
+        .catalogs
+        .get(name)
+        .is_some_and(|existing| existing.backend != CatalogBackend::Git)
+    {
+        bail!("catalog '{name}' is configured as local-only and cannot be added as Git-backed");
+    }
     if existing_differs && path_exists(&destination) {
         bail!("catalog '{name}' is already configured with different settings");
     }
@@ -577,7 +584,16 @@ pub fn catalog_initialize(
     let existing_differs = local
         .catalogs
         .get(name)
-        .is_some_and(|existing| existing.url != source.url || !existing.writable);
+        .is_some_and(|existing| !catalog_settings_match(existing, &source));
+    if local
+        .catalogs
+        .get(name)
+        .is_some_and(|existing| existing.backend != CatalogBackend::Git)
+    {
+        bail!(
+            "catalog '{name}' is configured as local-only and cannot be initialized as Git-backed"
+        );
+    }
     if existing_differs && path_exists(&destination) {
         bail!("catalog '{name}' is already configured with different settings");
     }
@@ -769,6 +785,100 @@ pub fn catalog_initialize(
     Ok(context.outcome_since(notice_start))
 }
 
+pub fn catalog_initialize_local(
+    paths: &Paths,
+    name: &str,
+    context: &mut OperationContext<'_>,
+) -> Result<MutationOutcome> {
+    let _process_scope = crate::process::scope(&context.process);
+    context.process.cancellation.check()?;
+    let notice_start = context.notices.len();
+    paths::validate_name(name)?;
+
+    let destination = paths.catalog(name);
+    let _catalog_lease = context.lease(&destination)?;
+    let mut local = config::load(&paths.config())?;
+    let original_local = local.clone();
+    let source = CatalogSource::local(true);
+    let already_registered = local.catalogs.contains_key(name);
+    if local
+        .catalogs
+        .get(name)
+        .is_some_and(|value| !catalog_settings_match(value, &source))
+    {
+        bail!("catalog '{name}' is already configured with different settings");
+    }
+    for existing_name in local.catalogs.keys() {
+        if existing_name != name && existing_name.eq_ignore_ascii_case(name) {
+            bail!("catalog name '{name}' conflicts with configured catalog '{existing_name}'");
+        }
+    }
+
+    let mut created_directory = false;
+    if path_exists(&destination) {
+        if !already_registered {
+            bail!("catalog destination already exists and is not a configured local catalog");
+        }
+        checked_local_catalog_directory(paths, name)?;
+        catalog::load(&paths.catalog_file(name))
+            .context("configured local catalog does not contain a valid catalog.toml")?;
+    } else {
+        fs::create_dir_all(paths.catalogs())
+            .with_context(|| format!("could not create {}", paths.catalogs().display()))?;
+        fs::create_dir(&destination).with_context(|| {
+            format!(
+                "catalog destination {} appeared while creating the local catalog; nothing was removed",
+                destination.display()
+            )
+        })?;
+        created_directory = true;
+        if let Err(error) = catalog::save(&paths.catalog_file(name), &CatalogFile::default()) {
+            let error = cleanup_local_catalog_failure(&destination, error);
+            return Err(error).context("could not create local catalog.toml");
+        }
+    }
+
+    if !already_registered {
+        local.catalogs.insert(name.to_owned(), source);
+        if local.default_catalog.is_none() {
+            local.default_catalog = Some(name.to_owned());
+        }
+        if let Err(error) =
+            merge_registration(&paths.config(), &original_local, &local, config::save)
+        {
+            if created_directory {
+                return Err(cleanup_local_catalog_failure(&destination, error))
+                    .context("local catalog was created, but registration failed");
+            }
+            return Err(error).context("local catalog registration failed");
+        }
+        context.record(Notice::CatalogRegistered {
+            name: name.to_owned(),
+        });
+    } else {
+        context.record(Notice::CatalogAlreadyRegistered {
+            name: name.to_owned(),
+        });
+    }
+    if created_directory {
+        context.record(Notice::CatalogInstalled {
+            name: name.to_owned(),
+            path: destination,
+        });
+        context.record(Notice::CatalogCreated {
+            name: name.to_owned(),
+        });
+    } else {
+        context.record(Notice::CatalogAlreadyInstalled {
+            name: name.to_owned(),
+        });
+        context.record(Notice::CatalogAlreadyInitialized {
+            name: name.to_owned(),
+        });
+    }
+    Ok(context.outcome_since(notice_start))
+}
+
 pub fn catalog_list(
     paths: &Paths,
     context: &mut OperationContext<'_>,
@@ -787,9 +897,7 @@ pub fn catalog_list(
         });
         let state = if !path_exists(&destination) {
             CatalogState::Missing
-        } else if git::ManagedRepositoryMatcher::canonical()
-            .is_managed_checkout(&destination, &source.url)?
-        {
+        } else if catalog_directory_is_managed(paths, name, source)? {
             CatalogState::Installed
         } else {
             CatalogState::Mismatch
@@ -818,6 +926,9 @@ pub fn catalog_sync(
     let _repository_lease = context.lease(&paths.catalog(name))?;
     let local = config::load(&paths.config())?;
     let source = configured_catalog(&local, name)?;
+    if source.backend == CatalogBackend::Local {
+        bail!("catalog '{name}' is local-only and cannot be synchronized");
+    }
     context.record(Notice::CatalogSyncStarted {
         name: name.to_owned(),
     });
@@ -828,7 +939,7 @@ pub fn catalog_sync(
     context.record(Notice::CatalogSyncUpdateStarted {
         name: name.to_owned(),
     });
-    let (old_commit, new_commit) = git::update(&destination, &source.url, None, context)
+    let (old_commit, new_commit) = git::update(&destination, source.git_url()?, None, context)
         .with_context(|| format!("refusing to sync catalog '{name}'"))?;
     if old_commit == new_commit {
         context.record(Notice::CatalogCurrent {
@@ -860,7 +971,9 @@ pub fn catalog_status(
         path: destination.clone(),
         source: source.clone(),
     });
-    let is_repository = path_exists(&destination) && git::is_repository(&destination)?;
+    let is_repository = source.backend == CatalogBackend::Git
+        && path_exists(&destination)
+        && git::is_repository(&destination)?;
     let repository = if is_repository {
         Some(git::status(&destination)?)
     } else {
@@ -868,7 +981,12 @@ pub fn catalog_status(
     };
     context.record(Notice::RepositoryInspected(repository.clone()));
     let catalog_path = paths.catalog_file(name);
-    let file = if path_exists(&destination) && !is_repository {
+    let unmanaged = path_exists(&destination)
+        && match source.backend {
+            CatalogBackend::Git => !is_repository,
+            CatalogBackend::Local => checked_local_catalog_directory(paths, name).is_err(),
+        };
+    let file = if unmanaged {
         CatalogValidity::Unmanaged
     } else if !catalog_path.is_file() {
         match crate::persistence::read_optional(&catalog_path) {
@@ -895,6 +1013,35 @@ pub fn catalog_path(paths: &Paths, name: &str) -> Result<PathBuf> {
     let local = config::load(&paths.config())?;
     configured_catalog(&local, name)?;
     Ok(paths.catalog(name))
+}
+
+pub fn installed_catalog_path(
+    paths: &Paths,
+    name: &str,
+    context: &mut OperationContext<'_>,
+) -> Result<PathBuf> {
+    let _process_scope = crate::process::scope(&context.process);
+    context.process.cancellation.check()?;
+    let local = config::load(&paths.config())?;
+    let source = configured_catalog(&local, name)?;
+    let directory = checked_catalog_directory(paths, name, source)?;
+    catalog::load(&paths.catalog_file(name))
+        .with_context(|| format!("catalog '{name}' does not contain a valid catalog.toml"))?;
+    fs::canonicalize(&directory).with_context(|| {
+        format!(
+            "could not resolve catalog directory {}",
+            directory.display()
+        )
+    })
+}
+
+pub fn catalog_terminal_command(
+    paths: &Paths,
+    name: &str,
+    context: &mut OperationContext<'_>,
+) -> Result<crate::process::InteractiveCommand> {
+    let directory = installed_catalog_path(paths, name, context)?;
+    crate::process::InteractiveCommand::user_shell_in(directory)
 }
 
 pub fn catalog_migrate(
@@ -990,21 +1137,24 @@ pub fn tool_add(
     if revision.as_deref() == Some("") {
         bail!("revision must not be empty");
     }
-    if push && !commit {
-        bail!("pushing a catalog change requires --commit");
-    }
-
     let _repository_lease = context.lease(&paths.catalog(catalog_name))?;
     let local = config::load(&paths.config())?;
     let source = configured_catalog(&local, catalog_name)?;
     if !source.writable {
         bail!("catalog '{catalog_name}' is read-only");
     }
-    let repository = checked_catalog_repository(paths, catalog_name, source)?;
+    if source.backend == CatalogBackend::Local && (commit || push) {
+        bail!("local-only catalog '{catalog_name}' does not support Git commit or push");
+    }
+    if push && !commit {
+        bail!("pushing a catalog change requires --commit");
+    }
+    let repository = checked_catalog_directory(paths, catalog_name, source)?;
     let catalog_path = paths.catalog_file(catalog_name);
     let mut catalog_file = catalog::load_or_default(&catalog_path)?;
     let definition = ToolConfig::git(url, revision);
-    let catalog_has_changes = git::path_has_changes(&repository, "catalog.toml")?;
+    let catalog_has_changes = source.backend == CatalogBackend::Git
+        && git::path_has_changes(&repository, "catalog.toml")?;
     let exact_definition_exists = catalog_file
         .tools
         .get(name)
@@ -1965,7 +2115,7 @@ pub fn all_tools(paths: &Paths, context: &mut OperationContext<'_>) -> Result<Ve
     let mut portable_names = BTreeMap::new();
     for (catalog_name, source) in &local.catalogs {
         context.process.cancellation.check()?;
-        if let Err(error) = checked_catalog_repository(paths, catalog_name, source) {
+        if let Err(error) = checked_catalog_directory(paths, catalog_name, source) {
             warn_skipped_catalog(catalog_name, error, context)?;
             continue;
         }
@@ -2024,7 +2174,7 @@ pub fn resolve_tool(
         paths::validate_name(catalog_name)?;
         let local = config::load(&paths.config())?;
         let source = configured_catalog(&local, catalog_name)?;
-        checked_catalog_repository(paths, catalog_name, source)?;
+        checked_catalog_directory(paths, catalog_name, source)?;
         let catalog_file = catalog::load(&paths.catalog_file(catalog_name))?;
         let definition =
             catalog_file.tools.get(name).cloned().with_context(|| {
@@ -2125,7 +2275,7 @@ fn catalog_is_available(
     source: &CatalogSource,
     context: &mut OperationContext<'_>,
 ) -> Result<bool> {
-    let result = checked_catalog_repository(paths, name, source)
+    let result = checked_catalog_directory(paths, name, source)
         .and_then(|_| catalog::load(&paths.catalog_file(name)).map(|_| ()));
     if let Err(error) = result {
         warn_skipped_catalog(name, error, context)?;
@@ -2147,6 +2297,9 @@ fn checked_catalog_repository(
     name: &str,
     source: &CatalogSource,
 ) -> Result<std::path::PathBuf> {
+    if source.backend != CatalogBackend::Git {
+        bail!("catalog '{name}' is local-only and is not a Git repository");
+    }
     let destination = paths.catalog(name);
     if !path_exists(&destination) {
         bail!("catalog '{name}' is not installed");
@@ -2154,10 +2307,57 @@ fn checked_catalog_repository(
     if !git::is_repository(&destination)? {
         bail!("catalog destination exists but is not a Git repository");
     }
-    if !git::ManagedRepositoryMatcher::canonical().is_managed_checkout(&destination, &source.url)? {
+    if !git::ManagedRepositoryMatcher::canonical()
+        .is_managed_checkout(&destination, source.git_url()?)?
+    {
         bail!("catalog destination is not the configured Git repository");
     }
     Ok(destination)
+}
+
+fn checked_local_catalog_directory(paths: &Paths, name: &str) -> Result<PathBuf> {
+    let destination = paths.catalog(name);
+    let metadata = fs::symlink_metadata(&destination)
+        .with_context(|| format!("catalog '{name}' is not installed"))?;
+    if metadata.file_type().is_symlink() {
+        bail!("local catalog destination must not be a symlink");
+    }
+    if !metadata.is_dir() {
+        bail!("local catalog destination is not a directory");
+    }
+    Ok(destination)
+}
+
+fn checked_catalog_directory(paths: &Paths, name: &str, source: &CatalogSource) -> Result<PathBuf> {
+    match source.backend {
+        CatalogBackend::Git => checked_catalog_repository(paths, name, source),
+        CatalogBackend::Local => checked_local_catalog_directory(paths, name),
+    }
+}
+
+fn catalog_directory_is_managed(paths: &Paths, name: &str, source: &CatalogSource) -> Result<bool> {
+    match source.backend {
+        CatalogBackend::Git => git::ManagedRepositoryMatcher::canonical()
+            .is_managed_checkout(&paths.catalog(name), source.git_url()?),
+        CatalogBackend::Local => Ok(checked_local_catalog_directory(paths, name).is_ok()),
+    }
+}
+
+fn catalog_settings_match(left: &CatalogSource, right: &CatalogSource) -> bool {
+    left.backend == right.backend && left.url == right.url && left.writable == right.writable
+}
+
+fn cleanup_local_catalog_failure(destination: &Path, error: anyhow::Error) -> anyhow::Error {
+    if !cleanup_is_safe(&error) {
+        return error;
+    }
+    match fs::remove_dir_all(destination) {
+        Ok(()) => error,
+        Err(cleanup) => error.context(format!(
+            "cleanup of newly created local catalog {} failed: {cleanup}",
+            destination.display()
+        )),
+    }
 }
 
 fn validate_url(url: &str) -> Result<()> {
@@ -2974,6 +3174,131 @@ mod tests {
             command.environment("TERM"),
             Some(OsStr::new("xterm-256color"))
         );
+    }
+
+    #[test]
+    fn local_catalogs_create_list_mutate_inventory_and_open_without_git() {
+        let temporary = TempDir::new().unwrap();
+        let paths = Paths::with_directories(
+            temporary.path().join("loadbot"),
+            temporary.path().join("config"),
+        )
+        .unwrap();
+        let mut policy = crate::interaction::Unattended;
+        let mut context = OperationContext::background(&mut policy);
+
+        catalog_initialize_local(&paths, "lab", &mut context).unwrap();
+        let local = config::load(&paths.config()).unwrap();
+        assert_eq!(local.default_catalog.as_deref(), Some("lab"));
+        assert_eq!(local.catalogs["lab"], CatalogSource::local(true));
+        assert_eq!(
+            catalog::load(&paths.catalog_file("lab")).unwrap(),
+            CatalogFile::default()
+        );
+
+        let listed = catalog_list(&paths, &mut context).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].state, CatalogState::Installed);
+        assert_eq!(listed[0].source.backend, CatalogBackend::Local);
+
+        tool_add(
+            &paths,
+            "lab",
+            "demo",
+            "https://example.test/demo.git".into(),
+            None,
+            false,
+            false,
+            &mut context,
+        )
+        .unwrap();
+        let tools = all_tools(&paths, &mut context).unwrap();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].catalog, "lab");
+        assert_eq!(tools[0].name, "demo");
+        let inventory = crate::launcher::read_project_inventory(&paths, &mut context).unwrap();
+        assert_eq!(inventory.len(), 1);
+        assert_eq!(inventory[0].catalog, "lab");
+        assert_eq!(inventory[0].tool, "demo");
+        assert!(!inventory[0].installed);
+
+        let expected = fs::canonicalize(paths.catalog("lab")).unwrap();
+        assert_eq!(
+            installed_catalog_path(&paths, "lab", &mut context).unwrap(),
+            expected
+        );
+        let command = catalog_terminal_command(&paths, "lab", &mut context).unwrap();
+        assert_eq!(command.current_directory(), Some(expected.as_path()));
+    }
+
+    #[test]
+    fn local_catalogs_reject_git_capabilities() {
+        let temporary = TempDir::new().unwrap();
+        let paths = Paths::with_directories(
+            temporary.path().join("loadbot"),
+            temporary.path().join("config"),
+        )
+        .unwrap();
+        let mut policy = crate::interaction::Unattended;
+        let mut context = OperationContext::background(&mut policy);
+        catalog_initialize_local(&paths, "lab", &mut context).unwrap();
+
+        for (commit, push) in [(true, false), (false, true), (true, true)] {
+            let error = tool_add(
+                &paths,
+                "lab",
+                "demo",
+                "https://example.test/demo.git".into(),
+                None,
+                commit,
+                push,
+                &mut context,
+            )
+            .unwrap_err();
+            assert!(format!("{error:#}").contains("does not support Git commit or push"));
+        }
+
+        let error = catalog_sync(&paths, "lab", &mut context).unwrap_err();
+        assert!(format!("{error:#}").contains("local-only and cannot be synchronized"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_catalog_availability_rejects_invalid_files_and_symlinked_directories() {
+        use std::os::unix::fs::symlink;
+
+        let temporary = TempDir::new().unwrap();
+        let paths = Paths::with_directories(
+            temporary.path().join("loadbot"),
+            temporary.path().join("config"),
+        )
+        .unwrap();
+        let mut policy = crate::interaction::Unattended;
+        let mut context = OperationContext::background(&mut policy);
+        catalog_initialize_local(&paths, "lab", &mut context).unwrap();
+        assert_eq!(
+            available_catalog_names(&paths, &mut context).unwrap(),
+            ["lab"]
+        );
+
+        fs::write(paths.catalog_file("lab"), "not valid toml = [").unwrap();
+        assert!(
+            available_catalog_names(&paths, &mut context)
+                .unwrap()
+                .is_empty()
+        );
+        catalog::save(&paths.catalog_file("lab"), &CatalogFile::default()).unwrap();
+        let destination = paths.catalog("lab");
+        let real = destination.with_extension("real");
+        fs::rename(&destination, &real).unwrap();
+        symlink(&real, &destination).unwrap();
+        assert!(
+            available_catalog_names(&paths, &mut context)
+                .unwrap()
+                .is_empty()
+        );
+        let error = installed_catalog_path(&paths, "lab", &mut context).unwrap_err();
+        assert!(format!("{error:#}").contains("must not be a symlink"));
     }
 
     #[test]

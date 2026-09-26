@@ -53,16 +53,17 @@ export type LoadbotRecipeArgument =
 
 export interface LoadbotCatalog {
   readonly name: string;
-  readonly url: string;
+  readonly backend: 'local' | 'git';
+  readonly url?: string;
   readonly writable: boolean;
   readonly state: 'missing' | 'installed' | 'mismatch';
   readonly default: boolean;
 }
 
 export interface AddCatalogInput { readonly name: string; readonly url: string; readonly writable: boolean }
-export interface CreateCatalogInput {
-  readonly name: string; readonly url: string; readonly commit: boolean; readonly push: boolean;
-}
+export type CreateCatalogInput =
+  | { readonly name: string; readonly backend: 'local' }
+  | { readonly name: string; readonly backend: 'git'; readonly url: string; readonly commit: boolean; readonly push: boolean };
 export interface AddProjectInput {
   readonly catalog: string; readonly name: string; readonly url: string; readonly revision?: string;
   readonly commit: boolean; readonly push: boolean;
@@ -157,6 +158,8 @@ export type InteractiveSessionEventSink = (event: InteractiveSessionEvent) => vo
 export interface LoadbotAdapter {
   readInventory(): Promise<readonly LoadbotProject[]>;
   readCatalogs(): Promise<readonly LoadbotCatalog[]>;
+  openCatalogFolder(catalog: CatalogIdentity): Promise<void>;
+  createCatalogTerminalLaunch?(catalog: CatalogIdentity): Promise<InteractiveLaunch>;
   openProjectFolder(project: Pick<LoadbotProject, 'catalog' | 'tool'>): Promise<void>;
   createProjectTerminalLaunch?(project: ProjectIdentity): Promise<InteractiveLaunch>;
   pullProject?(project: ProjectIdentity, onActivity?: ProjectOperationActivitySink): Promise<ProjectIdentity>;

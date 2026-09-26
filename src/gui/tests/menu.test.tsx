@@ -17,8 +17,8 @@ const deferred = <T,>() => {
 describe('injected menu outside Tauri', () => {
   const adapter = (projects: readonly LoadbotProject[], open = vi.fn(async () => {})): LoadbotAdapter => ({
     readInventory: async () => projects,
-    readCatalogs: async () => [...new Set(projects.map((item) => item.catalog))].map((name, index) => ({ name, url: 'fixture', writable: true, state: 'installed' as const, default: index === 0 })),
-    openProjectFolder: open, addCatalog: vi.fn(), createCatalog: vi.fn(), addProject: vi.fn(), addShortcut: vi.fn(), addRecipeShortcut: vi.fn(), updateRecipeShortcut: vi.fn(),
+    readCatalogs: async () => [...new Set(projects.map((item) => item.catalog))].map((name, index) => ({ name, backend: 'git' as const, url: 'fixture', writable: true, state: 'installed' as const, default: index === 0 })),
+    openCatalogFolder: vi.fn(), openProjectFolder: open, addCatalog: vi.fn(), createCatalog: vi.fn(), addProject: vi.fn(), addShortcut: vi.fn(), addRecipeShortcut: vi.fn(), updateRecipeShortcut: vi.fn(),
     chooseProjectFile: vi.fn(), chooseProjectDirectory: vi.fn(), viewShortcutHelp: vi.fn(), deleteShortcuts: vi.fn(), syncCatalog: vi.fn(),
   });
   it('changes project/shortcut, resets isolated forms, and preserves state through the drawer', async () => {
@@ -263,7 +263,7 @@ describe('injected menu outside Tauri', () => {
   it('opens, cancels, validates, and submits compact management flows', async () => {
     const user = userEvent.setup();
     let projects: readonly LoadbotProject[] = [{ catalog: 'personal', tool: 'existing', entries: [] }];
-    let catalogs = [{ name: 'personal', url: 'catalog', writable: true, state: 'installed' as const, default: true }];
+    let catalogs = [{ name: 'personal', backend: 'git' as const, url: 'catalog', writable: true, state: 'installed' as const, default: true }];
     const addProject = vi.fn(async (input) => {
       projects = [...projects, { catalog: input.catalog, tool: input.name, entries: [] }];
       return { catalog: input.catalog, tool: input.name };
@@ -276,7 +276,7 @@ describe('injected menu outside Tauri', () => {
       ...adapter(projects), readInventory: async () => projects, readCatalogs: async () => catalogs,
       addProject, addRecipeShortcut,
       addCatalog: vi.fn(async (input) => {
-        catalogs = [...catalogs, { name: input.name, url: input.url, writable: input.writable, state: 'installed', default: false }];
+        catalogs = [...catalogs, { name: input.name, backend: 'git', url: input.url, writable: input.writable, state: 'installed', default: false }];
         return { catalog: input.name };
       }),
       syncCatalog: vi.fn(async () => {}),
@@ -322,11 +322,11 @@ describe('injected menu outside Tauri', () => {
 
   it('creates a catalog with explicit commit and push choices and keeps failed input editable', async () => {
     const user = userEvent.setup();
-    let catalogs = [{ name: 'personal', url: 'catalog', writable: true, state: 'installed' as const, default: true }];
+    let catalogs = [{ name: 'personal', backend: 'git' as const, url: 'catalog', writable: true, state: 'installed' as const, default: true }];
     const pending = deferred<{ catalog: string }>();
     const createCatalog = vi.fn(async (input) => {
       const result = await pending.promise;
-      catalogs = [...catalogs, { name: input.name, url: input.url, writable: true, state: 'installed', default: false }];
+      catalogs = [...catalogs, { name: input.name, backend: input.backend, url: input.backend === 'git' ? input.url : undefined, writable: true, state: 'installed', default: false }];
       return result;
     });
     const managed: LoadbotAdapter = {
@@ -343,6 +343,7 @@ describe('injected menu outside Tauri', () => {
     const submit = screen.getByRole('button', { name: 'CREATE AND USE' });
     expect(submit).toBeDisabled();
     fireEvent.change(screen.getByLabelText('Catalog name *'), { target: { value: ' new-catalog ' } });
+    await user.click(screen.getByRole('radio', { name: 'Git-backed' }));
     fireEvent.change(screen.getByLabelText('Empty Git repository URL *'), { target: { value: ' /tmp/empty.git ' } });
     expect(submit).toBeEnabled();
     const push = screen.getByRole('checkbox', { name: 'Push initial catalog commit' });
@@ -351,7 +352,7 @@ describe('injected menu outside Tauri', () => {
     await user.click(push);
     await user.click(submit);
 
-    expect(createCatalog).toHaveBeenCalledWith({ name: 'new-catalog', url: '/tmp/empty.git', commit: true, push: true });
+    expect(createCatalog).toHaveBeenCalledWith({ name: 'new-catalog', backend: 'git', url: '/tmp/empty.git', commit: true, push: true });
     expect(screen.getByRole('button', { name: 'CREATING…' })).toBeDisabled();
     pending.resolve({ catalog: 'new-catalog' });
     expect(await screen.findByRole('button', { name: 'Catalog context: new-catalog' })).toBeInTheDocument();
@@ -359,6 +360,7 @@ describe('injected menu outside Tauri', () => {
     await user.click(screen.getByRole('button', { name: 'Catalog context: new-catalog' }));
     await user.click(screen.getByRole('button', { name: '+ CREATE NEW CATALOG' }));
     fireEvent.change(screen.getByLabelText('Catalog name *'), { target: { value: 'retry-me' } });
+    await user.click(screen.getByRole('radio', { name: 'Git-backed' }));
     fireEvent.change(screen.getByLabelText('Empty Git repository URL *'), { target: { value: '/tmp/retry.git' } });
     managed.createCatalog = vi.fn(async () => { throw new Error('remote is not empty'); });
     await user.click(screen.getByRole('button', { name: 'CREATE AND USE' }));
@@ -366,6 +368,61 @@ describe('injected menu outside Tauri', () => {
       .toHaveTextContent('remote is not empty');
     expect(screen.getByLabelText('Catalog name *')).toHaveValue('retry-me');
     expect(screen.getByLabelText('Empty Git repository URL *')).toHaveValue('/tmp/retry.git');
+  });
+
+  it('creates local-only catalogs without rendering Git-only fields', async () => {
+    const user = userEvent.setup();
+    let catalogs = [{ name: 'personal', backend: 'git' as const, url: 'catalog', writable: true, state: 'installed' as const, default: true }];
+    const createCatalog = vi.fn(async (input) => {
+      catalogs = [...catalogs, {
+        name: input.name, backend: input.backend, url: input.backend === 'git' ? input.url : undefined,
+        writable: true, state: 'installed', default: false,
+      }];
+      return { catalog: input.name };
+    });
+    const managed: LoadbotAdapter = {
+      ...adapter([{ catalog: 'personal', tool: 'existing', entries: [] }]),
+      readCatalogs: async () => catalogs,
+      createCatalog,
+    };
+    render(<LoadbotMenu adapter={managed} />);
+    await projectRows().findByRole('button', { name: 'existing personal' });
+
+    await user.click(screen.getByRole('button', { name: 'Catalog context: personal' }));
+    await user.click(screen.getByRole('button', { name: '+ CREATE NEW CATALOG' }));
+    expect(screen.getByRole('radio', { name: 'Local only' })).toBeChecked();
+    expect(screen.queryByLabelText('Empty Git repository URL *')).not.toBeInTheDocument();
+    expect(screen.queryByRole('checkbox', { name: /initial catalog/ })).not.toBeInTheDocument();
+    await user.type(screen.getByLabelText('Catalog name *'), 'lab');
+    await user.click(screen.getByRole('button', { name: 'CREATE AND USE' }));
+
+    expect(createCatalog).toHaveBeenCalledWith({ name: 'lab', backend: 'local' });
+    expect(await screen.findByRole('button', { name: 'Catalog context: lab' })).toBeInTheDocument();
+  });
+
+  it('manages local catalogs without offering refresh and opens by catalog identity', async () => {
+    const user = userEvent.setup();
+    const openCatalogFolder = vi.fn(async () => {});
+    const managed: LoadbotAdapter = {
+      ...adapter([{ catalog: 'lab', tool: 'existing', entries: [] }]),
+      readCatalogs: async () => [{
+        name: 'lab', backend: 'local', writable: true, state: 'installed', default: true,
+      }],
+      openCatalogFolder,
+    };
+    render(<LoadbotMenu adapter={managed} />);
+    await projectRows().findByRole('button', { name: 'existing lab' });
+
+    await user.click(screen.getByRole('button', { name: 'Catalog context: lab' }));
+    expect(screen.queryByRole('button', { name: 'REFRESH CATALOG' })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'MANAGE CATALOG' }));
+    const dialog = screen.getByRole('dialog', { name: 'Manage catalog lab' });
+    expect(dialog).toHaveTextContent('Local only');
+    expect(dialog).toHaveTextContent('installed');
+    expect(within(dialog).getByRole('button', { name: 'OPEN TERMINAL' })).toBeEnabled();
+    expect(within(dialog).queryByRole('button', { name: 'REFRESH CATALOG' })).not.toBeInTheDocument();
+    await user.click(within(dialog).getByRole('button', { name: 'OPEN FOLDER' }));
+    expect(openCatalogFolder).toHaveBeenCalledWith({ catalog: 'lab' });
   });
 
   it('shows catalog refresh progress and restores its label after completion', async () => {

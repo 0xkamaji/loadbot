@@ -101,14 +101,16 @@ export function LoadbotMenuView({ state, actions, host, mode, workspaceLayoutSto
         {catalogMenuOpen && <div className="lb-catalog-popover" role="menu" aria-label="Catalog context">
           {catalogs.map((item) => <button type="button" role="menuitemradio" aria-checked={item.name === state.currentCatalog}
             key={item.name} onClick={() => { actions.selectCatalog(item.name); setCatalogMenuOpen(false); }}>
-            <span>{item.name}</span><small>{item.state}{item.writable ? ' · writable' : ' · read-only'}</small>
+            <span>{item.name}</span><small>{item.backend === 'git' ? 'Git-backed' : 'Local only'} · {item.state}{item.writable ? ' · writable' : ' · read-only'}</small>
           </button>)}
           {!catalogs.length && <StatusDisplay>No catalogs configured.</StatusDisplay>}
           {mode === 'local' && <div className="lb-catalog-actions">
-            <Button disabled={!currentCatalog || currentCatalog.state !== 'installed' || busy}
+            {currentCatalog?.backend === 'git' && <Button className="lb-catalog-wide-action" disabled={currentCatalog.state !== 'installed' || busy}
               title="Refresh catalog from its configured Git remote"
               onClick={() => { void actions.syncCatalog().then(() => setCatalogMenuOpen(false)); }}>{busy && state.management.kind === 'sync-catalog'
-                ? <BusyLabel text="REFRESHING…" /> : 'REFRESH CATALOG'}</Button>
+                ? <BusyLabel text="REFRESHING…" /> : 'REFRESH CATALOG'}</Button>}
+            <Button className="lb-catalog-wide-action" disabled={!currentCatalog || busy}
+              onClick={() => { setCatalogMenuOpen(false); actions.clearManagementStatus(); setManagementDialog('manage-catalog'); }}>MANAGE CATALOG</Button>
             <Button disabled={busy} onClick={() => { setCatalogMenuOpen(false); actions.clearManagementStatus(); setManagementDialog('add-catalog'); }}>+ ADD EXISTING CATALOG</Button>
             <Button disabled={busy} onClick={() => { setCatalogMenuOpen(false); actions.clearManagementStatus(); setManagementDialog('create-catalog'); }}>+ CREATE NEW CATALOG</Button>
           </div>}

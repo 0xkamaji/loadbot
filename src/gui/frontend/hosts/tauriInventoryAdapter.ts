@@ -14,6 +14,8 @@ export type InventoryQuery = () => Promise<unknown>;
 export type ProjectFolderOpen = (project: Pick<LoadbotProject, 'catalog' | 'tool'>) => Promise<unknown>;
 export interface ManagementBridge {
   readCatalogs(): Promise<unknown>;
+  openCatalogFolder(catalog: CatalogIdentity): Promise<unknown>;
+  createCatalogTerminalLaunch?(catalog: CatalogIdentity): Promise<unknown>;
   createProjectTerminalLaunch?(project: ProjectIdentity): Promise<unknown>;
   pullProject?(project: ProjectIdentity, onActivity?: ProjectOperationActivitySink): Promise<unknown>;
   inspectProjectPush?(project: ProjectIdentity, onActivity?: ProjectOperationActivitySink): Promise<unknown>;
@@ -58,6 +60,14 @@ function requireTauri(capability: string) {
 
 const nativeManagementBridge: ManagementBridge = {
   async readCatalogs() { requireTauri('Catalog management'); return invoke('read_loadbot_catalogs'); },
+  async openCatalogFolder(catalog) {
+    requireTauri('Catalog folders');
+    return invoke('open_loadbot_catalog', { catalog: catalog.catalog });
+  },
+  async createCatalogTerminalLaunch(catalog) {
+    requireTauri('Catalog terminals');
+    return invoke('create_loadbot_catalog_terminal_launch', { catalog: catalog.catalog });
+  },
   async createProjectTerminalLaunch(project) {
     requireTauri('Project terminals');
     return invoke('create_loadbot_project_terminal_launch', { ...project });
@@ -318,8 +328,9 @@ function catalogs(value: unknown): readonly LoadbotCatalog[] {
   return value.map((value) => {
     const item = record(value);
     if (!['missing', 'installed', 'mismatch'].includes(String(item.state))) throw new Error('Invalid catalog state.');
+    if (!['local', 'git'].includes(String(item.backend))) throw new Error('Invalid catalog backend.');
     return {
-      name: text(item.name), url: text(item.url), writable: boolean(item.writable),
+      name: text(item.name), backend: item.backend as LoadbotCatalog['backend'], url: optionalText(item.url), writable: boolean(item.writable),
       state: item.state as LoadbotCatalog['state'], default: boolean(item.default),
     };
   });
@@ -426,6 +437,14 @@ export function createTauriLoadbotAdapter(
     async readCatalogs() {
       try { return catalogs(await management.readCatalogs()); }
       catch (error: unknown) { throw nativeError(error, 'Could not read configured catalogs.'); }
+    },
+    async openCatalogFolder(catalog) {
+      try { await management.openCatalogFolder(catalog); }
+      catch (error: unknown) { throw nativeError(error, 'Could not open the catalog folder.'); }
+    },
+    async createCatalogTerminalLaunch(catalog) {
+      try { return interactiveLaunch(await management.createCatalogTerminalLaunch?.(catalog)); }
+      catch (error: unknown) { throw nativeError(error, 'Could not create a terminal for the catalog.'); }
     },
     async openProjectFolder(project) {
       try {

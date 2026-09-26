@@ -3,7 +3,7 @@ import type { LoadbotActions, LoadbotState, ManagementKind } from '../applicatio
 import { BusyLabel, Button, Checkbox, Dialog, InputControl, StatusDisplay } from '../../ui/components';
 import { RecipeBuilder } from './RecipeBuilder';
 
-export type ManagementDialog = Extract<ManagementKind, 'add-catalog' | 'create-catalog' | 'add-project'> | 'recipe-editor';
+export type ManagementDialog = Extract<ManagementKind, 'add-catalog' | 'create-catalog' | 'add-project'> | 'manage-catalog' | 'recipe-editor';
 
 export function ManagementDialogs({ dialog, state, actions, onClose }: {
   dialog?: ManagementDialog; state: LoadbotState; actions: LoadbotActions; onClose(): void;
@@ -40,6 +40,7 @@ export function ManagementDialogs({ dialog, state, actions, onClose }: {
   if (dialog === 'add-catalog') return <AddCatalogForm state={state} actions={actions} onClose={close} onDone={onClose} />;
   if (dialog === 'create-catalog') return <CreateCatalogForm state={state} actions={actions} onClose={close} onDone={onClose} />;
   if (dialog === 'add-project') return <AddProjectForm state={state} actions={actions} onClose={close} onDone={onClose} />;
+  if (dialog === 'manage-catalog') return <ManageCatalog state={state} actions={actions} onClose={close} />;
   return null;
 }
 
@@ -138,29 +139,67 @@ function AddCatalogForm({ state, actions, onClose, onDone }: FormProps) {
 
 function CreateCatalogForm({ state, actions, onClose, onDone }: FormProps) {
   const [name, setName] = useState('');
+  const [backend, setBackend] = useState<'local' | 'git'>('local');
   const [url, setUrl] = useState('');
   const [commit, setCommit] = useState(false);
   const [push, setPush] = useState(false);
   const busy = state.management.status === 'submitting';
-  const valid = name.trim().length > 0 && url.trim().length > 0;
+  const valid = name.trim().length > 0 && (backend === 'local' || url.trim().length > 0);
   async function submit(event: FormEvent) {
     event.preventDefault();
     if (!valid) return;
-    if (await actions.createCatalog({ name: name.trim(), url: url.trim(), commit, push: commit && push })) onDone();
+    const input = backend === 'local'
+      ? { name: name.trim(), backend } as const
+      : { name: name.trim(), backend, url: url.trim(), commit, push: commit && push } as const;
+    if (await actions.createCatalog(input)) onDone();
   }
   return <Dialog label="Create new catalog" onClose={onClose}>
     <h2>CREATE NEW CATALOG</h2>
-    <p>Initialize an existing empty Git repository as a writable Loadbot catalog. Loadbot will not create a remote repository.</p>
+    <p>Create a writable catalog in Loadbot's managed catalog area.</p>
     <form onSubmit={submit}>
       <InputControl autoFocus label="Catalog name" value={name} onChange={(event) => setName(event.target.value)} required disabled={busy} />
-      <InputControl label="Empty Git repository URL" value={url} onChange={(event) => setUrl(event.target.value)} required disabled={busy} />
-      <Checkbox label="Commit initial catalog.toml" checked={commit}
-        onChange={(event) => { setCommit(event.target.checked); if (!event.target.checked) setPush(false); }} disabled={busy} />
-      <Checkbox label="Push initial catalog commit" checked={push} onChange={(event) => setPush(event.target.checked)} disabled={busy || !commit} />
+      <fieldset className="lb-storage-options" disabled={busy}>
+        <legend>Storage</legend>
+        <label><input type="radio" name="catalog-storage" checked={backend === 'local'}
+          onChange={() => { setBackend('local'); setCommit(false); setPush(false); }} /> Local only</label>
+        <label><input type="radio" name="catalog-storage" checked={backend === 'git'} onChange={() => setBackend('git')} /> Git-backed</label>
+      </fieldset>
+      {backend === 'git' && <>
+        <p>Initialize an existing empty Git repository. Loadbot will not create a remote repository.</p>
+        <InputControl label="Empty Git repository URL" value={url} onChange={(event) => setUrl(event.target.value)} required disabled={busy} />
+        <Checkbox label="Commit initial catalog.toml" checked={commit}
+          onChange={(event) => { setCommit(event.target.checked); if (!event.target.checked) setPush(false); }} disabled={busy} />
+        <Checkbox label="Push initial catalog commit" checked={push} onChange={(event) => setPush(event.target.checked)} disabled={busy || !commit} />
+      </>}
       <FormStatus state={state} kind="create-catalog" />
       <div className="lb-dialog-actions"><Button onClick={onClose} disabled={busy}>CANCEL</Button>
         <Button type="submit" disabled={busy || !valid}>{busy ? <BusyLabel text="CREATING…" /> : 'CREATE AND USE'}</Button></div>
     </form>
+  </Dialog>;
+}
+
+function ManageCatalog({ state, actions, onClose }: Omit<FormProps, 'onDone'>) {
+  const catalog = state.catalogState.status === 'ready'
+    ? state.catalogState.catalogs.find((item) => item.name === state.currentCatalog) : undefined;
+  if (!catalog) return null;
+  const busy = state.management.status === 'submitting' || state.catalogFolder.status === 'opening';
+  return <Dialog label={`Manage catalog ${catalog.name}`} onClose={onClose}>
+    <h2>MANAGE CATALOG / {catalog.name}</h2>
+    <dl className="lb-catalog-details">
+      <dt>Type</dt><dd>{catalog.backend === 'git' ? 'Git-backed' : 'Local only'}</dd>
+      <dt>Writable</dt><dd>{catalog.writable ? 'yes' : 'no'}</dd>
+      <dt>State</dt><dd>{catalog.state}</dd>
+      {catalog.backend === 'git' && <><dt>Remote</dt><dd>{catalog.url}</dd></>}
+    </dl>
+    {state.catalogFolder.status !== 'idle' && state.catalogFolder.catalog === catalog.name
+      && <StatusDisplay>{state.catalogFolder.status === 'opening' ? 'Opening catalog folder…' : state.catalogFolder.message}</StatusDisplay>}
+    <div className="lb-dialog-actions lb-catalog-manage-actions">
+      <Button onClick={onClose} disabled={busy}>CLOSE</Button>
+      <Button onClick={actions.openCatalogFolder} disabled={busy || catalog.state !== 'installed'}>OPEN FOLDER</Button>
+      <Button onClick={() => { actions.openCatalogTerminal(); onClose(); }} disabled={busy || catalog.state !== 'installed'}>OPEN TERMINAL</Button>
+      {catalog.backend === 'git' && <Button disabled={busy || catalog.state !== 'installed'}
+        onClick={() => { void actions.syncCatalog(); }}>REFRESH CATALOG</Button>}
+    </div>
   </Dialog>;
 }
 
@@ -171,9 +210,17 @@ function AddProjectForm({ state, actions, onClose, onDone }: FormProps) {
   const [commit, setCommit] = useState(false);
   const [push, setPush] = useState(false);
   const busy = state.management.status === 'submitting';
+  const catalog = state.catalogState.status === 'ready'
+    ? state.catalogState.catalogs.find((item) => item.name === state.currentCatalog) : undefined;
+  const gitBacked = catalog?.backend === 'git';
+  const valid = name.trim().length > 0 && url.trim().length > 0;
   async function submit(event: FormEvent) {
     event.preventDefault();
-    if (await actions.addProject({ name: name.trim(), url: url.trim(), revision: revision.trim() || undefined, commit, push: commit && push })) onDone();
+    if (!valid) return;
+    if (await actions.addProject({
+      name: name.trim(), url: url.trim(), revision: revision.trim() || undefined,
+      commit: gitBacked && commit, push: gitBacked && commit && push,
+    })) onDone();
   }
   return <Dialog label="Add project" onClose={onClose}>
     <h2>ADD PROJECT / {state.currentCatalog}</h2>
@@ -181,10 +228,12 @@ function AddProjectForm({ state, actions, onClose, onDone }: FormProps) {
       <InputControl autoFocus label="Project name" value={name} onChange={(event) => setName(event.target.value)} required disabled={busy} />
       <InputControl label="Git repository URL" value={url} onChange={(event) => setUrl(event.target.value)} required disabled={busy} />
       <InputControl label="Revision (optional)" value={revision} onChange={(event) => setRevision(event.target.value)} disabled={busy} />
-      <Checkbox label="Commit catalog change" checked={commit} onChange={(event) => { setCommit(event.target.checked); if (!event.target.checked) setPush(false); }} disabled={busy} />
-      <Checkbox label="Push catalog commit" checked={push} onChange={(event) => setPush(event.target.checked)} disabled={busy || !commit} />
+      {gitBacked && <>
+        <Checkbox label="Commit catalog change" checked={commit} onChange={(event) => { setCommit(event.target.checked); if (!event.target.checked) setPush(false); }} disabled={busy} />
+        <Checkbox label="Push catalog commit" checked={push} onChange={(event) => setPush(event.target.checked)} disabled={busy || !commit} />
+      </>}
       <FormStatus state={state} kind="add-project" />
-      <div className="lb-dialog-actions"><Button onClick={onClose} disabled={busy}>CANCEL</Button><Button type="submit" disabled={busy}>{busy ? 'ADDING…' : 'ADD PROJECT'}</Button></div>
+      <div className="lb-dialog-actions"><Button onClick={onClose} disabled={busy}>CANCEL</Button><Button type="submit" disabled={busy || !valid}>{busy ? 'ADDING…' : 'ADD PROJECT'}</Button></div>
     </form>
   </Dialog>;
 }

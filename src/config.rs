@@ -32,8 +32,28 @@ impl Default for LocalConfig {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CatalogBackend {
+    Local,
+    #[default]
+    Git,
+}
+
+impl CatalogBackend {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::Git => "git",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CatalogSource {
+    #[serde(default)]
+    pub backend: CatalogBackend,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub url: String,
     #[serde(default)]
     pub writable: bool,
@@ -44,10 +64,46 @@ pub struct CatalogSource {
 impl CatalogSource {
     pub fn new(url: String, writable: bool) -> Self {
         Self {
+            backend: CatalogBackend::Git,
             url,
             writable,
             extra: BTreeMap::new(),
         }
+    }
+
+    pub fn local(writable: bool) -> Self {
+        Self {
+            backend: CatalogBackend::Local,
+            url: String::new(),
+            writable,
+            extra: BTreeMap::new(),
+        }
+    }
+
+    pub fn git_url(&self) -> Result<&str> {
+        if self.backend != CatalogBackend::Git {
+            bail!("catalog is local-only and has no Git remote");
+        }
+        if self.url.is_empty() {
+            bail!("Git-backed catalog URL must not be empty");
+        }
+        Ok(&self.url)
+    }
+
+    fn validate(&self, name: &str) -> Result<()> {
+        match self.backend {
+            CatalogBackend::Git => {
+                if self.url.is_empty() {
+                    bail!("Git-backed catalog '{name}' has no URL");
+                }
+            }
+            CatalogBackend::Local => {
+                if !self.url.is_empty() {
+                    bail!("local catalog '{name}' must not configure a Git URL");
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -75,9 +131,10 @@ pub fn load(path: &Path) -> Result<LocalConfig> {
         .try_into()
         .with_context(|| format!("could not parse {}", path.display()))?;
     validate_version(config.version, path)?;
-    for name in config.catalogs.keys() {
+    for (name, source) in &config.catalogs {
         paths::validate_name(name)
             .with_context(|| format!("configuration contains an unsafe catalog name '{name}'"))?;
+        source.validate(name)?;
     }
 
     Ok(config)
@@ -149,6 +206,22 @@ note = "keep me"
             reparsed.catalogs["personal"].extra["note"].as_str(),
             Some("keep me")
         );
+        assert_eq!(reparsed.catalogs["personal"].backend, CatalogBackend::Git);
+    }
+
+    #[test]
+    fn local_catalog_configuration_round_trips_without_a_url() {
+        let mut config = LocalConfig::default();
+        config
+            .catalogs
+            .insert("lab".into(), CatalogSource::local(true));
+
+        let serialized = toml::to_string(&config).unwrap();
+        let reparsed: LocalConfig = toml::from_str(&serialized).unwrap();
+
+        assert!(serialized.contains("backend = \"local\""));
+        assert!(!serialized.contains("url ="));
+        assert_eq!(reparsed, config);
     }
 
     #[test]

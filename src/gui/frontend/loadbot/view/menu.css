@@ -27,6 +27,13 @@
 .lb-catalog-popover small { font-size: 10px; }
 .lb-catalog-actions { display: grid; grid-template-columns: 1fr 1fr; gap: var(--lb-space-2); border-top: 1px solid var(--lb-disabled-text); padding-top: var(--lb-space-2); }
 .lb-catalog-actions .lb-button { min-width: 0; min-height: 36px; font-size: 10px; }
+.lb-catalog-actions .lb-catalog-wide-action { grid-column: 1 / -1; }
+.lb-storage-options { display: grid; gap: var(--lb-space-1); margin: var(--lb-space-2) 0; }
+.lb-storage-options label { display: flex; align-items: center; gap: var(--lb-space-1); }
+.lb-catalog-details { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: var(--lb-space-1) var(--lb-space-3); }
+.lb-catalog-details dt { opacity: .7; }
+.lb-catalog-details dd { margin: 0; overflow-wrap: anywhere; }
+.lb-catalog-manage-actions { flex-wrap: wrap; }
 .lb-main-console {
   display: grid; flex: 1; min-height: 0; overflow: hidden;
 }

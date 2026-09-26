@@ -86,7 +86,9 @@ function TerminalSurface({ terminalState, actions, visible }: {
   useEffect(() => {
     const emulator = terminal.current;
     if (!emulator) return;
-    const key = terminalState.launchId ?? `${terminalState.project?.catalog}/${terminalState.project?.tool}`;
+    const key = terminalState.launchId
+      ?? (terminalState.project ? `project/${terminalState.project.catalog}/${terminalState.project.tool}`
+        : `catalog/${terminalState.catalog?.catalog}`);
     if (key !== sessionKey.current) {
       emulator.reset();
       sessionKey.current = key;
@@ -134,10 +136,11 @@ export function TerminalPane({ state, actions, visible = true }: {
 }) {
   const terminal = state.projectTerminal;
   const selected = state.project;
+  const target = terminal.project ?? terminal.catalog;
   const boundToSelection = Boolean(terminal.project && selected
     && terminal.project.catalog === selected.catalog && terminal.project.tool === selected.tool);
 
-  if (!terminal.project) return <section hidden={!visible} className="lb-bottom-content lb-project-terminal" role="tabpanel" aria-label="Terminal">
+  if (!target) return <section hidden={!visible} className="lb-bottom-content lb-project-terminal" role="tabpanel" aria-label="Terminal">
     <h2>TERMINAL / PROJECT</h2>
     {!selected && <p className="lb-metadata">Select a project to open its terminal.</p>}
     {selected?.installed === false && <p className="lb-metadata">Install this project before opening a terminal.</p>}
@@ -152,8 +155,10 @@ export function TerminalPane({ state, actions, visible = true }: {
 
   return <section hidden={!visible} className="lb-bottom-content lb-project-terminal" role="tabpanel" aria-label="Terminal">
     <header>
-      <div><h2>TERMINAL / {terminal.project.tool}</h2>
-        <span className="lb-metadata">{terminal.project.catalog} / {terminal.project.tool}</span></div>
+      <div><h2>TERMINAL / {terminal.project?.tool ?? terminal.catalog?.catalog}</h2>
+        <span className="lb-metadata">{terminal.project
+          ? `${terminal.project.catalog} / ${terminal.project.tool}`
+          : `Catalog / ${terminal.catalog?.catalog}`}</span></div>
       <strong data-status={terminal.status}>{status}</strong>
       {(terminal.status === 'active' || terminal.status === 'terminating')
         && <button type="button" disabled={terminal.status === 'terminating'} onClick={() => { void actions.closeProjectTerminal(); }}>Close</button>}
@@ -162,8 +167,11 @@ export function TerminalPane({ state, actions, visible = true }: {
         <button type="button" onClick={() => { void actions.closeProjectTerminal(); }}>Close</button>
       </>}
     </header>
-    {selected && !boundToSelection && <p className="lb-terminal-binding" role="status">
+    {terminal.project && selected && !boundToSelection && <p className="lb-terminal-binding" role="status">
       This terminal remains bound to {terminal.project.catalog} / {terminal.project.tool}. Close it before starting a terminal for {selected.catalog} / {selected.tool}.
+    </p>}
+    {terminal.catalog && <p className="lb-terminal-binding" role="status">
+      This terminal remains bound to catalog {terminal.catalog.catalog}. Close it before starting another terminal.
     </p>}
     {terminal.message && <p className="lb-command-error" role="alert">{terminal.message}</p>}
     <TerminalSurface terminalState={terminal} actions={actions} visible={visible} />

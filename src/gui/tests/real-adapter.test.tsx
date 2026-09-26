@@ -15,8 +15,8 @@ const tauri = vi.hoisted(() => ({
 }));
 vi.mock('@tauri-apps/api/core', () => tauri);
 const management = (names: readonly string[] = ['personal']): ManagementBridge => ({
-  readCatalogs: async () => names.map((name, index) => ({ name, url: 'test', writable: true, state: 'installed', default: index === 0 })),
-  createProjectTerminalLaunch: vi.fn(), pullProject: vi.fn(), updateProject: vi.fn(), removeProject: vi.fn(), reinstallProject: vi.fn(),
+  readCatalogs: async () => names.map((name, index) => ({ name, backend: 'git', url: 'test', writable: true, state: 'installed', default: index === 0 })),
+  openCatalogFolder: vi.fn(), createCatalogTerminalLaunch: vi.fn(), createProjectTerminalLaunch: vi.fn(), pullProject: vi.fn(), updateProject: vi.fn(), removeProject: vi.fn(), reinstallProject: vi.fn(),
   addCatalog: vi.fn(), createCatalog: vi.fn(), addProject: vi.fn(), addShortcut: vi.fn(), addRecipeShortcut: vi.fn(), updateRecipeShortcut: vi.fn(),
   chooseProjectFile: vi.fn(), chooseProjectDirectory: vi.fn(), viewShortcutHelp: vi.fn(), deleteShortcuts: vi.fn(), syncCatalog: vi.fn(),
 });
@@ -68,7 +68,7 @@ describe('one platform-neutral real read adapter', () => {
   it('uses the native inventory and layout composition with no sample forms', async () => {
     tauri.invoke.mockClear();
     tauri.invoke.mockImplementation(async (command: string) => command === 'read_loadbot_inventory' ? serializedInventory
-      : command === 'read_loadbot_catalogs' ? [{ name: 'alpha', url: 'test', writable: true, state: 'installed', default: true }, { name: 'beta', url: 'test', writable: false, state: 'installed', default: false }]
+      : command === 'read_loadbot_catalogs' ? [{ name: 'alpha', backend: 'git', url: 'test', writable: true, state: 'installed', default: true }, { name: 'beta', backend: 'git', url: 'test', writable: false, state: 'installed', default: false }]
         : undefined);
     render(<LoadbotMenu {...realMenuDependencies} sampleForms={fixtureMenuDependencies.sampleForms} />);
     await screen.findByText('No projects in this catalog.');
@@ -139,11 +139,12 @@ describe('one platform-neutral real read adapter', () => {
   it('uses only structured semantic native management commands', async () => {
     tauri.invoke.mockReset();
     tauri.invoke.mockImplementation(async (command: string, input?: Record<string, unknown>) => {
-      if (command === 'read_loadbot_catalogs') return [{ name: 'personal', url: 'repo', writable: true, state: 'installed', default: true }];
+      if (command === 'read_loadbot_catalogs') return [{ name: 'personal', backend: 'git', url: 'repo', writable: true, state: 'installed', default: true }];
       if (command === 'add_loadbot_catalog') return { catalog: input?.name };
       if (command === 'create_loadbot_catalog') return { catalog: (input?.request as { name?: string })?.name };
       if (command === 'add_loadbot_project') return { catalog: input?.catalog, tool: input?.name };
       if (command === 'create_loadbot_project_terminal_launch') return { launchId: 'terminal-launch', label: 'Project terminal — demo' };
+      if (command === 'create_loadbot_catalog_terminal_launch') return { launchId: 'catalog-terminal-launch', label: 'Catalog terminal — personal' };
       if (['pull_loadbot_project', 'update_loadbot_project', 'remove_loadbot_project', 'reinstall_loadbot_project'].includes(command)) {
         const channel = input?.onActivity as InstanceType<typeof tauri.Channel>;
         channel.onmessage({ kind: 'log', stream: 'command', text: `git ${command}` } as never);
@@ -172,9 +173,13 @@ describe('one platform-neutral real read adapter', () => {
       return [];
     });
     const adapter = createTauriLoadbotAdapter();
-    await expect(adapter.readCatalogs()).resolves.toEqual([{ name: 'personal', url: 'repo', writable: true, state: 'installed', default: true }]);
+    await expect(adapter.readCatalogs()).resolves.toEqual([{ name: 'personal', backend: 'git', url: 'repo', writable: true, state: 'installed', default: true }]);
+    await adapter.openCatalogFolder({ catalog: 'personal' });
+    await expect(adapter.createCatalogTerminalLaunch?.({ catalog: 'personal' })).resolves.toEqual({
+      launchId: 'catalog-terminal-launch', label: 'Catalog terminal — personal',
+    });
     await adapter.addCatalog({ name: 'other', url: 'other-repo', writable: false });
-    await adapter.createCatalog({ name: 'created', url: 'empty-repo', commit: true, push: false });
+    await adapter.createCatalog({ name: 'created', backend: 'git', url: 'empty-repo', commit: true, push: false });
     await adapter.addProject({ catalog: 'personal', name: 'demo', url: 'tool-repo', commit: false, push: false });
     await expect(adapter.createProjectTerminalLaunch?.({ catalog: 'personal', tool: 'demo' })).resolves.toEqual({
       launchId: 'terminal-launch', label: 'Project terminal — demo',
@@ -206,8 +211,10 @@ describe('one platform-neutral real read adapter', () => {
       'git pull_loadbot_project', 'git update_loadbot_project', 'git remove_loadbot_project', 'git reinstall_loadbot_project',
     ]);
     expect(tauri.invoke.mock.calls.slice(1)).toEqual([
+      ['open_loadbot_catalog', { catalog: 'personal' }],
+      ['create_loadbot_catalog_terminal_launch', { catalog: 'personal' }],
       ['add_loadbot_catalog', { name: 'other', url: 'other-repo', writable: false }],
-      ['create_loadbot_catalog', { request: { name: 'created', url: 'empty-repo', commit: true, push: false } }],
+      ['create_loadbot_catalog', { request: { name: 'created', backend: 'git', url: 'empty-repo', commit: true, push: false } }],
       ['add_loadbot_project', { catalog: 'personal', name: 'demo', url: 'tool-repo', revision: undefined, commit: false, push: false }],
       ['create_loadbot_project_terminal_launch', { catalog: 'personal', tool: 'demo' }],
       ['pull_loadbot_project', { catalog: 'personal', tool: 'demo', onActivity: expect.any(tauri.Channel) }],
@@ -230,11 +237,11 @@ describe('one platform-neutral real read adapter', () => {
     const bridge = management();
     bridge.createCatalog = vi.fn(async () => ({ catalog: 42 }));
     const adapter = createTauriLoadbotAdapter(async () => [], undefined, bridge);
-    await expect(adapter.createCatalog({ name: 'created', url: 'empty', commit: false, push: false }))
+    await expect(adapter.createCatalog({ name: 'created', backend: 'git', url: 'empty', commit: false, push: false }))
       .rejects.toThrow('Invalid inventory response: expected text.');
 
     bridge.createCatalog = vi.fn(async () => { throw { kind: 'operation', message: 'remote is not empty' }; });
-    const error = await adapter.createCatalog({ name: 'created', url: 'empty', commit: false, push: false }).catch((value) => value);
+    const error = await adapter.createCatalog({ name: 'created', backend: 'git', url: 'empty', commit: false, push: false }).catch((value) => value);
     expect(error).toMatchObject({ kind: 'operation', message: 'remote is not empty' });
   });
 

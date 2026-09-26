@@ -49,6 +49,45 @@ test('normal entry uses the real read composition and preserves qualified record
   await page.screenshot({ path: testInfo.outputPath('local-read-projection.png') });
 });
 
+test('creates a catalog through semantic native IPC and selects the authoritative reread', async ({ page }) => {
+  await page.addInitScript((data) => {
+    let catalogs = [
+      { name: 'alpha', url: 'test', writable: true, state: 'installed', default: true },
+    ];
+    Object.defineProperty(window, 'isTauri', { value: true });
+    Object.defineProperty(window, '__loadbotInvocations', { value: [], writable: true });
+    Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {
+      invoke: async (command: string, args: Record<string, unknown> = {}) => {
+        (window as unknown as { __loadbotInvocations: unknown[] }).__loadbotInvocations.push({ command, args });
+        if (command === 'read_loadbot_inventory') return data;
+        if (command === 'read_loadbot_catalogs') return catalogs;
+        if (command === 'read_loadbot_workspace_layout') return undefined;
+        if (command === 'create_loadbot_catalog') {
+          const request = args.request as { name: string; url: string; commit: boolean; push: boolean };
+          catalogs = [...catalogs, { name: request.name, url: request.url, writable: true, state: 'installed', default: false }];
+          return { catalog: request.name };
+        }
+        throw new Error(`Unexpected command: ${command}`);
+      },
+    } });
+  }, installedInventory.filter((project) => project.catalog === 'alpha'));
+  await page.goto('/desktop.html');
+
+  await page.getByRole('button', { name: 'Catalog context: alpha' }).click();
+  await page.getByRole('button', { name: '+ CREATE NEW CATALOG' }).click();
+  await page.getByLabel('Catalog name *').fill('test-catalog');
+  await page.getByLabel('Empty Git repository URL *').fill('/tmp/test-catalog.git');
+  await page.getByRole('button', { name: 'CREATE AND USE' }).click();
+
+  await expect(page.getByRole('button', { name: 'Catalog context: test-catalog' })).toBeVisible();
+  await expect(page.getByText('No projects in this catalog.')).toBeVisible();
+  expect(await page.evaluate(() => (window as unknown as { __loadbotInvocations: Array<{ command: string; args: unknown }> }).__loadbotInvocations))
+    .toContainEqual({
+      command: 'create_loadbot_catalog',
+      args: { request: { name: 'test-catalog', url: '/tmp/test-catalog.git', commit: false, push: false } },
+    });
+});
+
 test('native folder failures remain controlled real errors without fixture fallback', async ({ page }) => {
   await page.addInitScript((data) => {
     Object.defineProperty(window, 'isTauri', { value: true });

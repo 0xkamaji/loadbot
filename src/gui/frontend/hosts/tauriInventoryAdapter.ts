@@ -1,6 +1,6 @@
 import { Channel, invoke, isTauri } from '@tauri-apps/api/core';
 import type {
-  AddCatalogInput, AddProjectInput, AddShortcutInput, CatalogIdentity, LoadbotAdapter,
+  AddCatalogInput, AddProjectInput, AddShortcutInput, CatalogIdentity, CreateCatalogInput, LoadbotAdapter,
   CatalogSyncActivity, CatalogSyncActivitySink, LoadbotCatalog, LoadbotProject, LoadbotRecipe,
   LoadbotInterpreterRunner, LoadbotRecipeArgument, LoadbotRunner, LoadbotShortcut,
   InteractiveLaunch, InteractiveSessionEvent, InteractiveSessionEventSink, InteractiveSessionStarted,
@@ -23,6 +23,7 @@ export interface ManagementBridge {
   removeProject?(project: ProjectIdentity, onActivity?: ProjectOperationActivitySink): Promise<unknown>;
   reinstallProject?(project: ProjectIdentity, onActivity?: ProjectOperationActivitySink): Promise<unknown>;
   addCatalog(input: AddCatalogInput): Promise<unknown>;
+  createCatalog(input: CreateCatalogInput): Promise<unknown>;
   addProject(input: AddProjectInput): Promise<unknown>;
   addShortcut(input: AddShortcutInput): Promise<unknown>;
   addRecipeShortcut(input: RecipeShortcutInput): Promise<unknown>;
@@ -75,6 +76,10 @@ const nativeManagementBridge: ManagementBridge = {
   async addCatalog(input) {
     requireTauri('Catalog management');
     return invoke('add_loadbot_catalog', { name: input.name, url: input.url, writable: input.writable });
+  },
+  async createCatalog(input) {
+    requireTauri('Catalog management');
+    return invoke('create_loadbot_catalog', { request: input });
   },
   async addProject(input) {
     requireTauri('Project management');
@@ -480,6 +485,10 @@ export function createTauriLoadbotAdapter(
     async addCatalog(input) {
       try { return catalogIdentity(await management.addCatalog(input)); }
       catch (error: unknown) { throw nativeError(error, 'Could not add the catalog.'); }
+    },
+    async createCatalog(input) {
+      try { return catalogIdentity(await management.createCatalog(input)); }
+      catch (error: unknown) { throw nativeError(error, 'Could not create the catalog.'); }
     },
     async addProject(input) {
       try { return projectIdentity(await management.addProject(input)); }

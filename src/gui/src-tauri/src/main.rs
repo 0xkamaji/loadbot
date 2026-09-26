@@ -93,6 +93,15 @@ struct CommitPushRequest {
     commit_message: String,
 }
 
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateCatalogRequest {
+    name: String,
+    url: String,
+    commit: bool,
+    push: bool,
+}
+
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct InteractiveSessionStarted {
@@ -670,6 +679,23 @@ async fn add_loadbot_catalog(
 }
 
 #[tauri::command]
+async fn create_loadbot_catalog(
+    request: CreateCatalogRequest,
+) -> Result<CatalogIdentity, DesktopError> {
+    let CreateCatalogRequest {
+        name,
+        url,
+        commit,
+        push,
+    } = request;
+    run_loadbot_worker("catalog create", move |paths, context| {
+        operations::catalog_initialize(paths, &name, url, true, commit, push, context)?;
+        Ok(CatalogIdentity { catalog: name })
+    })
+    .await
+}
+
+#[tauri::command]
 #[allow(clippy::too_many_arguments)]
 async fn add_loadbot_project(
     catalog: String,
@@ -1186,6 +1212,7 @@ fn main() {
             open_loadbot_project,
             create_loadbot_project_terminal_launch,
             add_loadbot_catalog,
+            create_loadbot_catalog,
             add_loadbot_project,
             pull_loadbot_project,
             update_loadbot_project,

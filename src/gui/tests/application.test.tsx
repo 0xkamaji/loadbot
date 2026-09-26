@@ -13,7 +13,7 @@ describe('headless capability and application boundary', () => {
     readInventory,
     readCatalogs: async () => [{ name: 'personal', url: 'test', writable: true, state: 'installed', default: false }, { name: 'community', url: 'test', writable: false, state: 'installed', default: false }, { name: 'one', url: 'test', writable: true, state: 'installed', default: false }, { name: 'two', url: 'test', writable: true, state: 'installed', default: false }, { name: 'three', url: 'test', writable: true, state: 'installed', default: false }],
     openProjectFolder,
-    addCatalog: vi.fn(), addProject: vi.fn(), addShortcut: vi.fn(), addRecipeShortcut: vi.fn(), updateRecipeShortcut: vi.fn(),
+    addCatalog: vi.fn(), createCatalog: vi.fn(), addProject: vi.fn(), addShortcut: vi.fn(), addRecipeShortcut: vi.fn(), updateRecipeShortcut: vi.fn(),
     chooseProjectFile: vi.fn(), chooseProjectDirectory: vi.fn(), viewShortcutHelp: vi.fn(), deleteShortcuts: vi.fn(), syncCatalog: vi.fn(),
   });
 
@@ -793,6 +793,10 @@ describe('headless capability and application boundary', () => {
         catalogs.push({ name: input.name, url: input.url, writable: input.writable, state: 'installed', default: false });
         return { catalog: input.name };
       }),
+      createCatalog: vi.fn(async (input) => {
+        catalogs.push({ name: input.name, url: input.url, writable: true, state: 'installed', default: false });
+        return { catalog: input.name };
+      }),
       addProject: vi.fn(async (input) => {
         projects.push({ catalog: input.catalog, tool: input.name, entries: [] });
         return { catalog: input.catalog, tool: input.name };
@@ -821,12 +825,48 @@ describe('headless capability and application boundary', () => {
     expect(await application.actions.addCatalog({ name: 'other', url: 'other-repo', writable: false })).toBe(true);
     expect(application.getSnapshot().currentCatalog).toBe('other');
     expect(application.getSnapshot().project).toBeUndefined();
+    expect(await application.actions.createCatalog({ name: 'created', url: 'empty-repo', commit: true, push: false })).toBe(true);
+    expect(managed.createCatalog).toHaveBeenCalledWith({ name: 'created', url: 'empty-repo', commit: true, push: false });
+    expect(application.getSnapshot().currentCatalog).toBe('created');
+    expect(application.getSnapshot().project).toBeUndefined();
     expect(await application.actions.syncCatalog()).toBe(true);
-    expect(managed.syncCatalog).toHaveBeenCalledWith('other', expect.any(Function));
-    expect(managed.readInventory).toHaveBeenCalledTimes(5);
+    expect(managed.syncCatalog).toHaveBeenCalledWith('created', expect.any(Function));
+    expect(managed.readInventory).toHaveBeenCalledTimes(6);
     expect(new Set(application.getSnapshot().activity.map((entry) => entry.operation))).toEqual(new Set([
-      'project-add', 'shortcut-add', 'catalog-add', 'catalog-sync',
+      'project-add', 'shortcut-add', 'catalog-add', 'catalog-create', 'catalog-sync',
     ]));
+  });
+
+  it('prevents duplicate catalog creation submissions and rereads authority after backend failure', async () => {
+    let finish!: () => void;
+    const pending = new Promise<void>((resolve) => { finish = resolve; });
+    const readInventory = vi.fn(async () => [] as LoadbotProject[]);
+    const readCatalogs = vi.fn(async () => []);
+    const managed = adapter(readInventory);
+    managed.readCatalogs = readCatalogs;
+    managed.createCatalog = vi.fn(async () => {
+      await pending;
+      throw new Error('catalog name already exists');
+    });
+    const application = createLoadbotApplication(managed);
+    application.start();
+    await vi.waitFor(() => expect(application.getSnapshot().inventory.status).toBe('ready'));
+
+    const first = application.actions.createCatalog({ name: 'duplicate', url: 'empty-repo', commit: false, push: false });
+    expect(application.getSnapshot().management).toMatchObject({ status: 'submitting', kind: 'create-catalog' });
+    expect(await application.actions.createCatalog({ name: 'duplicate', url: 'empty-repo', commit: false, push: false })).toBe(false);
+    expect(managed.createCatalog).toHaveBeenCalledOnce();
+    finish();
+    expect(await first).toBe(false);
+
+    expect(readInventory).toHaveBeenCalledTimes(2);
+    expect(readCatalogs).toHaveBeenCalledTimes(2);
+    expect(application.getSnapshot().management).toEqual({
+      status: 'error', kind: 'create-catalog', message: 'catalog name already exists',
+    });
+    expect(application.getSnapshot().activity.map((entry) => entry.stage)).toEqual([
+      'started', 'authoritative-reload', 'failed',
+    ]);
   });
 
   it('keeps an existing writable catalog manageable and preserves qualified selection after sync', async () => {

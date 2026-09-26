@@ -6,6 +6,7 @@ import { TerminalPane } from './TerminalPane';
 const operationLabels: Record<ActivityEntry['operation'], string> = {
   'catalog-sync': 'Refresh Catalog',
   'catalog-add': 'Add Catalog',
+  'catalog-create': 'Create Catalog',
   'project-add': 'Add Project',
   'shortcut-add': 'Add Shortcut',
   'shortcut-update': 'Update Shortcut',

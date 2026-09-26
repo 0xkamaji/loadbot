@@ -4,6 +4,7 @@ description = "Read configured catalogs and perform explicit catalog, project, a
 commands.allow = [
   "read_loadbot_catalogs",
   "add_loadbot_catalog",
+  "create_loadbot_catalog",
   "add_loadbot_project",
   "pull_loadbot_project",
   "update_loadbot_project",

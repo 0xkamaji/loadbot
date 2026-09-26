@@ -4176,7 +4176,7 @@ mod tests {
             true,
             false,
             false,
-            &mut OperationContext::new(&mut crate::interaction::Unattended),
+            &mut OperationContext::background(&mut crate::interaction::Unattended),
         )
         .unwrap();
         assert_eq!(
@@ -4194,7 +4194,7 @@ mod tests {
         catalog_status(
             &paths,
             "personal",
-            &mut OperationContext::new(&mut crate::interaction::Unattended),
+            &mut OperationContext::background(&mut crate::interaction::Unattended),
         )
         .unwrap();
         assert_eq!(
@@ -4217,7 +4217,7 @@ mod tests {
             true,
             true,
             true,
-            &mut OperationContext::new(&mut crate::interaction::Unattended),
+            &mut OperationContext::background(&mut crate::interaction::Unattended),
         )
         .unwrap();
         assert!(
@@ -4241,13 +4241,174 @@ mod tests {
             true,
             true,
             true,
-            &mut OperationContext::new(&mut crate::interaction::Unattended),
+            &mut OperationContext::background(&mut crate::interaction::Unattended),
         )
         .unwrap();
         assert_eq!(
             git::head_commit(&paths.catalog("personal")).unwrap(),
             before
         );
+    }
+
+    #[test]
+    fn catalog_initialization_creates_a_registered_valid_catalog() {
+        let temporary = TempDir::new().unwrap();
+        let paths = Paths::with_root(temporary.path().join("loadbot"));
+        let remote = empty_remote(temporary.path(), "created-catalog");
+        let url = remote.display().to_string();
+
+        catalog_initialize(
+            &paths,
+            "created",
+            url.clone(),
+            true,
+            false,
+            false,
+            &mut OperationContext::background(&mut crate::interaction::Unattended),
+        )
+        .unwrap();
+
+        assert!(git::is_repository(&paths.catalog("created")).unwrap());
+        assert_eq!(
+            fs::read_to_string(paths.catalog_file("created")).unwrap(),
+            "version = 1\n\n[tools]\n"
+        );
+        assert_eq!(
+            catalog::load(&paths.catalog_file("created")).unwrap(),
+            CatalogFile::default()
+        );
+        let local = config::load(&paths.config()).unwrap();
+        assert_eq!(local.default_catalog.as_deref(), Some("created"));
+        assert_eq!(
+            local.catalogs.get("created"),
+            Some(&CatalogSource::new(url, true))
+        );
+        assert_eq!(
+            catalog_list(
+                &paths,
+                &mut OperationContext::background(&mut crate::interaction::Unattended)
+            )
+            .unwrap()[0]
+                .state,
+            CatalogState::Installed
+        );
+    }
+
+    #[test]
+    fn initialized_catalog_can_immediately_accept_a_tool_definition() {
+        let temporary = TempDir::new().unwrap();
+        let paths = Paths::with_root(temporary.path().join("loadbot"));
+        let remote = empty_remote(temporary.path(), "ready-catalog");
+        let url = remote.display().to_string();
+        fs::create_dir_all(paths.catalogs()).unwrap();
+        git::clone_repository(
+            &url,
+            None,
+            &paths.catalog("ready"),
+            &mut crate::interaction::Unattended,
+        )
+        .unwrap();
+        git(
+            ["config", "user.name", "Loadbot Tests"],
+            Some(&paths.catalog("ready")),
+        );
+        git(
+            ["config", "user.email", "loadbot@example.test"],
+            Some(&paths.catalog("ready")),
+        );
+
+        catalog_initialize(
+            &paths,
+            "ready",
+            url,
+            true,
+            true,
+            false,
+            &mut OperationContext::background(&mut crate::interaction::Unattended),
+        )
+        .unwrap();
+        tool_add(
+            &paths,
+            "ready",
+            "demo",
+            "https://example.test/demo.git".to_owned(),
+            None,
+            false,
+            false,
+            &mut OperationContext::background(&mut crate::interaction::Unattended),
+        )
+        .unwrap();
+
+        let created = catalog::load(&paths.catalog_file("ready")).unwrap();
+        assert_eq!(
+            created.tools.get("demo"),
+            Some(&ToolConfig::git(
+                "https://example.test/demo.git".to_owned(),
+                None
+            ))
+        );
+    }
+
+    #[test]
+    fn catalog_initialization_rejects_invalid_duplicate_and_destination_collisions_safely() {
+        let temporary = TempDir::new().unwrap();
+        let paths = Paths::with_root(temporary.path().join("loadbot"));
+        let existing_remote = empty_remote(temporary.path(), "existing-catalog");
+        catalog_initialize(
+            &paths,
+            "existing",
+            existing_remote.display().to_string(),
+            true,
+            false,
+            false,
+            &mut OperationContext::background(&mut crate::interaction::Unattended),
+        )
+        .unwrap();
+        let config_before = fs::read(paths.config()).unwrap();
+
+        let invalid = catalog_initialize(
+            &paths,
+            "../invalid",
+            existing_remote.display().to_string(),
+            true,
+            false,
+            false,
+            &mut OperationContext::background(&mut crate::interaction::Unattended),
+        )
+        .unwrap_err();
+        assert!(format!("{invalid:#}").contains("invalid tool name"));
+
+        let other_remote = empty_remote(temporary.path(), "other-catalog");
+        let duplicate = catalog_initialize(
+            &paths,
+            "existing",
+            other_remote.display().to_string(),
+            true,
+            false,
+            false,
+            &mut OperationContext::background(&mut crate::interaction::Unattended),
+        )
+        .unwrap_err();
+        assert!(format!("{duplicate:#}").contains("different settings"));
+
+        fs::create_dir_all(paths.catalog("collision")).unwrap();
+        fs::write(paths.catalog("collision").join("keep.txt"), "keep\n").unwrap();
+        let collision = catalog_initialize(
+            &paths,
+            "collision",
+            other_remote.display().to_string(),
+            true,
+            false,
+            false,
+            &mut OperationContext::background(&mut crate::interaction::Unattended),
+        )
+        .unwrap_err();
+        assert!(format!("{collision:#}").contains("not a Git repository"));
+        assert_eq!(
+            fs::read_to_string(paths.catalog("collision").join("keep.txt")).unwrap(),
+            "keep\n"
+        );
+        assert_eq!(fs::read(paths.config()).unwrap(), config_before);
     }
 
     #[test]

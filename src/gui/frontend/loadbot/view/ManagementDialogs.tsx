@@ -3,7 +3,7 @@ import type { LoadbotActions, LoadbotState, ManagementKind } from '../applicatio
 import { BusyLabel, Button, Checkbox, Dialog, InputControl, StatusDisplay } from '../../ui/components';
 import { RecipeBuilder } from './RecipeBuilder';
 
-export type ManagementDialog = Extract<ManagementKind, 'add-catalog' | 'add-project'> | 'recipe-editor';
+export type ManagementDialog = Extract<ManagementKind, 'add-catalog' | 'create-catalog' | 'add-project'> | 'recipe-editor';
 
 export function ManagementDialogs({ dialog, state, actions, onClose }: {
   dialog?: ManagementDialog; state: LoadbotState; actions: LoadbotActions; onClose(): void;
@@ -38,6 +38,7 @@ export function ManagementDialogs({ dialog, state, actions, onClose }: {
   if (!dialog && !state.recipeEditor) return null;
   if (dialog === 'recipe-editor' || state.recipeEditor) return <RecipeBuilder state={state} actions={actions} onClose={close} onDone={onClose} />;
   if (dialog === 'add-catalog') return <AddCatalogForm state={state} actions={actions} onClose={close} onDone={onClose} />;
+  if (dialog === 'create-catalog') return <CreateCatalogForm state={state} actions={actions} onClose={close} onDone={onClose} />;
   if (dialog === 'add-project') return <AddProjectForm state={state} actions={actions} onClose={close} onDone={onClose} />;
   return null;
 }
@@ -121,14 +122,44 @@ function AddCatalogForm({ state, actions, onClose, onDone }: FormProps) {
     event.preventDefault();
     if (await actions.addCatalog({ name: name.trim(), url: url.trim(), writable })) onDone();
   }
-  return <Dialog label="Add catalog" onClose={onClose}>
-    <h2>ADD CATALOG</h2>
+  const valid = name.trim().length > 0 && url.trim().length > 0;
+  return <Dialog label="Add existing catalog" onClose={onClose}>
+    <h2>ADD EXISTING CATALOG</h2>
+    <p>Connect an existing valid Loadbot catalog repository.</p>
     <form onSubmit={submit}>
       <InputControl autoFocus label="Catalog name" value={name} onChange={(event) => setName(event.target.value)} required disabled={busy} />
       <InputControl label="Git repository URL" value={url} onChange={(event) => setUrl(event.target.value)} required disabled={busy} />
       <Checkbox label="Writable catalog" checked={writable} onChange={(event) => setWritable(event.target.checked)} disabled={busy} />
       <FormStatus state={state} kind="add-catalog" />
-      <div className="lb-dialog-actions"><Button onClick={onClose} disabled={busy}>CANCEL</Button><Button type="submit" disabled={busy}>{busy ? 'ADDING…' : 'ADD AND USE'}</Button></div>
+      <div className="lb-dialog-actions"><Button onClick={onClose} disabled={busy}>CANCEL</Button><Button type="submit" disabled={busy || !valid}>{busy ? 'ADDING…' : 'ADD AND USE'}</Button></div>
+    </form>
+  </Dialog>;
+}
+
+function CreateCatalogForm({ state, actions, onClose, onDone }: FormProps) {
+  const [name, setName] = useState('');
+  const [url, setUrl] = useState('');
+  const [commit, setCommit] = useState(false);
+  const [push, setPush] = useState(false);
+  const busy = state.management.status === 'submitting';
+  const valid = name.trim().length > 0 && url.trim().length > 0;
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    if (!valid) return;
+    if (await actions.createCatalog({ name: name.trim(), url: url.trim(), commit, push: commit && push })) onDone();
+  }
+  return <Dialog label="Create new catalog" onClose={onClose}>
+    <h2>CREATE NEW CATALOG</h2>
+    <p>Initialize an existing empty Git repository as a writable Loadbot catalog. Loadbot will not create a remote repository.</p>
+    <form onSubmit={submit}>
+      <InputControl autoFocus label="Catalog name" value={name} onChange={(event) => setName(event.target.value)} required disabled={busy} />
+      <InputControl label="Empty Git repository URL" value={url} onChange={(event) => setUrl(event.target.value)} required disabled={busy} />
+      <Checkbox label="Commit initial catalog.toml" checked={commit}
+        onChange={(event) => { setCommit(event.target.checked); if (!event.target.checked) setPush(false); }} disabled={busy} />
+      <Checkbox label="Push initial catalog commit" checked={push} onChange={(event) => setPush(event.target.checked)} disabled={busy || !commit} />
+      <FormStatus state={state} kind="create-catalog" />
+      <div className="lb-dialog-actions"><Button onClick={onClose} disabled={busy}>CANCEL</Button>
+        <Button type="submit" disabled={busy || !valid}>{busy ? <BusyLabel text="CREATING…" /> : 'CREATE AND USE'}</Button></div>
     </form>
   </Dialog>;
 }

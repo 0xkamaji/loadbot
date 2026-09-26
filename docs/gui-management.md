@@ -6,9 +6,10 @@ terminal session.
 
 ## Shared operation boundary
 
-Catalog registration/synchronization and project definition creation continue to
-use `operations::catalog_add`, `operations::catalog_sync`, and
-`operations::tool_add`, which are the same semantic operations used by the CLI.
+Catalog registration, initialization, synchronization, and project definition creation
+continue to use `operations::catalog_add`, `operations::catalog_initialize`,
+`operations::catalog_sync`, and `operations::tool_add`, which are the same semantic
+operations used by the CLI.
 `operations::shortcut_add` adds the qualified installed-project and target checks
 needed by a non-prompting caller, then delegates the durable document update and
 duplicate rules to the existing `shortcuts::save` authority used by the CLI.
@@ -39,9 +40,15 @@ persistent default catalog. `REFRESH CATALOG` is a separate deliberate Git updat
 success the GUI rereads local state. `RELOAD` only rereads state and never
 contacts or updates a remote.
 
-`ADD CATALOG` registers and clones an existing valid Loadbot catalog using its name,
-Git URL, and writable flag, then uses it as the current GUI session context. It does
-not initialize a new remote or silently push.
+`ADD EXISTING CATALOG` registers and clones an existing valid Loadbot catalog using
+its name, Git URL, and writable flag, then uses it as the current GUI session context.
+It does not initialize a new remote or silently push.
+
+`CREATE NEW CATALOG` follows the CLI initialization path. It clones an existing empty
+Git repository, creates the canonical version-1 `catalog.toml`, registers the catalog
+as writable, and offers separate explicit commit and push choices. Loadbot does not
+create a hosting-provider repository. The created catalog becomes the current GUI
+session context only after an authoritative reread.
 
 `ADD PROJECT` adds a real Git-backed Loadbot tool definition to the current installed
 writable catalog. Its fields match the CLI operation: name, Git URL, optional
@@ -125,6 +132,6 @@ identity behavior, session command history, and deliberate system-terminal bound
 Fixtures remain isolated behind `LoadbotAdapter`; a fresh in-memory fixture adapter
 can exercise project-path choices and personal deletion without touching real state.
 Fixtures include Legacy, Run Recipe, and Launch Recipe inspection examples.
-Background sync, catalog initialization, project pulling, Recipe/shortcut execution,
+Background sync, hosting-provider repository creation, project pulling, Recipe/shortcut execution,
 application launching, Output UI, PTY/system-terminal execution, Rot GUI integration,
 help-to-parameter inference, and model/personality behavior are not implemented.

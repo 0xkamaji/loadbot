@@ -60,6 +60,9 @@ export interface LoadbotCatalog {
 }
 
 export interface AddCatalogInput { readonly name: string; readonly url: string; readonly writable: boolean }
+export interface CreateCatalogInput {
+  readonly name: string; readonly url: string; readonly commit: boolean; readonly push: boolean;
+}
 export interface AddProjectInput {
   readonly catalog: string; readonly name: string; readonly url: string; readonly revision?: string;
   readonly commit: boolean; readonly push: boolean;
@@ -171,6 +174,7 @@ export interface LoadbotAdapter {
   resizeInteractiveSession?(sessionId: string, rows: number, columns: number): Promise<void>;
   terminateInteractiveSession?(sessionId: string): Promise<void>;
   addCatalog(input: AddCatalogInput): Promise<CatalogIdentity>;
+  createCatalog(input: CreateCatalogInput): Promise<CatalogIdentity>;
   addProject(input: AddProjectInput): Promise<ProjectIdentity>;
   addShortcut(input: AddShortcutInput): Promise<ShortcutIdentity>;
   addRecipeShortcut(input: RecipeShortcutInput): Promise<ShortcutIdentity>;

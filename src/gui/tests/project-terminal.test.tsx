@@ -70,7 +70,7 @@ function terminalAdapter(projects: readonly LoadbotProject[]) {
     readCatalogs: async () => [{ name: 'personal', url: 'fixture', writable: true, state: 'installed', default: true }],
     openProjectFolder: vi.fn(), createProjectTerminalLaunch, startInteractiveSession,
     sendInteractiveInput, resizeInteractiveSession, terminateInteractiveSession,
-    addCatalog: vi.fn(), addProject: vi.fn(), addShortcut: vi.fn(), addRecipeShortcut: vi.fn(), updateRecipeShortcut: vi.fn(),
+    addCatalog: vi.fn(), createCatalog: vi.fn(), addProject: vi.fn(), addShortcut: vi.fn(), addRecipeShortcut: vi.fn(), updateRecipeShortcut: vi.fn(),
     chooseProjectFile: vi.fn(), chooseProjectDirectory: vi.fn(), viewShortcutHelp: vi.fn(), deleteShortcuts: vi.fn(), syncCatalog: vi.fn(),
   };
   return {

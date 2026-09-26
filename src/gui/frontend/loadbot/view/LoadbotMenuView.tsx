@@ -109,7 +109,8 @@ export function LoadbotMenuView({ state, actions, host, mode, workspaceLayoutSto
               title="Refresh catalog from its configured Git remote"
               onClick={() => { void actions.syncCatalog().then(() => setCatalogMenuOpen(false)); }}>{busy && state.management.kind === 'sync-catalog'
                 ? <BusyLabel text="REFRESHING…" /> : 'REFRESH CATALOG'}</Button>
-            <Button disabled={busy} onClick={() => { setCatalogMenuOpen(false); actions.clearManagementStatus(); setManagementDialog('add-catalog'); }}>+ ADD CATALOG</Button>
+            <Button disabled={busy} onClick={() => { setCatalogMenuOpen(false); actions.clearManagementStatus(); setManagementDialog('add-catalog'); }}>+ ADD EXISTING CATALOG</Button>
+            <Button disabled={busy} onClick={() => { setCatalogMenuOpen(false); actions.clearManagementStatus(); setManagementDialog('create-catalog'); }}>+ CREATE NEW CATALOG</Button>
           </div>}
         </div>}
       </div>

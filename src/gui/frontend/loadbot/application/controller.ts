@@ -1,5 +1,5 @@
 import type {
-  AddCatalogInput, AddProjectInput, AddShortcutInput, CatalogSyncActivityEvent, CatalogSyncStage, LoadbotAdapter, LoadbotCatalog,
+  AddCatalogInput, AddProjectInput, AddShortcutInput, CatalogSyncActivityEvent, CatalogSyncStage, CreateCatalogInput, LoadbotAdapter, LoadbotCatalog,
   InteractiveLaunch, InteractiveSessionEvent, LoadbotProject, LoadbotShortcut,
   LoadbotRecipe, LoadbotRecipeArgument, LoadbotRunner, OperationLogActivity, ProjectOperationActivityEvent, ProjectOperationStage,
   RepositoryChange, ShortcutHelpResult, ShortcutIdentity,
@@ -23,7 +23,7 @@ export type CatalogState =
   | { readonly status: 'error'; readonly message?: string };
 export type ProjectFilter = 'installed' | 'all' | 'not-installed';
 export type ProjectLifecycleAction = 'remove' | 'reinstall';
-export type ManagementKind = 'add-catalog' | 'add-project' | 'add-shortcut' | 'update-shortcut' | 'delete-shortcut' | 'sync-catalog'
+export type ManagementKind = 'add-catalog' | 'create-catalog' | 'add-project' | 'add-shortcut' | 'update-shortcut' | 'delete-shortcut' | 'sync-catalog'
   | 'pull-project' | 'push-project' | 'update-project' | 'remove-project' | 'reinstall-project';
 export type ManagementState =
   | { readonly status: 'idle' }
@@ -31,7 +31,7 @@ export type ManagementState =
   | { readonly status: 'success'; readonly kind: ManagementKind; readonly message: string }
   | { readonly status: 'cancelled'; readonly kind: ManagementKind; readonly message: string }
   | { readonly status: 'error'; readonly kind: ManagementKind; readonly message: string };
-export type ActivityOperation = 'catalog-sync' | 'catalog-add' | 'project-add' | 'shortcut-add' | 'shortcut-update' | 'shortcut-delete' | 'local-reload'
+export type ActivityOperation = 'catalog-sync' | 'catalog-add' | 'catalog-create' | 'project-add' | 'shortcut-add' | 'shortcut-update' | 'shortcut-delete' | 'local-reload'
   | 'project-folder-open' | 'project-pull' | 'project-push' | 'project-update' | 'project-remove' | 'project-reinstall';
 export type ActivityStatus = 'in-progress' | 'info' | 'success' | 'error' | 'cancelled';
 export type ActivityStage = CatalogSyncStage | ProjectOperationStage | 'started' | 'interactive-authentication'
@@ -157,6 +157,7 @@ export interface LoadbotActions {
   cancelProjectAction(): void;
   confirmProjectAction(): Promise<boolean>;
   addCatalog(input: AddCatalogInput): Promise<boolean>;
+  createCatalog(input: CreateCatalogInput): Promise<boolean>;
   addProject(input: Omit<AddProjectInput, 'catalog'>): Promise<boolean>;
   addShortcut(input: Omit<AddShortcutInput, 'catalog' | 'tool'>): Promise<boolean>;
   openRecipeCreator(): void;
@@ -738,6 +739,12 @@ export function createLoadbotApplication(adapter: LoadbotAdapter, sampleForms: S
     async addCatalog(input) {
       return mutation('add-catalog', 'catalog-add', `Adding catalog ${input.name}…`, `Catalog ${input.name} added.`, { catalog: input.name }, async () => {
         const created = await adapter.addCatalog(input);
+        return { catalog: created.catalog };
+      });
+    },
+    async createCatalog(input) {
+      return mutation('create-catalog', 'catalog-create', `Creating catalog ${input.name}…`, `Catalog ${input.name} created.`, { catalog: input.name }, async () => {
+        const created = await adapter.createCatalog(input);
         return { catalog: created.catalog };
       });
     },

@@ -10,6 +10,7 @@ fn main() {
             "open_loadbot_project",
             "create_loadbot_project_terminal_launch",
             "add_loadbot_catalog",
+            "create_loadbot_catalog",
             "add_loadbot_project",
             "pull_loadbot_project",
             "update_loadbot_project",

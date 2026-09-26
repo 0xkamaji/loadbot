@@ -70,6 +70,7 @@ export function createFixtureAdapter(): LoadbotAdapter {
   async removeProject() { throw new Error('Management is unavailable in fixture preview.'); },
   async reinstallProject() { throw new Error('Management is unavailable in fixture preview.'); },
   async addCatalog() { throw new Error('Management is unavailable in fixture preview.'); },
+  async createCatalog() { throw new Error('Management is unavailable in fixture preview.'); },
   async addProject() { throw new Error('Management is unavailable in fixture preview.'); },
   async addShortcut() { throw new Error('Management is unavailable in fixture preview.'); },
   async addRecipeShortcut() { throw new Error('Management is unavailable in fixture preview.'); },

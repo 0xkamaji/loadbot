@@ -15,7 +15,7 @@ Loadbot is a cross-platform GUI and CLI for managing Git-backed catalogs of proj
 
 ## Download
 
-Download the latest build from [GitHub Releases](https://github.com/0xkamaji/loadbot/releases). Windows releases provide a standard installer plus a portable zip. Linux releases provide a portable tarball; extract it and run `./install.sh` to install the CLI and desktop GUI under `~/.local`. Git must be installed and available on `PATH`.
+Download the latest build from [GitHub Releases](https://github.com/0xkamaji/loadbot/releases). On Windows, use the `setup.exe` for a normal installation or the `portable.zip` for manual use. On Linux, extract the `.tar.gz` and run `./install.sh` to install the CLI and desktop app for the current user. Git must be installed and available on `PATH`.
 
 ## CLI
 

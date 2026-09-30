@@ -127,7 +127,7 @@ cat >"$root/bin/loadbot" <<'LOADBOT'
 #!/bin/sh
 printf '%s\n' "loadbot $* COMPLETE=${COMPLETE:-}" >>"$COMMAND_LOG"
 case ${COMPLETE:-} in
-    '') [ "${1:-}" = --version ] && printf '%s\n' 'loadbot 0.1.0';;
+    '') [ "${1:-}" = --version ] && printf '%s\n' 'loadbot 0.1.1';;
     *) printf '%s\n' "completion for $COMPLETE";;
 esac
 exit 0
@@ -293,7 +293,7 @@ prepare_release() {
 #!/bin/sh
 printf '%s\n' "release-loadbot $* COMPLETE=${COMPLETE:-}" >>"$COMMAND_LOG"
 case ${COMPLETE:-} in
-    '') [ "${1:-}" = --version ] && printf '%s\n' 'loadbot 0.1.0' ;;
+    '') [ "${1:-}" = --version ] && printf '%s\n' 'loadbot 0.1.1' ;;
     *) printf '%s\n' "completion for $COMPLETE" ;;
 esac
 exit 0

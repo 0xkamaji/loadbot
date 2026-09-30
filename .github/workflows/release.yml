@@ -54,11 +54,12 @@ jobs:
         include:
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
-            asset: linux-x86_64
+            archive_asset: linux-x86_64
             archive: tar.gz
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            asset: windows-x86_64
+            archive_asset: windows-x86_64-portable
+            installer_asset: windows-x86_64
             archive: zip
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
@@ -104,39 +105,51 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          package="loadbot-${GITHUB_REF_NAME}-${{ matrix.asset }}"
+          package="loadbot-${GITHUB_REF_NAME}-${{ matrix.archive_asset }}"
           mkdir -p "dist/$package"
           install -m 755 target/release/loadbot "dist/$package/loadbot"
           install -m 755 src/gui/src-tauri/target/release/loadbot-desktop "dist/$package/loadbot-desktop"
           install -m 755 packaging/linux/install.sh "dist/$package/install.sh"
           tar -C dist -czf "dist/$package.tar.gz" "$package"
+          tar -tzf "dist/$package.tar.gz" \
+            "$package/loadbot" \
+            "$package/loadbot-desktop" \
+            "$package/install.sh"
       - name: Package Windows binaries
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $package = "loadbot-$env:GITHUB_REF_NAME-${{ matrix.asset }}"
+          $package = "loadbot-$env:GITHUB_REF_NAME-${{ matrix.archive_asset }}"
+          $installer = "loadbot-$env:GITHUB_REF_NAME-${{ matrix.installer_asset }}-setup.exe"
           New-Item -ItemType Directory -Force "dist/$package" | Out-Null
           Copy-Item "target/release/loadbot.exe" "dist/$package/loadbot.exe"
           Copy-Item "src/gui/src-tauri/target/${{ matrix.target }}/release/loadbot-desktop.exe" "dist/$package/loadbot-desktop.exe"
           Compress-Archive -Path "dist/$package" -DestinationPath "dist/$package.zip"
+          $archiveCheck = Join-Path $env:RUNNER_TEMP "loadbot-portable-check"
+          Expand-Archive "dist/$package.zip" -DestinationPath $archiveCheck
+          foreach ($binary in @("loadbot.exe", "loadbot-desktop.exe")) {
+            if (-not (Test-Path (Join-Path $archiveCheck "$package/$binary") -PathType Leaf)) {
+              throw "Portable archive is missing $binary"
+            }
+          }
           $installers = @(Get-ChildItem "src/gui/src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe")
           if ($installers.Count -ne 1) {
             throw "Expected exactly one NSIS installer, found $($installers.Count)"
           }
-          Copy-Item $installers[0].FullName "dist/$package-setup.exe"
+          Copy-Item $installers[0].FullName "dist/$installer"
       - name: Upload release archive
         uses: actions/upload-artifact@v4
         with:
-          name: release-${{ matrix.asset }}
-          path: dist/loadbot-${{ github.ref_name }}-${{ matrix.asset }}.${{ matrix.archive }}
+          name: release-${{ matrix.archive_asset }}
+          path: dist/loadbot-${{ github.ref_name }}-${{ matrix.archive_asset }}.${{ matrix.archive }}
           if-no-files-found: error
           retention-days: 1
       - name: Upload Windows installer
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
         with:
-          name: release-installer-${{ matrix.asset }}
-          path: dist/loadbot-${{ github.ref_name }}-${{ matrix.asset }}-setup.exe
+          name: release-installer-${{ matrix.installer_asset }}
+          path: dist/loadbot-${{ github.ref_name }}-${{ matrix.installer_asset }}-setup.exe
           if-no-files-found: error
           retention-days: 1
 
@@ -155,7 +168,18 @@ jobs:
           merge-multiple: true
       - name: Generate checksums
         working-directory: release
-        run: sha256sum loadbot-* > SHA256SUMS.txt
+        shell: bash
+        run: |
+          set -euo pipefail
+          assets=(
+            "loadbot-${GITHUB_REF_NAME}-windows-x86_64-setup.exe"
+            "loadbot-${GITHUB_REF_NAME}-windows-x86_64-portable.zip"
+            "loadbot-${GITHUB_REF_NAME}-linux-x86_64.tar.gz"
+          )
+          for asset in "${assets[@]}"; do
+            test -f "$asset"
+          done
+          sha256sum "${assets[@]}" > SHA256SUMS.txt
       - name: Publish release assets
         env:
           GH_TOKEN: ${{ github.token }}

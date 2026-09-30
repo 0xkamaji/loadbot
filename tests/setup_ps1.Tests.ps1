@@ -463,6 +463,7 @@ Describe "Loadbot PowerShell setup" {
 
         It "checks no Cargo, Rust, Node, npm, or MSVC development tools" {
             $script:releaseCommands = @()
+            Mock Test-LoadbotWindowsBuildTools { throw "release setup must not inspect MSVC build tools" }
             Mock Get-LoadbotCommand {
                 param($Name)
                 $script:releaseCommands += $Name

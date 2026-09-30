@@ -3,10 +3,32 @@
 set -eu
 
 PROJECT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-INSTALL_ROOT=${CARGO_HOME:-"$HOME/.cargo"}
+IS_RELEASE=false
+if [ "${LOADBOT_INTERNAL_RELEASE_SETUP:-}" = 1 ]; then
+    IS_RELEASE=true
+    if [ -n "${LOADBOT_INSTALL_ROOT:-}" ]; then
+        INSTALL_ROOT=$LOADBOT_INSTALL_ROOT
+    else
+        payload_root=
+        if [ -n "${LOADBOT_RELEASE_CLI:-}" ]; then
+            payload_bin=$(dirname -- "$LOADBOT_RELEASE_CLI")
+            payload_root=$(CDPATH= cd -- "$payload_bin/.." 2>/dev/null && pwd || true)
+        fi
+        if [ -n "$payload_root" ] && [ -f "$payload_root/loadbot-install-mode" ]; then
+            INSTALL_ROOT=$payload_root
+        else
+            INSTALL_ROOT=$HOME/.local
+        fi
+    fi
+else
+    INSTALL_ROOT=${CARGO_HOME:-"$HOME/.cargo"}
+fi
 INSTALL_BIN=$INSTALL_ROOT/bin
 LOADBOT_BIN=$INSTALL_BIN/loadbot
 COMPLETION_DIR=$INSTALL_ROOT/completions
+DESKTOP_DATA_HOME=${XDG_DATA_HOME:-"$HOME/.local/share"}
+DESKTOP_ENTRY=$DESKTOP_DATA_HOME/applications/dev.loadbot.desktop
+DESKTOP_ICON=$DESKTOP_DATA_HOME/icons/hicolor/100x100/apps/dev.loadbot.png
 MIN_CARGO_MAJOR=1
 MIN_CARGO_MINOR=85
 RUSTUP_INIT_URL=https://sh.rustup.rs
@@ -21,6 +43,13 @@ fail() {
     printf 'error: %s\n' "$1" >&2
     exit 1
 }
+
+if [ "$IS_RELEASE" = true ]; then
+    case "$INSTALL_ROOT" in
+        /*) ;;
+        *) fail "release installation root must be an absolute path: $INSTALL_ROOT" ;;
+    esac
+fi
 
 MODE=
 case ${1:-} in
@@ -109,6 +138,10 @@ missing_system_prerequisites() {
             missing="$missing $prerequisite"
         fi
     done
+    if [ "$IS_RELEASE" = true ]; then
+        printf '%s' "${missing# }"
+        return
+    fi
     if [ "$(rust_toolchain_status)" != ready ] && ! has_command rustup && ! has_command curl; then
         missing="$missing curl"
     fi
@@ -151,6 +184,89 @@ frontend_dependencies_current() {
     [ -f "$gui/node_modules/@tauri-apps/api/package.json" ] &&
         [ -f "$gui/node_modules/.loadbot-package-lock.json" ] &&
         cmp -s "$gui/package-lock.json" "$gui/node_modules/.loadbot-package-lock.json"
+}
+
+validate_release_executable() {
+    label=$1
+    path=$2
+    [ -n "$path" ] || fail "$label release payload was not provided"
+    case "$path" in /*) ;; *) fail "$label release payload path must be absolute: $path" ;; esac
+    [ ! -L "$path" ] || fail "$label release payload must not be a symlink: $path"
+    [ -f "$path" ] && [ -x "$path" ] ||
+        fail "$label release payload is not a regular executable file: $path"
+}
+
+validate_release_destination() {
+    path=$1
+    [ ! -L "$path" ] || fail "refusing to replace symlink installation path $path"
+    [ ! -e "$path" ] || [ -f "$path" ] || fail "installation path is not a regular file: $path"
+}
+
+validate_release_payloads() {
+    newline='
+'
+    case "$INSTALL_ROOT$DESKTOP_DATA_HOME" in
+        *"$newline"*) fail "release installation paths must not contain newlines" ;;
+    esac
+    case "$DESKTOP_DATA_HOME" in
+        /*) ;;
+        *) fail "desktop data directory must be an absolute path: $DESKTOP_DATA_HOME" ;;
+    esac
+    validate_release_executable "CLI" "${LOADBOT_RELEASE_CLI:-}"
+    validate_release_destination "$LOADBOT_BIN"
+    if [ "$WANT_GUI" = true ]; then
+        validate_release_executable "desktop" "${LOADBOT_RELEASE_GUI:-}"
+        icon=${LOADBOT_RELEASE_ICON:-}
+        [ -n "$icon" ] || fail "GUI icon release payload was not provided"
+        [ ! -L "$icon" ] && [ -f "$icon" ] ||
+            fail "GUI icon release payload is not a regular non-symlink file: $icon"
+        validate_release_destination "$INSTALL_BIN/loadbot-desktop"
+        validate_release_destination "$DESKTOP_ENTRY"
+        validate_release_destination "$DESKTOP_ICON"
+    fi
+}
+
+install_release_file() {
+    source=$1
+    destination=$2
+    permissions=$3
+    label=$4
+    if [ -e "$destination" ] && [ "$source" -ef "$destination" ]; then
+        say "$label is already installed at $destination"
+        return
+    fi
+    directory=$(dirname -- "$destination")
+    mkdir -p "$directory"
+    temporary=$(mktemp "$directory/.loadbot-install.XXXXXX") ||
+        fail "could not stage $label in $directory"
+    trap 'rm -f "$temporary"' EXIT HUP INT TERM
+    cp "$source" "$temporary" || fail "could not stage $label"
+    chmod "$permissions" "$temporary" || fail "could not set permissions on staged $label"
+    mv -f "$temporary" "$destination" || fail "could not atomically install $label"
+    trap - EXIT HUP INT TERM
+}
+
+install_release_desktop_entry() {
+    directory=$(dirname -- "$DESKTOP_ENTRY")
+    mkdir -p "$directory"
+    temporary=$(mktemp "$directory/.loadbot-desktop.XXXXXX") ||
+        fail "could not stage the Loadbot desktop entry"
+    trap 'rm -f "$temporary"' EXIT HUP INT TERM
+    desktop_executable=$(printf '%s' "$INSTALL_BIN/loadbot-desktop" |
+        sed 's/\\/\\\\/g; s/"/\\"/g; s/`/\\`/g; s/\$/\\$/g')
+    {
+        printf '%s\n' '[Desktop Entry]'
+        printf '%s\n' 'Type=Application'
+        printf '%s\n' 'Name=Loadbot'
+        printf '%s\n' 'Comment=Manage Git-based tool repositories'
+        printf 'Exec="%s"\n' "$desktop_executable"
+        printf '%s\n' 'Icon=dev.loadbot'
+        printf '%s\n' 'Terminal=false'
+        printf '%s\n' 'Categories=Development;'
+    } >"$temporary"
+    chmod 644 "$temporary"
+    mv -f "$temporary" "$DESKTOP_ENTRY" || fail "could not atomically install the Loadbot desktop entry"
+    trap - EXIT HUP INT TERM
 }
 
 record_install_mode() {
@@ -576,7 +692,9 @@ write_profile() {
 }
 
 [ "$(id -u)" -ne 0 ] || fail "run setup as a normal user, not as root"
-[ -f "$PROJECT_DIR/Cargo.toml" ] || fail "Cargo.toml was not found in $PROJECT_DIR"
+if [ "$IS_RELEASE" = false ]; then
+    [ -f "$PROJECT_DIR/Cargo.toml" ] || fail "Cargo.toml was not found in $PROJECT_DIR"
+fi
 
 if [ -z "$MODE" ]; then
     [ -t 0 ] && [ -t 1 ] || fail "setup mode is required without an interactive terminal; use --cli, --gui, --all, or --repair"
@@ -625,11 +743,16 @@ if [ "$MODE" = repair ]; then
         say "Repairing $MODE installation."
     fi
 fi
-[ "$IS_REPAIR" = false ] || verify_configuration_directories
+if [ "$IS_REPAIR" = true ] && [ "$IS_RELEASE" = false ]; then
+    verify_configuration_directories
+fi
 WANT_GUI=false
 WANT_COMPLETION=false
 [ "$MODE" != gui ] && WANT_COMPLETION=true
 [ "$MODE" = gui ] || [ "$MODE" = all ] && WANT_GUI=true
+if [ "$IS_RELEASE" = true ]; then
+    validate_release_payloads
+fi
 
 profile_change=none
 profile_before=none
@@ -642,8 +765,13 @@ if [ -n "$profile_path" ]; then
     profile_before=$(profile_signature "$profile_path")
 fi
 
-rust_before=$(rust_toolchain_signature)
-toolchain_action=$(rust_action)
+if [ "$IS_RELEASE" = true ]; then
+    rust_before=release
+    toolchain_action=none
+else
+    rust_before=$(rust_toolchain_signature)
+    toolchain_action=$(rust_action)
+fi
 missing=$(missing_system_prerequisites)
 manager=
 packages=
@@ -659,13 +787,15 @@ say "Mode: $MODE"
 say ""
 say "Prerequisites:"
 printf '  git:   %s\n' "$(command_status git)"
-printf '  cargo: %s\n' "$(cargo_status)"
-printf '  rustc: %s\n' "$(command_status rustc)"
-printf '  rustup: %s\n' "$(command_status rustup)"
-if [ "$WANT_GUI" = true ]; then
-    printf '  node:  %s\n' "$(if node_is_supported; then node --version; else printf 'missing or older than 22'; fi)"
-    printf '  npm:   %s\n' "$(command_status npm)"
-    printf '  native GUI libraries: %s\n' "$(if gui_native_ready; then printf ready; else printf missing; fi)"
+if [ "$IS_RELEASE" = false ]; then
+    printf '  cargo: %s\n' "$(cargo_status)"
+    printf '  rustc: %s\n' "$(command_status rustc)"
+    printf '  rustup: %s\n' "$(command_status rustup)"
+    if [ "$WANT_GUI" = true ]; then
+        printf '  node:  %s\n' "$(if node_is_supported; then node --version; else printf 'missing or older than 22'; fi)"
+        printf '  npm:   %s\n' "$(command_status npm)"
+        printf '  native GUI libraries: %s\n' "$(if gui_native_ready; then printf ready; else printf missing; fi)"
+    fi
 fi
 if [ "$toolchain_action" != none ]; then
     say ""
@@ -700,6 +830,10 @@ say "Would install:"
 say "  $LOADBOT_BIN"
 if [ "$WANT_GUI" = true ]; then
     say "  $INSTALL_BIN/loadbot-desktop"
+    if [ "$IS_RELEASE" = true ]; then
+        say "  $DESKTOP_ENTRY"
+        say "  $DESKTOP_ICON"
+    fi
 fi
 say ""
 say "Would configure:"
@@ -745,7 +879,9 @@ if [ "$needs_approval" = true ]; then
 fi
 
 [ "$(missing_system_prerequisites)" = "$missing" ] || fail "prerequisite state changed after approval; rerun setup"
-[ "$(rust_toolchain_signature)" = "$rust_before" ] || fail "Rust toolchain changed after approval; rerun setup"
+if [ "$IS_RELEASE" = false ]; then
+    [ "$(rust_toolchain_signature)" = "$rust_before" ] || fail "Rust toolchain changed after approval; rerun setup"
+fi
 if [ -n "$profile_path" ]; then
     [ "$(profile_signature "$profile_path")" = "$profile_before" ] ||
         fail "profile changed after approval; rerun setup"
@@ -773,33 +909,44 @@ if [ "$toolchain_action" != none ]; then
     install_rust_toolchain "$toolchain_action"
 fi
 
-say "Installing Loadbot from source..."
-cargo install \
-    --path "$PROJECT_DIR" \
-    --root "$INSTALL_ROOT" \
-    --locked \
-    --force
+if [ "$IS_RELEASE" = true ]; then
+    say "Installing Loadbot release payloads..."
+    install_release_file "$LOADBOT_RELEASE_CLI" "$LOADBOT_BIN" 755 "Loadbot CLI"
+else
+    say "Installing Loadbot from source..."
+    cargo install \
+        --path "$PROJECT_DIR" \
+        --root "$INSTALL_ROOT" \
+        --locked \
+        --force
+fi
 
-[ -x "$LOADBOT_BIN" ] || fail "Cargo completed, but $LOADBOT_BIN was not created"
+[ -x "$LOADBOT_BIN" ] || fail "setup did not create an executable at $LOADBOT_BIN"
 "$LOADBOT_BIN" --version || fail "Loadbot failed its version verification check"
 "$LOADBOT_BIN" --help >/dev/null || fail "Loadbot failed its help verification check"
 
 if [ "$WANT_GUI" = true ]; then
-    if frontend_dependencies_current; then
-        say "Lockfile-pinned GUI dependencies are current."
+    if [ "$IS_RELEASE" = true ]; then
+        install_release_file "$LOADBOT_RELEASE_GUI" "$INSTALL_BIN/loadbot-desktop" 755 "Loadbot desktop application"
+        install_release_file "$LOADBOT_RELEASE_ICON" "$DESKTOP_ICON" 644 "Loadbot desktop icon"
+        install_release_desktop_entry
     else
-        say "Restoring lockfile-pinned GUI dependencies..."
-        npm --prefix "$PROJECT_DIR/src/gui" ci || fail "npm ci failed while restoring GUI dependencies"
-        cp "$PROJECT_DIR/src/gui/package-lock.json" "$PROJECT_DIR/src/gui/node_modules/.loadbot-package-lock.json"
+        if frontend_dependencies_current; then
+            say "Lockfile-pinned GUI dependencies are current."
+        else
+            say "Restoring lockfile-pinned GUI dependencies..."
+            npm --prefix "$PROJECT_DIR/src/gui" ci || fail "npm ci failed while restoring GUI dependencies"
+            cp "$PROJECT_DIR/src/gui/package-lock.json" "$PROJECT_DIR/src/gui/node_modules/.loadbot-package-lock.json"
+        fi
+        say "Building the native Loadbot GUI..."
+        npm --prefix "$PROJECT_DIR/src/gui" run desktop:build || fail "native Loadbot GUI build failed"
+        GUI_BUILD=$PROJECT_DIR/src/gui/src-tauri/target/release/loadbot-desktop
+        [ -x "$GUI_BUILD" ] || fail "Tauri completed, but $GUI_BUILD was not created"
+        GUI_TEMP=$INSTALL_BIN/.loadbot-desktop.tmp.$$
+        cp "$GUI_BUILD" "$GUI_TEMP"
+        chmod 755 "$GUI_TEMP"
+        mv -f "$GUI_TEMP" "$INSTALL_BIN/loadbot-desktop"
     fi
-    say "Building the native Loadbot GUI..."
-    npm --prefix "$PROJECT_DIR/src/gui" run desktop:build || fail "native Loadbot GUI build failed"
-    GUI_BUILD=$PROJECT_DIR/src/gui/src-tauri/target/release/loadbot-desktop
-    [ -x "$GUI_BUILD" ] || fail "Tauri completed, but $GUI_BUILD was not created"
-    GUI_TEMP=$INSTALL_BIN/.loadbot-desktop.tmp.$$
-    cp "$GUI_BUILD" "$GUI_TEMP"
-    chmod 755 "$GUI_TEMP"
-    mv -f "$GUI_TEMP" "$INSTALL_BIN/loadbot-desktop"
 fi
 
 if [ "$WANT_COMPLETION" = true ]; then

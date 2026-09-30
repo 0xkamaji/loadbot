@@ -547,8 +547,311 @@ function Add-LoadbotUserPath {
     }
 }
 
+function Assert-LoadbotNormalFile {
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Path,
+        [Parameter(Mandatory)][string]$Description
+    )
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not [IO.Path]::IsPathRooted($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw "$Description is not an absolute file: $Path"
+    }
+    $item = Get-Item -LiteralPath $Path -Force
+    if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        throw "$Description is not a normal file: $Path"
+    }
+}
+
+function Assert-LoadbotNormalDirectory {
+    param([Parameter(Mandatory)][string]$Path)
+    if (-not (Test-Path -LiteralPath $Path)) { return }
+    $item = Get-Item -LiteralPath $Path -Force
+    if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        throw "Loadbot installation path is not a normal directory: $Path"
+    }
+}
+
+function Copy-LoadbotFileAtomically {
+    param(
+        [Parameter(Mandatory)][string]$Source,
+        [Parameter(Mandatory)][string]$Destination
+    )
+    Assert-LoadbotNormalFile -Path $Source -Description "Loadbot release payload"
+    $sourcePath = [IO.Path]::GetFullPath($Source)
+    $destinationPath = [IO.Path]::GetFullPath($Destination)
+    if ([string]::Equals($sourcePath, $destinationPath, [StringComparison]::OrdinalIgnoreCase)) { return }
+
+    $parent = Split-Path -Parent $destinationPath
+    Assert-LoadbotNormalDirectory $parent
+    if (-not (Test-Path -LiteralPath $parent)) {
+        New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    }
+    if (Test-Path -LiteralPath $destinationPath) {
+        Assert-LoadbotNormalFile -Path $destinationPath -Description "Installed Loadbot payload"
+    }
+
+    $temporary = Join-Path $parent (".loadbot-payload.{0}.tmp" -f [Guid]::NewGuid().ToString("N"))
+    try {
+        Copy-Item -LiteralPath $sourcePath -Destination $temporary
+        Assert-LoadbotNormalFile -Path $temporary -Description "Copied Loadbot release payload"
+        $sourceHash = (Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256).Hash
+        if ((Get-FileHash -LiteralPath $temporary -Algorithm SHA256).Hash -ne $sourceHash) {
+            throw "Loadbot release payload verification failed: $Source"
+        }
+        if (Test-Path -LiteralPath $destinationPath) {
+            [IO.File]::Replace($temporary, $destinationPath, $null)
+        } else {
+            [IO.File]::Move($temporary, $destinationPath)
+        }
+        Assert-LoadbotNormalFile -Path $destinationPath -Description "Installed Loadbot payload"
+        if ((Get-FileHash -LiteralPath $destinationPath -Algorithm SHA256).Hash -ne $sourceHash) {
+            throw "Installed Loadbot payload verification failed: $Destination"
+        }
+    } finally {
+        if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force }
+    }
+}
+
+function Get-LoadbotStartMenuShortcutPath {
+    if ([string]::IsNullOrWhiteSpace($env:APPDATA)) {
+        throw "APPDATA is required to configure the Loadbot Start Menu shortcut"
+    }
+    Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Loadbot.lnk"
+}
+
+function Set-LoadbotStartMenuShortcut {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$Target,
+        [Parameter(Mandatory)][string]$IconPath
+    )
+    Assert-LoadbotNormalFile -Path $Target -Description "Loadbot desktop executable"
+    Assert-LoadbotNormalFile -Path $IconPath -Description "Loadbot shortcut icon"
+    if (Test-Path -LiteralPath $Path) {
+        Assert-LoadbotNormalFile -Path $Path -Description "Loadbot Start Menu shortcut"
+    }
+    $parent = Split-Path -Parent $Path
+    Assert-LoadbotNormalDirectory $parent
+    if (-not (Test-Path -LiteralPath $parent)) {
+        New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    }
+    $temporary = Join-Path $parent (".loadbot-shortcut.{0}.tmp.lnk" -f [Guid]::NewGuid().ToString("N"))
+    try {
+        $shell = New-Object -ComObject WScript.Shell
+        $shortcut = $shell.CreateShortcut($temporary)
+        $shortcut.TargetPath = $Target
+        $shortcut.WorkingDirectory = Split-Path -Parent $Target
+        $shortcut.Description = "Loadbot"
+        $shortcut.IconLocation = "$IconPath,0"
+        $shortcut.Save()
+        Assert-LoadbotNormalFile -Path $temporary -Description "New Loadbot Start Menu shortcut"
+        Move-Item -LiteralPath $temporary -Destination $Path -Force
+    } finally {
+        if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force }
+    }
+}
+
+function Get-MissingLoadbotReleasePrerequisites {
+    param([switch]$IncludeGui)
+    $missing = @()
+    if (-not (Get-LoadbotCommand "git")) { $missing += "git" }
+    if ($IncludeGui -and -not (Test-LoadbotWebView2)) { $missing += "webview2" }
+    $missing
+}
+
+function Invoke-LoadbotReleaseSetup {
+    param([ValidateSet("cli", "gui", "all", "repair")][string]$Mode = "cli")
+    $installRootValue = if ($env:LOADBOT_INSTALL_ROOT) {
+        $env:LOADBOT_INSTALL_ROOT
+    } elseif ($env:LOADBOT_RELEASE_CLI -and [IO.Path]::IsPathRooted($env:LOADBOT_RELEASE_CLI) -and
+        (Test-Path -LiteralPath (Join-Path (Split-Path -Parent $env:LOADBOT_RELEASE_CLI) "loadbot-install-mode") -PathType Leaf)) {
+        Split-Path -Parent $env:LOADBOT_RELEASE_CLI
+    } else {
+        if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) { throw "LOCALAPPDATA is required for release setup" }
+        Join-Path $env:LOCALAPPDATA "Programs\Loadbot"
+    }
+    if (-not [IO.Path]::IsPathRooted($installRootValue)) {
+        throw "LOADBOT_INSTALL_ROOT must be an absolute path: $installRootValue"
+    }
+    $installRoot = [IO.Path]::GetFullPath($installRootValue)
+    $installBin = $installRoot
+    $loadbotExe = Join-Path $installRoot "loadbot.exe"
+    $guiExe = Join-Path $installRoot "loadbot-desktop.exe"
+    $iconPath = Join-Path $installRoot "loadbot.png"
+    $completionDir = Join-Path $installRoot "completions"
+    $completionPath = Join-Path $completionDir "loadbot.ps1"
+    $modePath = Join-Path $installRoot "loadbot-install-mode"
+    $profilePath = Get-LoadbotProfilePath
+
+    Assert-LoadbotNormalDirectory $installRoot
+    if ($Mode -eq "repair") {
+        if (Test-Path -LiteralPath $modePath) {
+            $modeItem = Get-Item -LiteralPath $modePath -Force
+            if ($modeItem.PSIsContainer -or ($modeItem.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+                throw "Loadbot installation record is not a normal file: $modePath"
+            }
+            $Mode = ([IO.File]::ReadAllText($modePath)).Trim()
+            if ($Mode -notin @("cli", "gui", "all")) { throw "Invalid installation record in $modePath" }
+            Write-Host "Repairing recorded $Mode release installation."
+        } else {
+            $Mode = Resolve-LoadbotLegacyRepairMode -InstallBin $installBin -LoadbotExe $loadbotExe `
+                -GuiExe $guiExe -CompletionPath $completionPath -ProfilePath $profilePath
+            Write-Host "Repairing $Mode release installation."
+        }
+        Assert-LoadbotConfigurationDirectories
+    }
+
+    $wantGui = $Mode -in @("gui", "all")
+    $wantCompletion = $Mode -in @("cli", "all")
+    $cliSource = $env:LOADBOT_RELEASE_CLI
+    Assert-LoadbotNormalFile -Path $cliSource -Description "LOADBOT_RELEASE_CLI"
+    if ($wantGui) {
+        Assert-LoadbotNormalFile -Path $env:LOADBOT_RELEASE_GUI -Description "LOADBOT_RELEASE_GUI"
+        Assert-LoadbotNormalFile -Path $env:LOADBOT_RELEASE_ICON -Description "LOADBOT_RELEASE_ICON"
+        $shortcutPath = Get-LoadbotStartMenuShortcutPath
+    }
+
+    $destinations = @(
+        @{ Path = $loadbotExe; Description = "Installed Loadbot CLI" },
+        @{ Path = $modePath; Description = "Loadbot installation record" }
+    )
+    if ($wantCompletion) {
+        Assert-LoadbotNormalDirectory $completionDir
+        $destinations += @{ Path = $completionPath; Description = "PowerShell completion" }
+    }
+    if ($wantGui) {
+        $destinations += @(
+            @{ Path = $guiExe; Description = "Installed Loadbot desktop executable" },
+            @{ Path = $iconPath; Description = "Installed Loadbot icon" },
+            @{ Path = $shortcutPath; Description = "Loadbot Start Menu shortcut" }
+        )
+        Assert-LoadbotNormalDirectory (Split-Path -Parent $shortcutPath)
+    }
+    foreach ($destination in $destinations) {
+        if (Test-Path -LiteralPath $destination.Path) {
+            Assert-LoadbotNormalFile -Path $destination.Path -Description $destination.Description
+        }
+    }
+
+    $block = if ($wantCompletion) { Get-LoadbotManagedBlock -InstallRoot $installRoot } else { "" }
+    $profilePlan = if ($wantCompletion) { Get-LoadbotProfilePlan -Path $profilePath -Block $block } else { "not configured" }
+    $profileState = if ($wantCompletion) { Get-LoadbotProfileState $profilePath } else { "not inspected" }
+    $userPathBefore = Get-LoadbotUserPath
+    $pathPlan = if (Test-LoadbotPathContains $userPathBefore $installRoot) { "unchanged" } else { "add" }
+    $missing = @(Get-MissingLoadbotReleasePrerequisites -IncludeGui:$wantGui)
+    $wingetAvailable = [bool](Get-LoadbotCommand "winget")
+    $packages = @()
+    if ($missing -contains "git") { $packages += "Git.Git" }
+    if ($missing -contains "webview2") { $packages += "Microsoft.EdgeWebView2Runtime" }
+
+    Write-Host "LOADBOT RELEASE SETUP PLAN"
+    Write-Host "Mode: $Mode"
+    Write-Host "Install root: $installRoot"
+    Write-Host "Prerequisites:"
+    Write-Host ("  Git: " + $(if ($missing -contains "git") { "missing" } else { "ready" }))
+    if ($wantGui) { Write-Host ("  WebView2: " + $(if ($missing -contains "webview2") { "missing" } else { "ready" })) }
+    Write-Host "Would install:"
+    Write-Host "  $loadbotExe"
+    if ($wantGui) {
+        Write-Host "  $guiExe"
+        Write-Host "  $shortcutPath"
+    }
+    Write-Host "Would configure:"
+    Write-Host "  User PATH: $installRoot ($pathPlan)"
+    if ($wantCompletion) {
+        Write-Host "  $profilePath ($profilePlan)"
+        Write-Host "  $completionPath"
+    }
+    if ($packages.Count -gt 0 -and $wingetAvailable) {
+        Write-Host "Would run:"
+        foreach ($package in $packages) {
+            Write-Host "  winget install --id $package --exact --source winget --scope user --accept-package-agreements --accept-source-agreements"
+        }
+    }
+
+    if ($missing.Count -gt 0 -and -not $wingetAvailable) {
+        throw "Cannot install missing release prerequisites without Winget: $($missing -join ', ')"
+    }
+    $needsApproval = $missing.Count -gt 0 -or $pathPlan -eq "add" -or ($wantCompletion -and $profilePlan -ne "unchanged")
+    if ($needsApproval) {
+        if (-not (Test-LoadbotInteractive)) { throw "Setup approval requires an interactive terminal" }
+        $prompt = if ($missing.Count -gt 0) { "Install these prerequisites? [y/N]" } else { "Proceed? [y/N]" }
+        if ((Read-Host $prompt) -notmatch '^(?i:y|yes)$') { throw "Setup cancelled; no changes were made" }
+    }
+    if (((Get-MissingLoadbotReleasePrerequisites -IncludeGui:$wantGui) -join "`0") -ne ($missing -join "`0")) {
+        throw "Prerequisite state changed after approval; rerun setup"
+    }
+    if (($wantCompletion -and (Get-LoadbotProfileState $profilePath) -ne $profileState) -or (Get-LoadbotUserPath) -ne $userPathBefore) {
+        throw "Profile or user PATH changed after approval; rerun setup"
+    }
+
+    foreach ($package in $packages) {
+        Invoke-LoadbotWinget @("install", "--id", $package, "--exact", "--source", "winget", "--scope", "user", "--accept-package-agreements", "--accept-source-agreements")
+    }
+    if ($packages.Count -gt 0) {
+        Sync-LoadbotProcessPath
+        $remaining = @(Get-MissingLoadbotReleasePrerequisites -IncludeGui:$wantGui)
+        if ($remaining.Count -gt 0) { throw "Release prerequisites remain missing after installation: $($remaining -join ', ')" }
+        $userPathAfterPackages = Get-LoadbotUserPath
+        $allowedPathAdditions = @()
+        if ($packages -contains "Git.Git") {
+            $gitCommand = Get-LoadbotCommand "git"
+            if ($gitCommand -and $gitCommand.Source) { $allowedPathAdditions += Split-Path -Parent $gitCommand.Source }
+        }
+        if (-not (Test-LoadbotExpectedPathTransition -Before $userPathBefore -After $userPathAfterPackages -AllowedEntries $allowedPathAdditions)) {
+            throw "User PATH changed unexpectedly during prerequisite installation; rerun setup"
+        }
+        $userPathBefore = $userPathAfterPackages
+    }
+
+    Assert-LoadbotNormalDirectory $installRoot
+    if (-not (Test-Path -LiteralPath $installRoot)) { New-Item -ItemType Directory -Path $installRoot | Out-Null }
+    Copy-LoadbotFileAtomically -Source $cliSource -Destination $loadbotExe
+    Invoke-LoadbotExecutable -Executable $loadbotExe -Arguments @("--version")
+    Invoke-LoadbotExecutable -Executable $loadbotExe -Arguments @("--help") | Out-Null
+    if ($wantGui) {
+        Copy-LoadbotFileAtomically -Source $env:LOADBOT_RELEASE_GUI -Destination $guiExe
+        Copy-LoadbotFileAtomically -Source $env:LOADBOT_RELEASE_ICON -Destination $iconPath
+    }
+
+    if ($wantCompletion) {
+        Assert-LoadbotNormalDirectory $completionDir
+        if ((Get-LoadbotInstalledFileState $completionPath) -eq "unsafe") {
+            throw "PowerShell completion path is not a normal file: $completionPath"
+        }
+        New-Item -ItemType Directory -Force -Path $completionDir | Out-Null
+        $previousComplete = $env:COMPLETE
+        try {
+            $env:COMPLETE = "powershell"
+            Invoke-LoadbotExecutable -Executable $loadbotExe -Arguments @() -Capture |
+                Set-Content -LiteralPath $completionPath -Encoding utf8
+        } finally {
+            $env:COMPLETE = $previousComplete
+        }
+    }
+    if (($wantCompletion -and (Get-LoadbotProfileState $profilePath) -ne $profileState) -or (Get-LoadbotUserPath) -ne $userPathBefore) {
+        throw "Profile or user PATH changed while Loadbot was being installed; rerun setup"
+    }
+    Add-LoadbotUserPath -InstallBin $installRoot
+    if ($wantCompletion -and $profilePlan -ne "unchanged") {
+        Update-LoadbotProfile -Path $profilePath -Block $block -Action $profilePlan
+    }
+    if ($wantGui) {
+        Set-LoadbotStartMenuShortcut -Path $shortcutPath -Target $guiExe -IconPath $guiExe
+    }
+    Set-LoadbotInstallMode -Path $modePath -Mode $Mode
+
+    Write-Host ""
+    Write-Host "Loadbot release installed and verified successfully:"
+    Write-Host "  $loadbotExe"
+    if ($wantGui) { Write-Host "  $guiExe" }
+}
+
 function Invoke-LoadbotSetup {
     param([ValidateSet("cli", "gui", "all", "repair")][string]$Mode = "cli")
+    if ($env:LOADBOT_INTERNAL_RELEASE_SETUP -eq "1") {
+        Invoke-LoadbotReleaseSetup -Mode $Mode
+        return
+    }
     $projectDir = $PSScriptRoot
     if (-not (Test-Path (Join-Path $projectDir "Cargo.toml") -PathType Leaf)) {
         throw "Cargo.toml was not found in $projectDir"

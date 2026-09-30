@@ -65,4 +65,22 @@ jobs:
         run: npm --prefix src/gui test
       - run: cargo fmt --manifest-path src/gui/src-tauri/Cargo.toml --check
       - run: cargo check --locked --manifest-path src/gui/src-tauri/Cargo.toml --features custom-protocol
-      - run: npm --prefix src/gui run desktop:build
+      - name: Build native desktop
+        if: runner.os == 'Linux'
+        run: npm --prefix src/gui run desktop:build
+      - name: Build release CLI for the Windows installer
+        if: runner.os == 'Windows'
+        run: cargo build --release --locked
+      - name: Stage Windows CLI for the installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force "src/gui/src-tauri/binaries" | Out-Null
+          Copy-Item "target/release/loadbot.exe" "src/gui/src-tauri/binaries/loadbot-x86_64-pc-windows-msvc.exe"
+      - name: Validate Windows installer PATH helper
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: '[scriptblock]::Create((Get-Content -Raw "src/gui/src-tauri/nsis/user-path.ps1")) | Out-Null'
+      - name: Build Windows NSIS installer
+        if: runner.os == 'Windows'
+        run: npm --prefix src/gui run desktop:bundle:windows -- --ci -- --locked

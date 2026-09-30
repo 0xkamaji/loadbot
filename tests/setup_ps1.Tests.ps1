@@ -6,6 +6,11 @@ Describe "Loadbot PowerShell setup" {
     }
 
     BeforeEach {
+        $env:LOADBOT_INTERNAL_RELEASE_SETUP = $null
+        $env:LOADBOT_INSTALL_ROOT = $null
+        $env:LOADBOT_RELEASE_CLI = $null
+        $env:LOADBOT_RELEASE_GUI = $null
+        $env:LOADBOT_RELEASE_ICON = $null
         $script:testRoot = Join-Path $TestDrive "home with spaces $([guid]::NewGuid().ToString('N'))"
         $script:project = Split-Path -Parent $script:scriptPath
         $script:testProfile = Join-Path $script:testRoot "Documents\PowerShell\Microsoft.PowerShell_profile.ps1"
@@ -425,6 +430,116 @@ Describe "Loadbot PowerShell setup" {
             Test-Path (Join-Path $installRoot "loadbot-install-mode") | Should -BeFalse
         } finally {
             Remove-Item Env:LOADBOT_HOME
+        }
+    }
+
+    Context "internal release setup" {
+        BeforeEach {
+            $env:LOADBOT_INTERNAL_RELEASE_SETUP = "1"
+            $env:LOADBOT_INSTALL_ROOT = Join-Path $script:testRoot "installed Loadbot"
+            $env:LOCALAPPDATA = Join-Path $script:testRoot "LocalAppData"
+            $env:APPDATA = Join-Path $script:testRoot "AppData"
+            $script:releasePayload = Join-Path $script:testRoot "release payload"
+            New-Item -ItemType Directory -Force $script:releasePayload | Out-Null
+            $env:LOADBOT_RELEASE_CLI = Join-Path $script:releasePayload "loadbot.exe"
+            $env:LOADBOT_RELEASE_GUI = Join-Path $script:releasePayload "loadbot-desktop.exe"
+            $env:LOADBOT_RELEASE_ICON = Join-Path $script:releasePayload "loadbot.png"
+            Set-Content -LiteralPath $env:LOADBOT_RELEASE_CLI -Value "release cli"
+            Set-Content -LiteralPath $env:LOADBOT_RELEASE_GUI -Value "release gui"
+            Set-Content -LiteralPath $env:LOADBOT_RELEASE_ICON -Value "release icon"
+            Mock Test-LoadbotWebView2 { $true }
+            Mock Set-LoadbotStartMenuShortcut { }
+        }
+
+        It "installs verified release payloads without invoking Cargo" {
+            Invoke-LoadbotSetup -Mode all
+
+            Get-Content -Raw (Join-Path $env:LOADBOT_INSTALL_ROOT "loadbot.exe") | Should -Match "release cli"
+            Get-Content -Raw (Join-Path $env:LOADBOT_INSTALL_ROOT "loadbot-desktop.exe") | Should -Match "release gui"
+            Get-Content -Raw (Join-Path $env:LOADBOT_INSTALL_ROOT "loadbot.png") | Should -Match "release icon"
+            Get-Content -Raw (Join-Path $env:LOADBOT_INSTALL_ROOT "loadbot-install-mode") | Should -Match '^all'
+            Assert-MockCalled Invoke-LoadbotCargoInstall -Times 0 -Exactly
+        }
+
+        It "checks no Cargo, Rust, Node, npm, or MSVC development tools" {
+            $script:releaseCommands = @()
+            Mock Get-LoadbotCommand {
+                param($Name)
+                $script:releaseCommands += $Name
+                if ($Name -in @("git", "winget")) { [pscustomobject]@{ Source = "C:\fake\$Name.exe" } }
+            }
+
+            Invoke-LoadbotSetup -Mode gui
+
+            $script:releaseCommands | Should -Not -Contain "cargo"
+            $script:releaseCommands | Should -Not -Contain "rustc"
+            $script:releaseCommands | Should -Not -Contain "node"
+            $script:releaseCommands | Should -Not -Contain "npm"
+            Assert-MockCalled Test-LoadbotWindowsBuildTools -Times 0 -Exactly
+        }
+
+        It "repairs safely when the release CLI source is already the destination" {
+            New-Item -ItemType Directory -Force $env:LOADBOT_INSTALL_ROOT | Out-Null
+            $env:LOADBOT_RELEASE_CLI = Join-Path $env:LOADBOT_INSTALL_ROOT "loadbot.exe"
+            Set-Content -LiteralPath $env:LOADBOT_RELEASE_CLI -Value "installed cli"
+            Set-Content -LiteralPath (Join-Path $env:LOADBOT_INSTALL_ROOT "loadbot-install-mode") -Value "cli"
+            Mock Get-LoadbotUserPath { $env:LOADBOT_INSTALL_ROOT }
+            New-Item -ItemType Directory -Force (Split-Path $script:testProfile) | Out-Null
+            Set-Content -LiteralPath $script:testProfile -Value (Get-LoadbotManagedBlock -InstallRoot $env:LOADBOT_INSTALL_ROOT)
+            $script:expectedInstallRoot = $env:LOADBOT_INSTALL_ROOT
+            $env:LOADBOT_INSTALL_ROOT = $null
+
+            Invoke-LoadbotSetup -Mode repair
+
+            Get-Content -Raw $env:LOADBOT_RELEASE_CLI | Should -Match "installed cli"
+            Test-Path -LiteralPath (Join-Path $script:expectedInstallRoot "loadbot-install-mode") | Should -BeTrue
+            Assert-MockCalled Invoke-LoadbotCargoInstall -Times 0 -Exactly
+        }
+
+        It "keeps release binaries separate from the runtime data directory by default" {
+            $env:LOADBOT_INSTALL_ROOT = $null
+
+            Invoke-LoadbotSetup -Mode cli
+
+            Test-Path -LiteralPath (Join-Path $env:LOCALAPPDATA "Programs\Loadbot\loadbot.exe") | Should -BeTrue
+            Test-Path -LiteralPath (Join-Path $env:LOCALAPPDATA "loadbot\loadbot.exe") | Should -BeFalse
+        }
+
+        It "fails before mutation when the requested desktop payload is missing" {
+            Remove-Item -LiteralPath $env:LOADBOT_RELEASE_GUI
+
+            { Invoke-LoadbotSetup -Mode gui } | Should -Throw "*LOADBOT_RELEASE_GUI*"
+
+            Test-Path -LiteralPath $env:LOADBOT_INSTALL_ROOT | Should -BeFalse
+            Assert-MockCalled Set-LoadbotUserPath -Times 0 -Exactly
+            Assert-MockCalled Set-LoadbotStartMenuShortcut -Times 0 -Exactly
+        }
+
+        It "adds only the stable release root to the user PATH" {
+            $script:releaseUserPath = "C:\One;C:\Two"
+            Mock Get-LoadbotUserPath { $script:releaseUserPath }
+            Mock Set-LoadbotUserPath { param($Value) $script:releaseUserPath = $Value }
+
+            Invoke-LoadbotSetup -Mode cli
+
+            Test-LoadbotPathContains $script:releaseUserPath "C:\One" | Should -BeTrue
+            Test-LoadbotPathContains $script:releaseUserPath "C:\Two" | Should -BeTrue
+            Test-LoadbotPathContains $script:releaseUserPath $env:LOADBOT_INSTALL_ROOT | Should -BeTrue
+            Assert-MockCalled Set-LoadbotUserPath -Times 1 -Exactly
+        }
+
+        It "creates the Start Menu shortcut for GUI mode" {
+            Invoke-LoadbotSetup -Mode gui
+            Assert-MockCalled Set-LoadbotStartMenuShortcut -Times 1 -Exactly -ParameterFilter {
+                $Target -eq (Join-Path $env:LOADBOT_INSTALL_ROOT "loadbot-desktop.exe") -and
+                    $IconPath -eq (Join-Path $env:LOADBOT_INSTALL_ROOT "loadbot-desktop.exe") -and
+                    $Path -like "*Loadbot.lnk"
+            }
+        }
+
+        It "does not create a Start Menu shortcut for CLI-only mode" {
+            Invoke-LoadbotSetup -Mode cli
+            Assert-MockCalled Set-LoadbotStartMenuShortcut -Times 0 -Exactly
         }
     }
 }

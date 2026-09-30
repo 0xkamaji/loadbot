@@ -133,25 +133,71 @@ exit 0
 
 #[cfg(unix)]
 #[test]
-fn setup_command_delegates_one_explicit_mode_to_the_source_bootstrap() {
+fn setup_uses_embedded_release_payload_without_source_discovery() {
     let temporary = TempDir::new().unwrap();
-    let source = temporary.path().join("setup source with spaces");
-    fs::create_dir_all(source.join("src/gui")).unwrap();
-    fs::write(source.join("Cargo.toml"), "[workspace]\n").unwrap();
-    fs::write(source.join("src/gui/package.json"), "{}\n").unwrap();
-    executable(
-        &source.join("setup.sh"),
-        "#!/bin/sh\nprintf '%s' \"$1\" >\"$LOADBOT_TEST_MARKER\"\n",
-    );
-    let marker = temporary.path().join("setup mode");
+    let explicit_source = temporary.path().join("explicit source");
+    let current_source = temporary.path().join("current source");
+    for source in [&explicit_source, &current_source] {
+        fs::create_dir_all(source.join("src/gui/src-tauri")).unwrap();
+        fs::write(source.join("Cargo.toml"), "[workspace]\n").unwrap();
+        fs::write(source.join("src/gui/package.json"), "{}\n").unwrap();
+        fs::write(source.join("src/gui/src-tauri/Cargo.toml"), "[workspace]\n").unwrap();
+        executable(
+            &source.join("setup.sh"),
+            "#!/bin/sh\nprintf source >\"$LOADBOT_TEST_MARKER\"\n",
+        );
+    }
+    let home = temporary.path().join("isolated home");
+    let install_root = temporary.path().join("release install");
+    let marker = temporary.path().join("source setup marker");
+    fs::create_dir(&home).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_loadbot"))
-        .env("LOADBOT_SOURCE", &source)
+        .current_dir(&current_source)
+        .env("HOME", &home)
+        .env("LOADBOT_INSTALL_ROOT", &install_root)
+        .env("LOADBOT_SOURCE", &explicit_source)
         .env("LOADBOT_TEST_MARKER", &marker)
-        .args(["setup", "--gui"])
+        .env("SHELL", "/bin/false")
+        .args(["setup", "--cli"])
         .output()
         .unwrap();
     assert_success_ref(&output);
-    assert_eq!(fs::read_to_string(marker).unwrap(), "--gui");
+    assert!(!marker.exists());
+    assert_eq!(
+        fs::read(install_root.join("bin/loadbot")).unwrap(),
+        fs::read(env!("CARGO_BIN_EXE_loadbot")).unwrap()
+    );
+    assert_eq!(
+        fs::read_to_string(install_root.join("loadbot-install-mode")).unwrap(),
+        "cli\n"
+    );
+    assert!(install_root.join("completions/loadbot.bash").is_file());
+    assert!(!home.join(".local/share/loadbot").exists());
+    assert!(!home.join(".config/loadbot").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn release_cli_setup_works_without_a_source_checkout() {
+    let temporary = TempDir::new().unwrap();
+    let working_directory = temporary.path().join("not a checkout");
+    let home = temporary.path().join("home");
+    let install_root = temporary.path().join("install root");
+    fs::create_dir(&working_directory).unwrap();
+    fs::create_dir(&home).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_loadbot"))
+        .current_dir(working_directory)
+        .env("HOME", &home)
+        .env("LOADBOT_INSTALL_ROOT", &install_root)
+        .env("SHELL", "/bin/false")
+        .env_remove("LOADBOT_SOURCE")
+        .args(["setup", "--cli"])
+        .output()
+        .unwrap();
+    assert_success_ref(&output);
+    assert!(install_root.join("bin/loadbot").is_file());
+    assert!(!install_root.join("bin/loadbot-desktop").exists());
 }
 
 #[test]
@@ -161,6 +207,8 @@ fn development_gui_reports_missing_tooling_without_starting_a_preview() {
     fs::create_dir_all(source.join("src/gui")).unwrap();
     fs::write(source.join("Cargo.toml"), "[workspace]\n").unwrap();
     fs::write(source.join("src/gui/package.json"), "{}\n").unwrap();
+    fs::create_dir_all(source.join("src/gui/src-tauri")).unwrap();
+    fs::write(source.join("src/gui/src-tauri/Cargo.toml"), "[workspace]\n").unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_loadbot"))
         .env("LOADBOT_SOURCE", &source)
         .env("PATH", temporary.path().join("empty path"))

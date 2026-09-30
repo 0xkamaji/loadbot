@@ -16,7 +16,7 @@ pub enum Commands {
         #[arg(long)]
         dev: bool,
     },
-    /// Install, configure, or repair Loadbot from a source checkout.
+    /// Install, configure, or repair this Loadbot release.
     Setup(SetupArgs),
     /// Add a tool definition to a writable catalog.
     Add {

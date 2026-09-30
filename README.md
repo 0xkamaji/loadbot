@@ -15,7 +15,7 @@ Loadbot is a cross-platform GUI and CLI for managing Git-backed catalogs of proj
 
 ## Download
 
-Download the latest Windows or Linux build from [GitHub Releases](https://github.com/0xkamaji/loadbot/releases). Each release archive contains both the `loadbot` CLI and the `loadbot-desktop` GUI.
+Download the latest build from [GitHub Releases](https://github.com/0xkamaji/loadbot/releases). Windows releases provide a standard installer plus a portable zip. Linux releases provide a portable tarball; extract it and run `./install.sh` to install the CLI and desktop GUI under `~/.local`. Git must be installed and available on `PATH`.
 
 ## CLI
 
@@ -24,7 +24,7 @@ Run `loadbot` without a command to open the interactive menu. Commands with opti
 | Command | Purpose |
 | --- | --- |
 | `loadbot gui [--dev]` | Launch the desktop GUI, or its source development environment. |
-| `loadbot setup [--cli\|--gui\|--all\|--repair]` | Run setup or repair from a source checkout. |
+| `loadbot setup [--cli\|--gui\|--all\|--repair]` | Install or repair the current release. |
 | `loadbot add [NAME] [GIT_URL] [--revision REVISION] [--catalog CATALOG] [--commit] [--push]` | Add a project to a writable catalog. |
 | `loadbot pull [NAME] [--catalog CATALOG]` | Install a project. |
 | `loadbot update [NAME] [--catalog CATALOG]` | Fast-forward an installed project. |

@@ -52,7 +52,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-24.04
+          - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             archive: tar.gz
           - os: windows-latest
@@ -81,8 +81,22 @@ jobs:
         run: cargo build --release --locked
       - name: Install frontend dependencies
         run: npm --prefix src/gui ci
-      - name: Build desktop
+      - name: Build Linux desktop
+        if: runner.os == 'Linux'
         run: npm --prefix src/gui run desktop:build -- --ci -- --locked
+      - name: Stage Windows CLI for the installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force "src/gui/src-tauri/binaries" | Out-Null
+          Copy-Item "target/release/loadbot.exe" "src/gui/src-tauri/binaries/loadbot-${{ matrix.target }}.exe"
+      - name: Validate Windows installer PATH helper
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: '[scriptblock]::Create((Get-Content -Raw "src/gui/src-tauri/nsis/user-path.ps1")) | Out-Null'
+      - name: Build Windows desktop and installer
+        if: runner.os == 'Windows'
+        run: npm --prefix src/gui run desktop:bundle:windows -- --ci -- --locked
       - name: Package Linux binaries
         if: runner.os == 'Linux'
         shell: bash
@@ -92,6 +106,7 @@ jobs:
           mkdir -p "dist/$package"
           install -m 755 target/release/loadbot "dist/$package/loadbot"
           install -m 755 src/gui/src-tauri/target/release/loadbot-desktop "dist/$package/loadbot-desktop"
+          install -m 755 packaging/linux/install.sh "dist/$package/install.sh"
           tar -C dist -czf "dist/$package.tar.gz" "$package"
       - name: Package Windows binaries
         if: runner.os == 'Windows'
@@ -100,13 +115,26 @@ jobs:
           $package = "loadbot-$env:GITHUB_REF_NAME-${{ matrix.target }}"
           New-Item -ItemType Directory -Force "dist/$package" | Out-Null
           Copy-Item "target/release/loadbot.exe" "dist/$package/loadbot.exe"
-          Copy-Item "src/gui/src-tauri/target/release/loadbot-desktop.exe" "dist/$package/loadbot-desktop.exe"
+          Copy-Item "src/gui/src-tauri/target/${{ matrix.target }}/release/loadbot-desktop.exe" "dist/$package/loadbot-desktop.exe"
           Compress-Archive -Path "dist/$package" -DestinationPath "dist/$package.zip"
+          $installers = @(Get-ChildItem "src/gui/src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe")
+          if ($installers.Count -ne 1) {
+            throw "Expected exactly one NSIS installer, found $($installers.Count)"
+          }
+          Copy-Item $installers[0].FullName "dist/$package-setup.exe"
       - name: Upload release archive
         uses: actions/upload-artifact@v4
         with:
           name: release-${{ matrix.target }}
           path: dist/loadbot-${{ github.ref_name }}-${{ matrix.target }}.${{ matrix.archive }}
+          if-no-files-found: error
+          retention-days: 1
+      - name: Upload Windows installer
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-installer-${{ matrix.target }}
+          path: dist/loadbot-${{ github.ref_name }}-${{ matrix.target }}-setup.exe
           if-no-files-found: error
           retention-days: 1
 

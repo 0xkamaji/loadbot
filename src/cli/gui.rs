@@ -17,16 +17,12 @@ pub fn run(development: bool) -> Result<()> {
     }
 }
 
-pub(super) fn source_root() -> Result<PathBuf> {
+fn source_root() -> Result<PathBuf> {
     if let Some(path) = env::var_os(SOURCE_ENV).filter(|value| !value.is_empty()) {
         return validate_source(PathBuf::from(path));
     }
-    if let Ok(path) = env::current_dir()
-        && source_gui(&path).is_file()
-    {
-        return Ok(path);
-    }
-    validate_source(PathBuf::from(env!("CARGO_MANIFEST_DIR"))).with_context(|| {
+    let path = env::current_dir().context("could not determine the current directory")?;
+    validate_source(path).with_context(|| {
         format!(
             "Loadbot source checkout was not found. Run from the checkout or set {SOURCE_ENV} to its path."
         )
@@ -41,7 +37,10 @@ fn validate_source(path: PathBuf) -> Result<PathBuf> {
             .context("could not determine the current directory")?
             .join(path)
     };
-    if !path.join("Cargo.toml").is_file() || !source_gui(&path).is_file() {
+    if !path.join("Cargo.toml").is_file()
+        || !source_gui(&path).is_file()
+        || !path.join("src/gui/src-tauri/Cargo.toml").is_file()
+    {
         bail!("{} is not a Loadbot source checkout", path.display());
     }
     Ok(path)
@@ -88,12 +87,6 @@ fn run_development(root: &Path) -> Result<()> {
         "GUI development requires Node.js/npm. Install Node.js LTS or run `loadbot setup`.",
     )?;
     let gui = root.join("src").join("gui");
-    if !gui.join("src-tauri/Cargo.toml").is_file() {
-        bail!(
-            "GUI development source is incomplete: {} is missing",
-            gui.join("src-tauri/Cargo.toml").display()
-        );
-    }
     #[cfg(target_os = "linux")]
     require_linux_native_dependencies()?;
     ensure_frontend_dependencies(&gui)?;

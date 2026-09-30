@@ -89,7 +89,9 @@ EOF
     export CASE_DIR HOME CARGO_HOME PROJECT FAKE_BIN COMMAND_LOG OUTPUT PATH SHELL
     unset FAKE_SUDO_FAIL FAKE_CARGO_FAIL FAKE_INSTALL_PREREQUISITES \
         FAKE_CARGO_VERSION FAKE_INSTALLED_CARGO_VERSION FAKE_CURL_FAIL \
-        FAKE_RUSTUP_FAIL FAKE_RUSTUP_INSTALL_FAIL
+        FAKE_RUSTUP_FAIL FAKE_RUSTUP_INSTALL_FAIL LOADBOT_INTERNAL_RELEASE_SETUP \
+        LOADBOT_RELEASE_CLI LOADBOT_RELEASE_GUI LOADBOT_RELEASE_ICON \
+        LOADBOT_INSTALL_ROOT XDG_DATA_HOME
 }
 
 make_prerequisite() {
@@ -277,6 +279,53 @@ case " $* " in
 esac
 EOF
     chmod +x "$FAKE_BIN/npm"
+}
+
+prepare_release() {
+    RELEASE_INSTALL="$CASE_DIR/release install"
+    RELEASE_DATA="$CASE_DIR/release data"
+    RELEASE_PAYLOADS="$CASE_DIR/release payloads"
+    mkdir -p "$RELEASE_PAYLOADS"
+    LOADBOT_RELEASE_CLI="$RELEASE_PAYLOADS/loadbot"
+    LOADBOT_RELEASE_GUI="$RELEASE_PAYLOADS/loadbot-desktop"
+    LOADBOT_RELEASE_ICON="$RELEASE_PAYLOADS/loadbot.png"
+    cat >"$LOADBOT_RELEASE_CLI" <<'EOF'
+#!/bin/sh
+printf '%s\n' "release-loadbot $* COMPLETE=${COMPLETE:-}" >>"$COMMAND_LOG"
+case ${COMPLETE:-} in
+    '') [ "${1:-}" = --version ] && printf '%s\n' 'loadbot 0.1.0' ;;
+    *) printf '%s\n' "completion for $COMPLETE" ;;
+esac
+exit 0
+EOF
+    cat >"$LOADBOT_RELEASE_GUI" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+    printf '%s\n' 'release icon' >"$LOADBOT_RELEASE_ICON"
+    chmod +x "$LOADBOT_RELEASE_CLI" "$LOADBOT_RELEASE_GUI"
+    for forbidden in cargo rustc rustup node npm pkg-config cc make; do
+        cat >"$FAKE_BIN/$forbidden" <<EOF
+#!/bin/sh
+printf '%s\n' 'forbidden-$forbidden' >>"\$COMMAND_LOG"
+exit 99
+EOF
+        chmod +x "$FAKE_BIN/$forbidden"
+    done
+    LOADBOT_INTERNAL_RELEASE_SETUP=1
+    LOADBOT_INSTALL_ROOT=$RELEASE_INSTALL
+    XDG_DATA_HOME=$RELEASE_DATA
+    SHELL=/bin/false
+    export LOADBOT_INTERNAL_RELEASE_SETUP LOADBOT_INSTALL_ROOT LOADBOT_RELEASE_CLI \
+        LOADBOT_RELEASE_GUI LOADBOT_RELEASE_ICON XDG_DATA_HOME SHELL RELEASE_INSTALL RELEASE_DATA
+}
+
+run_release() {
+    mode=$1
+    set +e
+    /bin/sh "$PROJECT/setup.sh" "--$mode" >"$OUTPUT" 2>&1
+    STATUS=$?
+    set -e
 }
 
 install_legacy_binary() {
@@ -516,6 +565,61 @@ new_case cli_only_scope
 run_interactive y
 if ! grep -F 'npm ' "$COMMAND_LOG" >/dev/null; then pass "CLI-only setup never invokes npm"; else fail_test "CLI-only setup never invokes npm"; fi
 assert_not_exists "CLI-only setup does not install GUI binary" "$CARGO_HOME/bin/loadbot-desktop"
+
+# Embedded-release installation uses only shipped payloads and runtime Git.
+new_case release_cli
+prepare_release
+rm "$PROJECT/Cargo.toml"
+unset LOADBOT_INSTALL_ROOT
+run_release cli
+[ "$STATUS" -eq 0 ] && pass "release CLI installs without a source checkout" || fail_test "release CLI installs without a source checkout"
+[ -x "$HOME/.local/bin/loadbot" ] && pass "release default root is HOME/.local" || fail_test "release default root is HOME/.local"
+assert_contains "release CLI generates completions" "completion for bash" "$HOME/.local/completions/loadbot.bash"
+if ! grep -F 'forbidden-' "$COMMAND_LOG" >/dev/null; then pass "release CLI performs no build-tool checks"; else fail_test "release CLI performs no build-tool checks"; fi
+assert_not_exists "release CLI does not create runtime data" "$HOME/.local/share/loadbot"
+assert_not_exists "release CLI does not create runtime config" "$HOME/.config/loadbot"
+
+new_case release_all
+prepare_release
+run_release all
+[ "$STATUS" -eq 0 ] && pass "release all installs shipped CLI and desktop payloads" || fail_test "release all installs shipped CLI and desktop payloads"
+[ -x "$RELEASE_INSTALL/bin/loadbot" ] && [ -x "$RELEASE_INSTALL/bin/loadbot-desktop" ] && pass "release executables are installed together" || fail_test "release executables are installed together"
+assert_contains "desktop entry launches the installed payload" "$RELEASE_INSTALL/bin/loadbot-desktop" "$RELEASE_DATA/applications/dev.loadbot.desktop"
+assert_contains "desktop entry uses the installed icon name" "Icon=dev.loadbot" "$RELEASE_DATA/applications/dev.loadbot.desktop"
+assert_contains "release icon is installed in the hicolor tree" "release icon" "$RELEASE_DATA/icons/hicolor/100x100/apps/dev.loadbot.png"
+if ! grep -F 'forbidden-' "$COMMAND_LOG" >/dev/null; then pass "release GUI performs no Cargo, Node, npm, or native build checks"; else fail_test "release GUI performs no Cargo, Node, npm, or native build checks"; fi
+
+LOADBOT_RELEASE_CLI="$RELEASE_INSTALL/bin/loadbot"
+LOADBOT_RELEASE_GUI="$RELEASE_INSTALL/bin/loadbot-desktop"
+LOADBOT_RELEASE_ICON="$RELEASE_DATA/icons/hicolor/100x100/apps/dev.loadbot.png"
+export LOADBOT_RELEASE_CLI LOADBOT_RELEASE_GUI LOADBOT_RELEASE_ICON
+unset LOADBOT_INSTALL_ROOT
+run_release repair
+[ "$STATUS" -eq 0 ] && pass "same-file release repair is idempotent" || fail_test "same-file release repair is idempotent"
+assert_contains "same-file repair rediscovers its custom installation root" "$RELEASE_INSTALL/bin/loadbot" "$OUTPUT"
+assert_contains "same-file CLI repair skips copying over itself" "Loadbot CLI is already installed" "$OUTPUT"
+assert_contains "same-file desktop repair skips copying over itself" "Loadbot desktop application is already installed" "$OUTPUT"
+assert_contains "same-file icon repair skips copying over itself" "Loadbot desktop icon is already installed" "$OUTPUT"
+assert_contains "same-file repair preserves recorded mode" "all" "$RELEASE_INSTALL/loadbot-install-mode"
+
+new_case release_missing_gui
+prepare_release
+rm "$LOADBOT_RELEASE_GUI"
+run_release all
+[ "$STATUS" -ne 0 ] && pass "missing release GUI payload fails" || fail_test "missing release GUI payload fails"
+assert_contains "missing release GUI payload is explained" "desktop release payload is not a regular executable file" "$OUTPUT"
+assert_not_exists "missing GUI fails before installing the CLI" "$RELEASE_INSTALL/bin/loadbot"
+assert_not_exists "missing GUI fails before writing a desktop entry" "$RELEASE_DATA/applications/dev.loadbot.desktop"
+assert_not_exists "missing GUI fails before recording a mode" "$RELEASE_INSTALL/loadbot-install-mode"
+
+new_case release_relative_root
+prepare_release
+LOADBOT_INSTALL_ROOT=relative-install
+export LOADBOT_INSTALL_ROOT
+run_release cli
+[ "$STATUS" -ne 0 ] && pass "relative release installation root is rejected" || fail_test "relative release installation root is rejected"
+assert_contains "relative root failure is actionable" "release installation root must be an absolute path" "$OUTPUT"
+assert_not_exists "relative root creates no installation" "$CASE_DIR/relative-install"
 
 new_case repair_bad_config
 mkdir -p "$CARGO_HOME"

@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GIT_AUTHOR_NAME: Loadbot Tests
+  GIT_AUTHOR_EMAIL: loadbot@example.test
+  GIT_COMMITTER_NAME: Loadbot Tests
+  GIT_COMMITTER_EMAIL: loadbot@example.test
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: Rust checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install stable Rust
+        run: rustup toolchain install stable --profile minimal --component rustfmt,clippy
+      - run: rustup default stable
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Run Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Run tests
+        run: cargo test --all-targets --all-features
+      - name: Test Linux setup
+        run: sh tests/setup_sh_test.sh
+
+  windows:
+    name: Windows tests
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install stable Rust
+        run: rustup toolchain install stable --profile minimal
+      - run: rustup default stable
+      - name: Test setup PATH handling (PowerShell 7)
+        shell: pwsh
+        run: ./tests/setup_path_test.ps1
+      - name: Test setup PATH handling (Windows PowerShell)
+        shell: powershell
+        run: ./tests/setup_path_test.ps1
+      - name: Test Windows setup behavior
+        shell: pwsh
+        run: Invoke-Pester ./tests/setup_ps1.Tests.ps1 -CI
+      - name: Diagnose Windows shell resolution
+        shell: pwsh
+        run: |
+          where.exe sh
+          where.exe bash
+          sh --version
+          bash --version
+      - name: Run tests
+        run: cargo test --all-targets --all-features

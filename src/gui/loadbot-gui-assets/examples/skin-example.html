@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Loadbot — static skin example</title><link rel="stylesheet" href="assets.css">
+<style>
+body{margin:0;background:#0e0e0c;padding:24px;color:#dfc6a0}main{max-width:1000px;margin:auto}.header{display:flex;align-items:center;gap:14px;border-bottom:2px solid #dfc6a0;padding:0 8px 10px}.mascot{height:48px;width:auto;image-rendering:pixelated}h1{font-size:22px;margin:0}h2{font-size:15px;font-weight:normal;margin:0 0 12px}.columns{display:grid;grid-template-columns:29% minmax(0,1fr);gap:10px;margin:10px 0}.sidebar{display:flex;flex-direction:column;gap:8px}.projects{flex:1;min-height:200px}.details{border-top:2px solid #dfc6a0;margin-top:16px;padding-top:16px}.controls{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:14px 0}.bar{display:flex;gap:12px;justify-content:space-between;flex-wrap:wrap;padding-top:8px}.note{font-size:12px;margin:18px 0;line-height:1.6}.ui-terminal{margin-top:12px;min-height:90px}summary{cursor:pointer;display:list-item;width:max-content;padding:10px 14px;border:1px solid #dfc6a0}summary:focus-visible{outline:2px solid #dfc6a0;outline-offset:2px}@media(max-width:650px){body{padding:8px}.columns{grid-template-columns:1fr}.projects{min-height:0}.ui-button{max-width:100%}}
+</style></head><body class="ui-theme"><main>
+<p class="note">STATIC SKIN EXAMPLE · Actual supplied PNG skins on HTML controls. Menu selection, pickers, and task execution are not connected.</p>
+<section class="ui-window" aria-label="Loadbot skin example"><header class="header"><img class="mascot" src="../assets/branding/loadbot-header.png" alt=""><h1>LOADBOT</h1></header>
+<div class="columns"><aside class="ui-panel sidebar"><h2>PROJECTS</h2><div class="projects">
+<button class="ui-menu-row" aria-pressed="true"><img class="ui-icon" src="../assets/ui/icons-inverse/folder.png" alt="">re-toolkit</button>
+<button class="ui-menu-row" aria-pressed="false"><img class="ui-icon" src="../assets/ui/icons/folder.png" alt="">radio</button>
+<button class="ui-menu-row" aria-pressed="false"><img class="ui-icon" src="../assets/ui/icons/folder.png" alt="">rotbot</button>
+</div><button class="ui-button">+ Add project</button><button class="ui-button">Refresh catalog</button></aside>
+<section class="ui-panel"><h2>SHORTCUTS / re-toolkit</h2>
+<button class="ui-menu-row" aria-pressed="true"><img class="ui-icon" src="../assets/ui/icons-inverse/arrow-right.png" alt="">Malware triage</button>
+<button class="ui-menu-row" aria-pressed="false">Export functions</button><button class="ui-menu-row" aria-pressed="false">Export strings</button>
+<div class="details"><h2>Malware triage</h2><p>Hashes, strings, file details, reports.</p><div class="controls"><span>Input folder</span><button class="ui-button">Choose folder…</button></div><div class="controls"><span>Output: reports/</span><button class="ui-button">Change</button></div><button class="ui-button" disabled>RUN SHORTCUT</button><p class="note">Choose an input folder to run.</p></div></section></div>
+<div class="bar"><details><summary>› Terminal</summary><pre class="ui-terminal">Terminal skin preview.
+Connect the desktop host's shell/PTY here.</pre></details><button class="ui-button">Open project folder</button></div></section>
+<p class="note">The project/tool names reproduce the reference examples. This file demonstrates asset usage, not a catalog or a working Loadbot application. See START-HERE.md and CODEX-PROMPT.md.</p>
+</main></body></html>

@@ -1,0 +1,224 @@
+/** Semantic inventory projection, not Rust DTOs, a catalog schema, or widget metadata. */
+export interface LoadbotProject {
+  readonly catalog: string;
+  readonly tool: string;
+  /** Authoritative for the native adapter. Legacy/embedded adapters default to installed. */
+  readonly installed?: boolean;
+  readonly entries: readonly LoadbotShortcut[];
+}
+
+export type LoadbotRunner = 'direct' | 'bash' | 'sh' | 'python' | 'powershell';
+export type LoadbotInterpreterRunner = Exclude<LoadbotRunner, 'direct'>;
+
+interface LoadbotShortcutFacts {
+  readonly name: string;
+  readonly description?: string;
+  readonly source: 'catalog' | 'personal';
+}
+
+export type LoadbotShortcut = LoadbotShortcutFacts & (
+  | {
+    /** Repository-relative legacy target, never an executable command string. */
+    readonly path: string; readonly runner?: LoadbotRunner; readonly recipe?: never;
+  }
+  | { readonly recipe: LoadbotRecipe; readonly path?: never; readonly runner?: never }
+);
+
+export interface LoadbotRecipe {
+  readonly version: number;
+  readonly behavior: 'run' | 'launch';
+  readonly program:
+    | { readonly type: 'project-file'; readonly path: string }
+    | { readonly type: 'interpreter'; readonly runner: LoadbotInterpreterRunner }
+    | { readonly type: 'executable'; readonly name: string };
+  readonly working_directory:
+    | { readonly type: 'project-root' }
+    | { readonly type: 'target-parent' }
+    | { readonly type: 'project-relative'; readonly path: string };
+  readonly arguments: readonly LoadbotRecipeArgument[];
+}
+
+export type LoadbotRecipeArgument =
+  | { readonly type: 'project-path'; readonly path: string }
+  | { readonly type: 'literal'; readonly value: string }
+  | {
+    readonly type: 'input'; readonly id: string; readonly label: string;
+    readonly kind: 'text' | 'file' | 'directory'; readonly required: boolean;
+    readonly default?: string; readonly prefix?: string;
+  }
+  | {
+    readonly type: 'switch'; readonly id: string; readonly label: string;
+    readonly value: string; readonly default: boolean;
+  };
+
+export interface LoadbotCatalog {
+  readonly name: string;
+  readonly backend: 'local' | 'git';
+  readonly url?: string;
+  readonly writable: boolean;
+  readonly state: 'missing' | 'installed' | 'mismatch';
+  readonly default: boolean;
+}
+
+export interface AddCatalogInput { readonly name: string; readonly url: string; readonly writable: boolean }
+export type CreateCatalogInput =
+  | { readonly name: string; readonly backend: 'local' }
+  | { readonly name: string; readonly backend: 'git'; readonly url: string; readonly commit: boolean; readonly push: boolean };
+export interface ConnectCatalogInput {
+  readonly name: string; readonly url: string; readonly commit: boolean; readonly push: boolean;
+}
+export interface AddProjectInput {
+  readonly catalog: string; readonly name: string; readonly url: string; readonly revision?: string;
+  readonly commit: boolean; readonly push: boolean;
+}
+export interface AddShortcutInput {
+  readonly catalog: string; readonly tool: string; readonly name: string; readonly path: string;
+  readonly description?: string; readonly runner?: LoadbotRunner;
+}
+export interface RecipeShortcutInput {
+  readonly catalog: string; readonly tool: string; readonly name: string;
+  readonly description?: string; readonly recipe: LoadbotRecipe;
+}
+export interface CatalogIdentity { readonly catalog: string }
+export interface CatalogDeletionPlan {
+  readonly catalog: string;
+  readonly managedTools: readonly { readonly tool: string }[];
+}
+export interface ProjectIdentity { readonly catalog: string; readonly tool: string }
+export interface ShortcutIdentity extends ProjectIdentity { readonly name: string; readonly path?: string }
+export interface ShortcutHelpRequest extends ProjectIdentity {
+  readonly target: string;
+  readonly runner: LoadbotRunner;
+  readonly workingDirectory: LoadbotRecipe['working_directory'];
+}
+export interface ShortcutHelpResult {
+  readonly commandAttempted: readonly string[];
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly exitStatus?: number;
+  readonly detectedHelpFlag?: '--help' | '-h';
+}
+
+export type CatalogSyncStage = 'validating' | 'repository-checked' | 'updating-repository' | 'current' | 'updated';
+export interface CatalogSyncActivity {
+  readonly stage: CatalogSyncStage;
+  readonly catalog: string;
+  readonly detail?: string;
+}
+export type OperationLogStream = 'command' | 'stdout' | 'stderr' | 'system';
+export interface OperationLogActivity {
+  readonly kind: 'log';
+  readonly stream: OperationLogStream;
+  readonly text: string;
+}
+export type CatalogSyncActivityEvent = CatalogSyncActivity | OperationLogActivity;
+export type CatalogSyncActivitySink = (activity: CatalogSyncActivityEvent) => void;
+export type CatalogConnectStage = 'validating' | 'preparing-repository' | 'configuring-remote'
+  | 'committing' | 'pushing' | 'updating-catalog';
+export interface CatalogConnectActivity {
+  readonly stage: CatalogConnectStage;
+  readonly catalog: string;
+}
+export type CatalogConnectActivityEvent = CatalogConnectActivity | OperationLogActivity | InteractiveLaunchActivity;
+export type CatalogConnectActivitySink = (activity: CatalogConnectActivityEvent) => void;
+export type ProjectOperationStage = 'validating-checkout' | 'cloning-project' | 'validating-fresh-checkout'
+  | 'inspecting-repository' | 'awaiting-commit' | 'staging-changes' | 'creating-commit'
+  | 'fetching-and-updating' | 'pushing-commits' | 'removing-checkout' | 'replacing-checkout';
+export interface ProjectOperationActivity extends ProjectIdentity {
+  readonly stage: ProjectOperationStage;
+}
+export interface InteractiveLaunchActivity extends InteractiveLaunch {
+  readonly kind: 'interactive-launch';
+}
+export type ProjectOperationActivityEvent = ProjectOperationActivity | OperationLogActivity | InteractiveLaunchActivity;
+export type ProjectOperationActivitySink = (activity: ProjectOperationActivityEvent) => void;
+
+export type RepositoryChangeStatus = 'modified' | 'added' | 'deleted' | 'renamed';
+export interface RepositoryChange {
+  readonly path: string;
+  readonly originalPath?: string;
+  readonly status: RepositoryChangeStatus;
+}
+export interface ProjectPushInspection {
+  readonly changedFiles: readonly RepositoryChange[];
+  readonly commitsAhead: boolean;
+}
+export interface CommitAndPushInput extends ProjectIdentity {
+  readonly selectedPaths: readonly string[];
+  readonly commitMessage: string;
+}
+
+export interface ProjectDirectoryEntry {
+  readonly name: string;
+  readonly path: string;
+  readonly kind: 'directory' | 'file';
+  readonly size?: number;
+}
+export interface ProjectDirectoryListing {
+  readonly path: string;
+  readonly parent?: string;
+  readonly entries: readonly ProjectDirectoryEntry[];
+}
+
+/** Opaque, single-use capability created by a Rust backend operation. */
+export interface InteractiveLaunch {
+  readonly launchId: string;
+  readonly label: string;
+}
+export interface InteractiveSessionStarted {
+  readonly sessionId: string;
+  readonly processId: string;
+  readonly osProcessId?: number;
+}
+export type InteractiveSessionEvent =
+  | { readonly kind: 'output'; readonly sessionId: string; readonly text: string }
+  | {
+    readonly kind: 'exited'; readonly sessionId: string; readonly code: number;
+    readonly signal?: string; readonly cancelled: boolean;
+  }
+  | { readonly kind: 'failed'; readonly sessionId: string; readonly message: string };
+export type InteractiveSessionEventSink = (event: InteractiveSessionEvent) => void;
+
+/** Backend capabilities are semantic and qualified; native paths never cross this seam.
+ * Each read returns a complete, caller-owned inventory snapshot, or rejects.
+ */
+export interface LoadbotAdapter {
+  readInventory(): Promise<readonly LoadbotProject[]>;
+  readCatalogs(): Promise<readonly LoadbotCatalog[]>;
+  openCatalogFolder(catalog: CatalogIdentity): Promise<void>;
+  createCatalogTerminalLaunch?(catalog: CatalogIdentity): Promise<InteractiveLaunch>;
+  openProjectFolder(project: Pick<LoadbotProject, 'catalog' | 'tool'>): Promise<void>;
+  createProjectTerminalLaunch?(project: ProjectIdentity): Promise<InteractiveLaunch>;
+  pullProject?(project: ProjectIdentity, onActivity?: ProjectOperationActivitySink): Promise<ProjectIdentity>;
+  inspectProjectPush?(project: ProjectIdentity, onActivity?: ProjectOperationActivitySink): Promise<ProjectPushInspection>;
+  pushProject?(project: ProjectIdentity, onActivity?: ProjectOperationActivitySink): Promise<ProjectIdentity>;
+  commitAndPushProject?(input: CommitAndPushInput, onActivity?: ProjectOperationActivitySink): Promise<ProjectIdentity>;
+  updateProject?(project: ProjectIdentity, onActivity?: ProjectOperationActivitySink): Promise<ProjectIdentity>;
+  removeProject?(project: ProjectIdentity, onActivity?: ProjectOperationActivitySink): Promise<ProjectIdentity>;
+  reinstallProject?(project: ProjectIdentity, onActivity?: ProjectOperationActivitySink): Promise<ProjectIdentity>;
+  startInteractiveSession?(
+    launch: InteractiveLaunch,
+    onEvent: InteractiveSessionEventSink,
+  ): Promise<InteractiveSessionStarted>;
+  sendInteractiveInput?(sessionId: string, input: string): Promise<void>;
+  resizeInteractiveSession?(sessionId: string, rows: number, columns: number): Promise<void>;
+  terminateInteractiveSession?(sessionId: string): Promise<void>;
+  addCatalog(input: AddCatalogInput): Promise<CatalogIdentity>;
+  createCatalog(input: CreateCatalogInput): Promise<CatalogIdentity>;
+  connectCatalog?(input: ConnectCatalogInput, onActivity?: CatalogConnectActivitySink): Promise<CatalogIdentity>;
+  inspectCatalogDeletion?(catalog: CatalogIdentity): Promise<CatalogDeletionPlan>;
+  inspectLocalCatalogDeletion?(catalog: CatalogIdentity): Promise<CatalogDeletionPlan>;
+  unregisterCatalog?(catalog: CatalogIdentity): Promise<CatalogIdentity>;
+  deleteLocalCatalog?(catalog: CatalogIdentity): Promise<CatalogIdentity>;
+  deleteCatalogWithManagedTools?(catalog: CatalogIdentity): Promise<CatalogIdentity>;
+  addProject(input: AddProjectInput): Promise<ProjectIdentity>;
+  addShortcut(input: AddShortcutInput): Promise<ShortcutIdentity>;
+  addRecipeShortcut(input: RecipeShortcutInput): Promise<ShortcutIdentity>;
+  updateRecipeShortcut(input: RecipeShortcutInput): Promise<ShortcutIdentity>;
+  chooseProjectFile(project: ProjectIdentity): Promise<string | undefined>;
+  chooseProjectDirectory(project: ProjectIdentity): Promise<string | undefined>;
+  readProjectDirectory?(project: ProjectIdentity, relativePath: string): Promise<ProjectDirectoryListing>;
+  viewShortcutHelp(request: ShortcutHelpRequest): Promise<ShortcutHelpResult>;
+  deleteShortcuts(shortcuts: readonly ShortcutIdentity[]): Promise<number>;
+  syncCatalog(catalog: string, onActivity?: CatalogSyncActivitySink): Promise<void>;
+}

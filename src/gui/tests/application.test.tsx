@@ -1,0 +1,980 @@
+// @vitest-environment node
+import { describe, expect, it, vi } from 'vitest';
+import { ACTIVITY_LOG_HISTORY_LIMIT, COMMAND_HISTORY_LIMIT, createLoadbotApplication } from '../frontend/loadbot/application/controller';
+import { fixtureAdapter } from '../frontend/loadbot/fixtures/adapter';
+import { projectKey } from '../frontend/loadbot/identity';
+import type {
+  InteractiveSessionEventSink, InteractiveSessionStarted, LoadbotAdapter, LoadbotProject,
+} from '../frontend/loadbot/contract';
+
+describe('headless capability and application boundary', () => {
+  const adapter = (readInventory: LoadbotAdapter['readInventory'], openProjectFolder: LoadbotAdapter['openProjectFolder'] = vi.fn(async () => {})): LoadbotAdapter => ({
+    readInventory,
+    readCatalogs: async () => [{ name: 'personal', backend: 'git', url: 'test', writable: true, state: 'installed', default: false }, { name: 'community', backend: 'git', url: 'test', writable: false, state: 'installed', default: false }, { name: 'one', backend: 'git', url: 'test', writable: true, state: 'installed', default: false }, { name: 'two', backend: 'git', url: 'test', writable: true, state: 'installed', default: false }, { name: 'three', backend: 'git', url: 'test', writable: true, state: 'installed', default: false }],
+    openCatalogFolder: vi.fn(), openProjectFolder,
+    addCatalog: vi.fn(), createCatalog: vi.fn(), addProject: vi.fn(), addShortcut: vi.fn(), addRecipeShortcut: vi.fn(), updateRecipeShortcut: vi.fn(),
+    chooseProjectFile: vi.fn(), chooseProjectDirectory: vi.fn(), viewShortcutHelp: vi.fn(), deleteShortcuts: vi.fn(), syncCatalog: vi.fn(),
+  });
+
+  it('returns independent serializable fixture snapshots without widget metadata', async () => {
+    const first = await fixtureAdapter.readInventory();
+    const next = await fixtureAdapter.readInventory();
+    expect(next).toEqual(first);
+    expect(first).toHaveLength(5);
+    expect(JSON.parse(JSON.stringify(first))).toEqual(first);
+    expect(JSON.stringify(first)).not.toMatch(/previewFields|checkbox|sampleValue/);
+    Object.assign(first[0], { tool: 'modified by this caller' });
+    expect(next[0].tool).toBe('re-toolkit');
+    expect((await fixtureAdapter.readInventory())[0].tool).toBe('re-toolkit');
+  });
+
+  it('supports project selection without React or a host', async () => {
+    const injected = adapter(vi.fn(() => fixtureAdapter.readInventory()));
+    const application = createLoadbotApplication(injected);
+    const stop = application.start();
+    await vi.waitFor(() => expect(application.getSnapshot().inventory.status).toBe('ready'));
+    const projects = await fixtureAdapter.readInventory();
+    application.actions.selectCatalog('community');
+    application.actions.selectProject(projectKey(projects[4]));
+    expect(application.getSnapshot().project?.catalog).toBe('community');
+    application.actions.selectProject('missing');
+    expect(application.getSnapshot().project?.catalog).toBe('community');
+    expect(injected.readInventory).toHaveBeenCalledOnce();
+    stop();
+  });
+
+  it('owns bounded command history over semantic inventory without producing Activity or adapter side effects', async () => {
+    const readInventory = vi.fn(() => fixtureAdapter.readInventory());
+    const injected = adapter(readInventory);
+    const application = createLoadbotApplication(injected);
+    application.start();
+    await vi.waitFor(() => expect(application.getSnapshot().inventory.status).toBe('ready'));
+    const activity = application.getSnapshot().activity;
+    const commandState = application.getSnapshot().command;
+
+    expect(application.actions.completeCommand('sho', 3)).toBeUndefined();
+    expect(application.actions.completeCommand('inspect r', 9)?.candidates.length).toBeGreaterThan(1);
+    expect(application.getSnapshot().command).toBe(commandState);
+    expect(application.getSnapshot().activity).toBe(activity);
+    expect(readInventory).toHaveBeenCalledOnce();
+
+    expect(application.actions.submitCommand('   ')).toBe(false);
+    expect(application.actions.submitCommand('projects')).toBe(true);
+    expect(application.getSnapshot().command.entries[0]).toMatchObject({
+      input: 'projects', result: { kind: 'projects', catalog: 'personal' },
+    });
+    expect(application.getSnapshot().activity).toBe(activity);
+    expect(readInventory).toHaveBeenCalledOnce();
+    expect(injected.addProject).not.toHaveBeenCalled();
+    expect(injected.syncCatalog).not.toHaveBeenCalled();
+
+    for (let index = 0; index < COMMAND_HISTORY_LIMIT + 4; index++) {
+      application.actions.submitCommand(`unknown-${index}`);
+    }
+    expect(application.getSnapshot().command.entries).toHaveLength(COMMAND_HISTORY_LIMIT);
+    expect(application.getSnapshot().command.history).toHaveLength(COMMAND_HISTORY_LIMIT);
+    expect(application.getSnapshot().command.history[0]).toBe('unknown-4');
+    expect(application.getSnapshot().activity).toBe(activity);
+  });
+
+  it('owns interactive COMMAND state without recording or logging opaque input', async () => {
+    let onEvent: InteractiveSessionEventSink = () => {};
+    let resolveStart!: (started: InteractiveSessionStarted) => void;
+    const startInteractiveSession: NonNullable<LoadbotAdapter['startInteractiveSession']> = vi.fn((_launch, sink) => {
+      onEvent = sink;
+      return new Promise<InteractiveSessionStarted>((resolve) => { resolveStart = resolve; });
+    });
+    const sendInteractiveInput: NonNullable<LoadbotAdapter['sendInteractiveInput']> = vi.fn(async () => {});
+    const terminateInteractiveSession: NonNullable<LoadbotAdapter['terminateInteractiveSession']> = vi.fn(async () => {});
+    const injected: LoadbotAdapter = {
+      ...adapter(vi.fn(() => fixtureAdapter.readInventory())),
+      startInteractiveSession, sendInteractiveInput, terminateInteractiveSession,
+    };
+    const application = createLoadbotApplication(injected);
+    application.start();
+    await vi.waitFor(() => expect(application.getSnapshot().inventory.status).toBe('ready'));
+    const activity = application.getSnapshot().activity;
+    const history = application.getSnapshot().command.history;
+    const entries = application.getSnapshot().command.entries;
+
+    const starting = application.actions.startInteractiveSession({ launchId: 'opaque-launch', label: 'Test prompt' });
+    expect(application.getSnapshot().command.interactive).toMatchObject({
+      status: 'starting', launchId: 'opaque-launch', label: 'Test prompt',
+    });
+    resolveStart({ sessionId: 'session-1', processId: 'process-1', osProcessId: 42 });
+    expect(await starting).toBe(true);
+    expect(application.getSnapshot().command.interactive).toMatchObject({
+      status: 'active', sessionId: 'session-1', processId: 'process-1',
+    });
+
+    onEvent({ kind: 'output', sessionId: 'session-1', text: 'prompt: ' });
+    expect(application.getSnapshot().command.interactiveTranscript.at(-1)).toMatchObject({
+      kind: 'output', text: 'prompt: ',
+    });
+    expect(application.actions.submitCommand('opaque user input')).toBe(true);
+    await vi.waitFor(() => expect(sendInteractiveInput).toHaveBeenCalledWith('session-1', 'opaque user input\r'));
+    expect(application.getSnapshot().command.history).toBe(history);
+    expect(application.getSnapshot().command.entries).toBe(entries);
+    expect(application.getSnapshot().activity).toBe(activity);
+    expect(JSON.stringify(application.getSnapshot())).not.toContain('opaque user input');
+
+    onEvent({ kind: 'exited', sessionId: 'session-1', code: 0, cancelled: false });
+    expect(application.getSnapshot().command.interactive).toBeUndefined();
+    expect(application.getSnapshot().command.interactiveTranscript.at(-1)?.text).toContain('exited with code 0');
+    expect(application.actions.submitCommand('projects')).toBe(true);
+    expect(application.getSnapshot().command.history.at(-1)).toBe('projects');
+
+    let cancelEvent: InteractiveSessionEventSink = () => {};
+    vi.mocked(startInteractiveSession).mockImplementationOnce(async (_launch, sink) => {
+      cancelEvent = sink;
+      return { sessionId: 'session-2', processId: 'process-2' };
+    });
+    await application.actions.startInteractiveSession({ launchId: 'opaque-cancel', label: 'Cancelable prompt' });
+    expect(await application.actions.cancelInteractiveSession()).toBe(true);
+    expect(terminateInteractiveSession).toHaveBeenCalledWith('session-2');
+    expect(application.getSnapshot().command.interactive?.status).toBe('terminating');
+    cancelEvent({ kind: 'exited', sessionId: 'session-2', code: 1, cancelled: true });
+    expect(application.getSnapshot().command.interactive).toBeUndefined();
+    expect(application.getSnapshot().command.interactiveTranscript.at(-1)?.text).toContain('cancelled');
+  });
+
+  it('owns one project-bound terminal independently from COMMAND authentication sessions', async () => {
+    const projects: LoadbotProject[] = [
+      { catalog: 'personal', tool: 'alpha', installed: true, entries: [] },
+      { catalog: 'personal', tool: 'beta', installed: true, entries: [] },
+      { catalog: 'personal', tool: 'missing', installed: false, entries: [] },
+    ];
+    const sinks = new Map<string, InteractiveSessionEventSink>();
+    let terminalLaunch = 0;
+    const createProjectTerminalLaunch: NonNullable<LoadbotAdapter['createProjectTerminalLaunch']> = vi.fn(async (project) => ({
+      launchId: `terminal-${project.tool}-${++terminalLaunch}`, label: `Project terminal — ${project.tool}`,
+    }));
+    const startInteractiveSession: NonNullable<LoadbotAdapter['startInteractiveSession']> = vi.fn(async (launch, sink) => {
+      sinks.set(launch.launchId, sink);
+      return { sessionId: `session-${launch.launchId}`, processId: `process-${launch.launchId}` };
+    });
+    const sendInteractiveInput: NonNullable<LoadbotAdapter['sendInteractiveInput']> = vi.fn(async () => {});
+    const terminateInteractiveSession: NonNullable<LoadbotAdapter['terminateInteractiveSession']> = vi.fn(async () => {});
+    const application = createLoadbotApplication({
+      ...adapter(async () => projects), createProjectTerminalLaunch, startInteractiveSession,
+      sendInteractiveInput, terminateInteractiveSession,
+    });
+    application.start();
+    await vi.waitFor(() => expect(application.getSnapshot().project?.tool).toBe('alpha'));
+    const commandHistory = application.getSnapshot().command.history;
+    const activity = application.getSnapshot().activity;
+
+    application.actions.selectBottomView('terminal');
+    await vi.waitFor(() => expect(application.getSnapshot().projectTerminal.status).toBe('active'));
+    expect(createProjectTerminalLaunch).toHaveBeenCalledWith({ catalog: 'personal', tool: 'alpha' });
+    expect(application.getSnapshot().projectTerminal).toMatchObject({
+      project: { catalog: 'personal', tool: 'alpha' }, sessionId: 'session-terminal-alpha-1',
+    });
+    sinks.get('terminal-alpha-1')?.({ kind: 'output', sessionId: 'session-terminal-alpha-1', text: 'alpha-ready\n' });
+    expect(application.getSnapshot().projectTerminal.transcript).toContain('alpha-ready');
+    expect(application.actions.sendProjectTerminalInput('opaque terminal input\r')).toBe(true);
+    await vi.waitFor(() => expect(sendInteractiveInput).toHaveBeenCalledWith('session-terminal-alpha-1', 'opaque terminal input\r'));
+    expect(application.getSnapshot().command.history).toBe(commandHistory);
+    expect(application.getSnapshot().activity).toBe(activity);
+    expect(JSON.stringify(application.getSnapshot())).not.toContain('opaque terminal input');
+
+    application.actions.selectBottomView('activity');
+    application.actions.selectBottomView('command');
+    application.actions.selectBottomView('terminal');
+    expect(terminateInteractiveSession).not.toHaveBeenCalled();
+    expect(startInteractiveSession).toHaveBeenCalledTimes(1);
+
+    application.actions.selectProject(projectKey(projects[1]));
+    application.actions.selectBottomView('terminal');
+    expect(application.getSnapshot().project?.tool).toBe('beta');
+    expect(application.getSnapshot().projectTerminal.project?.tool).toBe('alpha');
+    expect(createProjectTerminalLaunch).toHaveBeenCalledTimes(1);
+
+    await application.actions.startInteractiveSession({ launchId: 'auth-launch', label: 'Git push — beta' });
+    expect(application.getSnapshot().command.interactive?.sessionId).toBe('session-auth-launch');
+    expect(application.getSnapshot().projectTerminal.sessionId).toBe('session-terminal-alpha-1');
+    expect(application.actions.submitCommand('opaque auth input')).toBe(true);
+    await vi.waitFor(() => expect(sendInteractiveInput).toHaveBeenCalledWith('session-auth-launch', 'opaque auth input\r'));
+    sinks.get('auth-launch')?.({ kind: 'exited', sessionId: 'session-auth-launch', code: 0, cancelled: false });
+
+    sinks.get('terminal-alpha-1')?.({ kind: 'exited', sessionId: 'session-terminal-alpha-1', code: 0, cancelled: false });
+    expect(application.getSnapshot().projectTerminal.status).toBe('exited');
+    expect(await application.actions.restartProjectTerminal()).toBe(true);
+    expect(application.getSnapshot().projectTerminal).toMatchObject({
+      status: 'active', project: { tool: 'alpha' }, sessionId: 'session-terminal-alpha-2',
+    });
+    expect(await application.actions.closeProjectTerminal()).toBe(true);
+    expect(terminateInteractiveSession).toHaveBeenCalledWith('session-terminal-alpha-2');
+    expect(application.getSnapshot().projectTerminal).toEqual({ status: 'idle', transcript: '' });
+  });
+
+  it('creates a catalog-bound terminal from semantic catalog identity', async () => {
+    const createCatalogTerminalLaunch: NonNullable<LoadbotAdapter['createCatalogTerminalLaunch']> = vi.fn(async ({ catalog }) => ({
+      launchId: `catalog-${catalog}`, label: `Catalog terminal — ${catalog}`,
+    }));
+    const startInteractiveSession: NonNullable<LoadbotAdapter['startInteractiveSession']> = vi.fn(async () => ({
+      sessionId: 'catalog-session', processId: 'catalog-process',
+    }));
+    const application = createLoadbotApplication({
+      ...adapter(async () => [{ catalog: 'personal', tool: 'alpha', entries: [] }]),
+      createCatalogTerminalLaunch,
+      startInteractiveSession,
+      sendInteractiveInput: vi.fn(async () => {}),
+      terminateInteractiveSession: vi.fn(async () => {}),
+    });
+    application.start();
+    await vi.waitFor(() => expect(application.getSnapshot().currentCatalog).toBe('personal'));
+
+    application.actions.openCatalogTerminal();
+    await vi.waitFor(() => expect(application.getSnapshot().projectTerminal.status).toBe('active'));
+
+    expect(createCatalogTerminalLaunch).toHaveBeenCalledWith({ catalog: 'personal' });
+    expect(application.getSnapshot().projectTerminal).toMatchObject({
+      catalog: { catalog: 'personal' }, sessionId: 'catalog-session',
+    });
+    expect(application.getSnapshot().projectTerminal.project).toBeUndefined();
+  });
+
+  it('keeps Push pending through interactive success, routes opaque input, and reloads authority', async () => {
+    const project = { catalog: 'one', tool: 'radio-configs', installed: true, entries: [] };
+    const readInventory = vi.fn(async () => [project]);
+    let pushResolve!: (identity: { catalog: string; tool: string }) => void;
+    const pushProject: NonNullable<LoadbotAdapter['pushProject']> = vi.fn((_identity, onActivity) => {
+      onActivity?.({ kind: 'interactive-launch', launchId: 'push-launch', label: 'Git push — radio-configs' });
+      return new Promise<{ catalog: string; tool: string }>((resolve) => { pushResolve = resolve; });
+    });
+    let sessionEvent: InteractiveSessionEventSink = () => {};
+    const sendInteractiveInput: NonNullable<LoadbotAdapter['sendInteractiveInput']> = vi.fn(async () => {});
+    const managed: LoadbotAdapter = {
+      ...adapter(readInventory), pushProject,
+      startInteractiveSession: vi.fn(async (_launch, sink) => {
+        sessionEvent = sink;
+        return { sessionId: 'push-session', processId: 'push-process' };
+      }),
+      sendInteractiveInput,
+      terminateInteractiveSession: vi.fn(async () => {}),
+    };
+    const application = createLoadbotApplication(managed);
+    application.start();
+    await vi.waitFor(() => expect(application.getSnapshot().inventory.status).toBe('ready'));
+
+    const pushing = application.actions.pushProject();
+    await vi.waitFor(() => expect(application.getSnapshot().command.interactive).toMatchObject({
+      status: 'active', launchId: 'push-launch', label: 'Git push — radio-configs',
+    }));
+    expect(application.getSnapshot().bottomView).toBe('command');
+    expect(application.getSnapshot().management.status).toBe('submitting');
+    sessionEvent({ kind: 'output', sessionId: 'push-session', text: 'Enter passphrase: ' });
+    expect(application.getSnapshot().command.interactiveTranscript.at(-1)?.text).toBe('Enter passphrase: ');
+    application.actions.submitCommand('not-retained');
+    await vi.waitFor(() => expect(sendInteractiveInput).toHaveBeenCalledWith('push-session', 'not-retained\r'));
+    expect(application.getSnapshot().command.history).toEqual([]);
+    expect(JSON.stringify(application.getSnapshot())).not.toContain('not-retained');
+
+    sessionEvent({ kind: 'exited', sessionId: 'push-session', code: 0, cancelled: false });
+    expect(application.getSnapshot().management.status).toBe('submitting');
+    pushResolve({ catalog: project.catalog, tool: project.tool });
+    expect(await pushing).toBe(true);
+    expect(readInventory).toHaveBeenCalledTimes(2);
+    expect(application.getSnapshot().management.status).toBe('success');
+    expect(application.getSnapshot().activity).toEqual(expect.arrayContaining([
+      expect.objectContaining({ operation: 'project-push', stage: 'interactive-authentication', status: 'in-progress' }),
+      expect.objectContaining({ operation: 'project-push', stage: 'authoritative-reload', status: 'in-progress' }),
+      expect.objectContaining({ operation: 'project-push', stage: 'completed', status: 'success' }),
+    ]));
+  });
+
+  it.each([
+    { cancelled: false, terminal: { kind: 'exited' as const, sessionId: 'push-session', code: 1, cancelled: false }, status: 'error', stage: 'failed' },
+    { cancelled: true, terminal: { kind: 'exited' as const, sessionId: 'push-session', code: 1, cancelled: true }, status: 'cancelled', stage: 'cancelled' },
+  ])('finishes interactive Push as $status and reloads authority', async ({ cancelled, terminal, status, stage }) => {
+    const project = { catalog: 'one', tool: 'radio-configs', installed: true, entries: [] };
+    const readInventory = vi.fn(async () => [project]);
+    let rejectPush!: (error: unknown) => void;
+    const pushProject: NonNullable<LoadbotAdapter['pushProject']> = vi.fn((_identity, onActivity) => {
+      onActivity?.({ kind: 'interactive-launch', launchId: 'push-launch', label: 'Git push — radio-configs' });
+      return new Promise<{ catalog: string; tool: string }>((_resolve, reject) => { rejectPush = reject; });
+    });
+    let sessionEvent: InteractiveSessionEventSink = () => {};
+    const terminateInteractiveSession: NonNullable<LoadbotAdapter['terminateInteractiveSession']> = vi.fn(async () => {});
+    const managed: LoadbotAdapter = {
+      ...adapter(readInventory), pushProject,
+      startInteractiveSession: vi.fn(async (_launch, sink) => {
+        sessionEvent = sink;
+        return { sessionId: 'push-session', processId: 'push-process' };
+      }),
+      sendInteractiveInput: vi.fn(async () => {}), terminateInteractiveSession,
+    };
+    const application = createLoadbotApplication(managed);
+    application.start();
+    await vi.waitFor(() => expect(application.getSnapshot().inventory.status).toBe('ready'));
+
+    const pushing = application.actions.pushProject();
+    await vi.waitFor(() => expect(application.getSnapshot().command.interactive?.status).toBe('active'));
+    if (cancelled) {
+      expect(await application.actions.cancelInteractiveSession()).toBe(true);
+      expect(terminateInteractiveSession).toHaveBeenCalledWith('push-session');
+    }
+    sessionEvent(terminal);
+    rejectPush(cancelled ? { kind: 'cancelled', message: 'operation cancelled' } : new Error('Git push failed with status 1'));
+
+    expect(await pushing).toBe(false);
+    expect(readInventory).toHaveBeenCalledTimes(2);
+    expect(application.getSnapshot().management.status).toBe(status);
+    expect(application.getSnapshot().command.interactive).toBeUndefined();
+    expect(application.getSnapshot().activity.at(-1)).toMatchObject({
+      operation: 'project-push', stage, status,
+    });
+  });
+
+  it('completes a noninteractive Push without entering COMMAND and still reloads', async () => {
+    const project = { catalog: 'one', tool: 'radio-configs', installed: true, entries: [] };
+    const readInventory = vi.fn(async () => [project]);
+    const startInteractiveSession = vi.fn();
+    const managed: LoadbotAdapter = {
+      ...adapter(readInventory),
+      pushProject: vi.fn(async (identity) => identity),
+      startInteractiveSession,
+    };
+    const application = createLoadbotApplication(managed);
+    application.start();
+    await vi.waitFor(() => expect(application.getSnapshot().inventory.status).toBe('ready'));
+
+    expect(await application.actions.pushProject()).toBe(true);
+    expect(startInteractiveSession).not.toHaveBeenCalled();
+    expect(application.getSnapshot().command.interactive).toBeUndefined();
+    expect(readInventory).toHaveBeenCalledTimes(2);
+  });
+
+  it('inspects dirty Push state, requires explicit selection and message, then commits and pushes', async () => {
+    const project = { catalog: 'one', tool: 'radio-configs', installed: true, entries: [] };
+    const readInventory = vi.fn(async () => [project]);
+    const inspectProjectPush: NonNullable<LoadbotAdapter['inspectProjectPush']> = vi.fn(async (_identity, onActivity) => {
+      onActivity?.({ stage: 'inspecting-repository', catalog: 'one', tool: 'radio-configs' });
+      onActivity?.({ stage: 'awaiting-commit', catalog: 'one', tool: 'radio-configs' });
+      return {
+        changedFiles: [
+          { path: 'src/main.rs', status: 'modified' as const },
+          { path: 'notes/new file.txt', status: 'added' as const },
+        ],
+        commitsAhead: false,
+      };
+    });
+    const pushProject = vi.fn(async (identity) => identity);
+    const commitAndPushProject: NonNullable<LoadbotAdapter['commitAndPushProject']> = vi.fn(async (input, onActivity) => {
+      onActivity?.({ stage: 'staging-changes', catalog: input.catalog, tool: input.tool });
+      onActivity?.({ stage: 'creating-commit', catalog: input.catalog, tool: input.tool });
+      onActivity?.({ stage: 'pushing-commits', catalog: input.catalog, tool: input.tool });
+      return input;
+    });
+    const application = createLoadbotApplication({
+      ...adapter(readInventory), inspectProjectPush, pushProject, commitAndPushProject,
+    });
+    application.start();
+    await vi.waitFor(() => expect(application.getSnapshot().inventory.status).toBe('ready'));
+
+    expect(await application.actions.pushProject()).toBe(true);
+    expect(pushProject).not.toHaveBeenCalled();
+    expect(application.getSnapshot().pendingCommitPush).toMatchObject({
+      project,
+      selectedPaths: ['src/main.rs', 'notes/new file.txt'],
+      commitMessage: '',
+    });
+    application.actions.toggleCommitPushPath('src/main.rs');
+    application.actions.toggleCommitPushPath('notes/new file.txt');
+    expect(await application.actions.confirmCommitPush()).toBe(false);
+    expect(commitAndPushProject).not.toHaveBeenCalled();
+    application.actions.toggleCommitPushPath('notes/new file.txt');
+    expect(await application.actions.confirmCommitPush()).toBe(false);
+    application.actions.setCommitPushMessage('Add release notes');
+    expect(application.getSnapshot().command.history).toEqual([]);
+    expect(await application.actions.confirmCommitPush()).toBe(true);
+    expect(commitAndPushProject).toHaveBeenCalledWith({
+      catalog: 'one', tool: 'radio-configs', selectedPaths: ['notes/new file.txt'], commitMessage: 'Add release notes',
+    }, expect.any(Function));
+    expect(application.getSnapshot().pendingCommitPush).toBeUndefined();
+    expect(application.getSnapshot().command.history).toEqual([]);
+    expect(application.getSnapshot().management.status).toBe('success');
+    expect(readInventory).toHaveBeenCalledTimes(2);
+    expect(application.getSnapshot().activity).toEqual(expect.arrayContaining([
+      expect.objectContaining({ operation: 'project-push', stage: 'inspecting-repository' }),
+      expect.objectContaining({ operation: 'project-push', stage: 'staging-changes' }),
+      expect.objectContaining({ operation: 'project-push', stage: 'creating-commit' }),
+      expect.objectContaining({ operation: 'project-push', stage: 'pushing-commits' }),
+      expect.objectContaining({ operation: 'project-push', stage: 'completed', status: 'success' }),
+    ]));
+  });
+
+  it('cancels Commit & Push before mutation and distinguishes ahead from current clean repositories', async () => {
+    const project = { catalog: 'one', tool: 'radio-configs', installed: true, entries: [] };
+    const readInventory = vi.fn(async () => [project]);
+    const inspectProjectPush: NonNullable<LoadbotAdapter['inspectProjectPush']> = vi.fn()
+      .mockResolvedValueOnce({ changedFiles: [{ path: 'dirty.txt', status: 'modified' }], commitsAhead: false })
+      .mockResolvedValueOnce({ changedFiles: [], commitsAhead: true })
+      .mockResolvedValueOnce({ changedFiles: [], commitsAhead: false });
+    const pushProject = vi.fn(async (identity) => identity);
+    const commitAndPushProject: NonNullable<LoadbotAdapter['commitAndPushProject']> = vi.fn(async (input) => input);
+    const application = createLoadbotApplication({
+      ...adapter(readInventory), inspectProjectPush, pushProject, commitAndPushProject,
+    });
+    application.start();
+    await vi.waitFor(() => expect(application.getSnapshot().inventory.status).toBe('ready'));
+
+    expect(await application.actions.pushProject()).toBe(true);
+    application.actions.cancelCommitPush();
+    expect(commitAndPushProject).not.toHaveBeenCalled();
+    expect(application.getSnapshot().pendingCommitPush).toBeUndefined();
+    expect(application.getSnapshot().management).toMatchObject({ status: 'cancelled' });
+
+    expect(await application.actions.pushProject()).toBe(true);
+    expect(pushProject).toHaveBeenCalledOnce();
+    expect(readInventory).toHaveBeenCalledTimes(2);
+
+    expect(await application.actions.pushProject()).toBe(true);
+    expect(pushProject).toHaveBeenCalledOnce();
+    expect(readInventory).toHaveBeenCalledTimes(3);
+    expect(application.getSnapshot().management).toMatchObject({
+      status: 'success', message: 'Nothing to push. Project is already current.',
+    });
+  });
+
+  it('continues Commit & Push through interactive auth and reports a later push failure without rollback claims', async () => {
+    const project = { catalog: 'one', tool: 'radio-configs', installed: true, entries: [] };
+    const readInventory = vi.fn(async () => [project]);
+    let rejectPush!: (error: unknown) => void;
+    const commitAndPushProject: NonNullable<LoadbotAdapter['commitAndPushProject']> = vi.fn((_input, onActivity) => {
+      onActivity?.({ stage: 'creating-commit', catalog: 'one', tool: 'radio-configs' });
+      onActivity?.({ kind: 'interactive-launch', launchId: 'commit-push-launch', label: 'Git push — radio-configs' });
+      return new Promise<{ catalog: string; tool: string }>((_resolve, reject) => { rejectPush = reject; });
+    });
+    let sessionEvent: InteractiveSessionEventSink = () => {};
+    const application = createLoadbotApplication({
+      ...adapter(readInventory),
+      inspectProjectPush: vi.fn(async () => ({ changedFiles: [{ path: 'dirty.txt', status: 'modified' as const }], commitsAhead: false })),
+      pushProject: vi.fn(), commitAndPushProject,
+      startInteractiveSession: vi.fn(async (_launch, sink) => {
+        sessionEvent = sink;
+        return { sessionId: 'commit-push-session', processId: 'commit-push-process' };
+      }),
+      sendInteractiveInput: vi.fn(async () => {}), terminateInteractiveSession: vi.fn(async () => {}),
+    });
+    application.start();
+    await vi.waitFor(() => expect(application.getSnapshot().inventory.status).toBe('ready'));
+    await application.actions.pushProject();
+    application.actions.setCommitPushMessage('Commit before auth');
+    const confirming = application.actions.confirmCommitPush();
+    await vi.waitFor(() => expect(application.getSnapshot().command.interactive?.status).toBe('active'));
+    expect(application.getSnapshot().bottomView).toBe('command');
+    expect(application.getSnapshot().pendingCommitPush).toBeUndefined();
+    sessionEvent({ kind: 'exited', sessionId: 'commit-push-session', code: 1, cancelled: false });
+    rejectPush(new Error('commit abc123 remains local, but pushing tool failed'));
+    expect(await confirming).toBe(false);
+    expect(readInventory).toHaveBeenCalledTimes(2);
+    expect(application.getSnapshot().management).toMatchObject({
+      status: 'error', message: 'commit abc123 remains local, but pushing tool failed',
+    });
+    expect(application.getSnapshot().activity.at(-1)).toMatchObject({ stage: 'failed', status: 'error' });
+  });
+
+  it('serializes consecutive backend-issued Push sessions such as a Rot retry', async () => {
+    const project = { catalog: 'one', tool: 'radio-configs', installed: true, entries: [] };
+    let resolvePush!: (identity: { catalog: string; tool: string }) => void;
+    const pushProject: NonNullable<LoadbotAdapter['pushProject']> = vi.fn((_identity, onActivity) => {
+      onActivity?.({ kind: 'interactive-launch', launchId: 'canonical-attempt', label: 'Git push — radio-configs' });
+      onActivity?.({ kind: 'interactive-launch', launchId: 'rot-attempt', label: 'Git push — radio-configs' });
+      return new Promise<{ catalog: string; tool: string }>((resolve) => { resolvePush = resolve; });
+    });
+    const events: InteractiveSessionEventSink[] = [];
+    const startInteractiveSession: NonNullable<LoadbotAdapter['startInteractiveSession']> = vi.fn(async (launch, sink) => {
+      events.push(sink);
+      return { sessionId: `session-${launch.launchId}`, processId: `process-${launch.launchId}` };
+    });
+    const application = createLoadbotApplication({
+      ...adapter(vi.fn(async () => [project])), pushProject, startInteractiveSession,
+      sendInteractiveInput: vi.fn(async () => {}), terminateInteractiveSession: vi.fn(async () => {}),
+    });
+    application.start();
+    await vi.waitFor(() => expect(application.getSnapshot().inventory.status).toBe('ready'));
+
+    const pushing = application.actions.pushProject();
+    await vi.waitFor(() => expect(startInteractiveSession).toHaveBeenCalledTimes(1));
+    expect(startInteractiveSession).toHaveBeenNthCalledWith(
+      1, expect.objectContaining({ launchId: 'canonical-attempt' }), expect.any(Function),
+    );
+    events[0]({ kind: 'exited', sessionId: 'session-canonical-attempt', code: 1, cancelled: false });
+    await vi.waitFor(() => expect(startInteractiveSession).toHaveBeenCalledTimes(2));
+    expect(startInteractiveSession).toHaveBeenNthCalledWith(
+      2, expect.objectContaining({ launchId: 'rot-attempt' }), expect.any(Function),
+    );
+    events[1]({ kind: 'exited', sessionId: 'session-rot-attempt', code: 0, cancelled: false });
+    resolvePush({ catalog: project.catalog, tool: project.tool });
+    expect(await pushing).toBe(true);
+  });
+
+  it('routes lifecycle command targets through adapters and the shared destructive confirmation flow', async () => {
+    const projects: readonly LoadbotProject[] = [
+      { catalog: 'personal', tool: 'Project-A', installed: true, entries: [] },
+      { catalog: 'personal', tool: 'Project-B', installed: true, entries: [] },
+    ];
+    const readInventory = vi.fn(async () => structuredClone(projects));
+    const pushProject: NonNullable<LoadbotAdapter['pushProject']> = vi.fn(async (identity) => identity);
+    const updateProject: NonNullable<LoadbotAdapter['updateProject']> = vi.fn(async (identity) => identity);
+    const removeProject: NonNullable<LoadbotAdapter['removeProject']> = vi.fn(async (identity) => identity);
+    const reinstallProject: NonNullable<LoadbotAdapter['reinstallProject']> = vi.fn(async (identity) => identity);
+    const managed: LoadbotAdapter = {
+      ...adapter(readInventory), pushProject, updateProject, removeProject, reinstallProject,
+    };
+    const application = createLoadbotApplication(managed);
+    application.start();
+    await vi.waitFor(() => expect(application.getSnapshot().inventory.status).toBe('ready'));
+    expect(application.getSnapshot().project?.tool).toBe('Project-A');
+
+    application.actions.submitCommand('push Project-B');
+    await vi.waitFor(() => expect(pushProject).toHaveBeenCalledWith(
+      { catalog: 'personal', tool: 'Project-B' }, expect.any(Function),
+    ));
+    await vi.waitFor(() => expect(application.getSnapshot().management.status).not.toBe('submitting'));
+
+    application.actions.selectProject(projectKey(projects[0]));
+    application.actions.submitCommand('update Project-B');
+    await vi.waitFor(() => expect(updateProject).toHaveBeenCalledWith(
+      { catalog: 'personal', tool: 'Project-B' }, expect.any(Function),
+    ));
+    await vi.waitFor(() => expect(application.getSnapshot().management.status).not.toBe('submitting'));
+
+    application.actions.selectProject(projectKey(projects[0]));
+    application.actions.submitCommand('remove Project-B');
+    expect(removeProject).not.toHaveBeenCalled();
+    expect(application.getSnapshot().pendingProjectAction).toMatchObject({
+      action: 'remove', project: { catalog: 'personal', tool: 'Project-B' },
+    });
+    application.actions.cancelProjectAction();
+    expect(removeProject).not.toHaveBeenCalled();
+
+    application.actions.submitCommand('reinstall Project-B');
+    expect(reinstallProject).not.toHaveBeenCalled();
+    application.actions.cancelProjectAction();
+    expect(reinstallProject).not.toHaveBeenCalled();
+
+    application.actions.submitCommand('remove Project-B');
+    expect(await application.actions.confirmProjectAction()).toBe(true);
+    expect(removeProject).toHaveBeenCalledWith(
+      { catalog: 'personal', tool: 'Project-B' }, expect.any(Function),
+    );
+  });
+
+  it('starts from a pre-management configured catalog without registration or migration', async () => {
+    const existing: readonly LoadbotProject[] = [{
+      catalog: 'existing', tool: 'known-project', entries: [{
+        name: 'known-shortcut', path: 'scripts/known.sh', description: 'Existing shortcut', runner: 'sh', source: 'catalog',
+      }],
+    }];
+    const readInventory = vi.fn(async () => existing);
+    const readCatalogs = vi.fn(async () => [{
+      name: 'existing', backend: 'git' as const, url: 'https://example.invalid/existing.git', writable: true,
+      state: 'installed' as const, default: true,
+    }]);
+    const existingAdapter = adapter(readInventory);
+    existingAdapter.readCatalogs = readCatalogs;
+    const application = createLoadbotApplication(existingAdapter);
+
+    application.start();
+    await vi.waitFor(() => expect(application.getSnapshot().inventory.status).toBe('ready'));
+
+    expect(readCatalogs).toHaveBeenCalledOnce();
+    expect(readInventory).toHaveBeenCalledOnce();
+    expect(application.getSnapshot().currentCatalog).toBe('existing');
+    expect(application.getSnapshot().project?.tool).toBe('known-project');
+  });
+
+  it('ignores superseded reads and cleanup responses without a DOM lifecycle', async () => {
+    let firstReject!: (error: Error) => void;
+    let secondResolve!: (projects: readonly LoadbotProject[]) => void;
+    const injected = adapter(vi.fn()
+      .mockImplementationOnce(() => new Promise((_, reject) => { firstReject = reject; }))
+      .mockImplementationOnce(() => new Promise((resolve) => { secondResolve = resolve; })));
+    const application = createLoadbotApplication(injected);
+    const listener = vi.fn();
+    const unsubscribe = application.subscribe(listener);
+    const stopFirst = application.start();
+    await Promise.resolve();
+    stopFirst();
+    const stopSecond = application.start();
+    await Promise.resolve();
+    secondResolve([]);
+    await vi.waitFor(() => expect(application.getSnapshot().inventory).toEqual({ status: 'ready', projects: [] }));
+    const ready = application.getSnapshot();
+    firstReject(new Error('obsolete error'));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(application.getSnapshot()).toBe(ready);
+    expect(listener).toHaveBeenCalledTimes(3);
+    unsubscribe();
+    application.actions.toggleDrawer();
+    expect(listener).toHaveBeenCalledTimes(3);
+    stopSecond();
+  });
+
+  it('preserves qualified project selection across reload and safely replaces invalid selections', async () => {
+    const first: readonly LoadbotProject[] = [
+      { catalog: 'one', tool: 'same', entries: [{ name: 'first', path: 'first', source: 'catalog' }, { name: 'keep', path: 'keep', source: 'personal' }] },
+      { catalog: 'two', tool: 'same', entries: [] },
+    ];
+    const preserved: readonly LoadbotProject[] = [
+      { catalog: 'one', tool: 'same', entries: [{ name: 'new first', path: 'new', source: 'catalog' }, { name: 'keep', path: 'keep', source: 'personal' }] },
+      { catalog: 'two', tool: 'same', entries: [] },
+    ];
+    const replaced: readonly LoadbotProject[] = [
+      { catalog: 'one', tool: 'same', entries: [{ name: 'replacement', path: 'replacement', source: 'catalog' }] },
+    ];
+    const newProject: readonly LoadbotProject[] = [
+      { catalog: 'three', tool: 'different', entries: [{ name: 'new selection', path: 'new-selection', source: 'catalog' }] },
+    ];
+    const read = vi.fn().mockResolvedValueOnce(first).mockResolvedValueOnce(preserved)
+      .mockResolvedValueOnce(replaced).mockResolvedValueOnce(newProject);
+    const application = createLoadbotApplication(adapter(read));
+    application.start();
+    await vi.waitFor(() => expect(application.getSnapshot().inventory.status).toBe('ready'));
+    application.actions.reloadInventory();
+    await vi.waitFor(() => expect(application.getSnapshot().inventory.status).toBe('ready'));
+    expect(application.getSnapshot().project).toBe(preserved[0]);
+    application.actions.reloadInventory();
+    await vi.waitFor(() => expect(application.getSnapshot().inventory.status).toBe('ready'));
+    expect(application.getSnapshot().project).toBe(replaced[0]);
+    application.actions.reloadInventory();
+    await vi.waitFor(() => expect(application.getSnapshot().inventory.status).toBe('ready'));
+    expect(application.getSnapshot().project).toBeUndefined();
+    application.actions.selectCatalog('three');
+    expect(application.getSnapshot().project).toBe(newProject[0]);
+  });
+
+  it('keeps project selection separate from qualified folder opening and surfaces adapter errors', async () => {
+    const projects: readonly LoadbotProject[] = [
+      { catalog: 'one', tool: 'first', entries: [] },
+      { catalog: 'one', tool: 'second', entries: [] },
+    ];
+    const open = vi.fn().mockRejectedValue(new Error('Directory is unavailable'));
+    const application = createLoadbotApplication(adapter(async () => projects, open));
+    application.start();
+    await vi.waitFor(() => expect(application.getSnapshot().inventory.status).toBe('ready'));
+    application.actions.openProjectFolder(projectKey(projects[1]));
+    expect(application.getSnapshot().project).toBe(projects[0]);
+    expect(application.getSnapshot().projectFolder.status).toBe('opening');
+    await vi.waitFor(() => expect(application.getSnapshot().projectFolder).toEqual({
+      status: 'error', projectId: projectKey(projects[1]), message: 'Directory is unavailable',
+    }));
+    expect(open).toHaveBeenCalledWith({ catalog: 'one', tool: 'second' });
+  });
+
+  it('filters catalog projects and owns the confirmed project lifecycle with authoritative refresh', async () => {
+    let projects: LoadbotProject[] = [
+      { catalog: 'one', tool: 'installed', installed: true, entries: [] },
+      { catalog: 'one', tool: 'available', installed: false, entries: [{ name: 'catalog command', path: 'run.sh', source: 'catalog' }] },
+    ];
+    const readInventory = vi.fn(async () => structuredClone(projects));
+    const pullProject: NonNullable<LoadbotAdapter['pullProject']> = vi.fn(async (identity, onActivity) => {
+      onActivity?.({ ...identity, stage: 'cloning-project' });
+      onActivity?.({ ...identity, stage: 'validating-fresh-checkout' });
+      projects = projects.map((project) => project.tool === identity.tool ? { ...project, installed: true } : project);
+      return identity;
+    });
+    const updateProject: NonNullable<LoadbotAdapter['updateProject']> = vi.fn(async (identity, onActivity) => {
+      onActivity?.({ ...identity, stage: 'validating-checkout' });
+      onActivity?.({ ...identity, stage: 'fetching-and-updating' });
+      return identity;
+    });
+    const removeProject: NonNullable<LoadbotAdapter['removeProject']> = vi.fn(async (identity, onActivity) => {
+      onActivity?.({ ...identity, stage: 'validating-checkout' });
+      onActivity?.({ ...identity, stage: 'removing-checkout' });
+      projects = projects.map((project) => project.tool === identity.tool ? { ...project, installed: false } : project);
+      return identity;
+    });
+    const reinstallProject: NonNullable<LoadbotAdapter['reinstallProject']> = vi.fn(async (identity, onActivity) => {
+      onActivity?.({ ...identity, stage: 'cloning-project' });
+      onActivity?.({ ...identity, stage: 'replacing-checkout' });
+      return identity;
+    });
+    const managed: LoadbotAdapter = {
+      ...adapter(readInventory), pullProject, updateProject, removeProject, reinstallProject,
+    };
+    const application = createLoadbotApplication(managed);
+    application.start();
+    await vi.waitFor(() => expect(application.getSnapshot().inventory.status).toBe('ready'));
+
+    expect(application.getSnapshot()).toMatchObject({ projectFilter: 'installed', project: { tool: 'installed' } });
+    application.actions.selectProjectFilter('not-installed');
+    expect(application.getSnapshot().project?.tool).toBe('available');
+    application.actions.selectProjectFilter('all');
+    expect(application.getSnapshot().project?.tool).toBe('available');
+    application.actions.selectProjectFilter('not-installed');
+
+    expect(await application.actions.pullProject()).toBe(true);
+    expect(pullProject).toHaveBeenCalledWith({ catalog: 'one', tool: 'available' }, expect.any(Function));
+    expect(application.getSnapshot()).toMatchObject({ projectFilter: 'installed', project: { tool: 'available', installed: true } });
+    expect(await application.actions.updateProject()).toBe(true);
+    expect(updateProject).toHaveBeenCalledWith({ catalog: 'one', tool: 'available' }, expect.any(Function));
+    application.actions.requestProjectAction('reinstall');
+    expect(reinstallProject).not.toHaveBeenCalled();
+    expect(application.getSnapshot().pendingProjectAction?.action).toBe('reinstall');
+    expect(await application.actions.confirmProjectAction()).toBe(true);
+    expect(reinstallProject).toHaveBeenCalledWith({ catalog: 'one', tool: 'available' }, expect.any(Function));
+    expect(application.getSnapshot().project?.tool).toBe('available');
+
+    application.actions.requestProjectAction('remove');
+    expect(removeProject).not.toHaveBeenCalled();
+    application.actions.cancelProjectAction();
+    expect(removeProject).not.toHaveBeenCalled();
+    application.actions.requestProjectAction('remove');
+    expect(await application.actions.confirmProjectAction()).toBe(true);
+    expect(removeProject).toHaveBeenCalledWith({ catalog: 'one', tool: 'available' }, expect.any(Function));
+    expect(application.getSnapshot()).toMatchObject({ projectFilter: 'not-installed', project: { tool: 'available', installed: false } });
+    expect(readInventory).toHaveBeenCalledTimes(5);
+    expect(application.getSnapshot().activity.map((entry) => entry.operation)).toEqual(expect.arrayContaining([
+      'project-pull', 'project-update', 'project-reinstall', 'project-remove',
+    ]));
+    expect(application.getSnapshot().activity.map((entry) => entry.stage)).toEqual(expect.arrayContaining([
+      'cloning-project', 'validating-fresh-checkout', 'validating-checkout', 'fetching-and-updating',
+      'removing-checkout', 'replacing-checkout', 'authoritative-reload', 'completed',
+    ]));
+  });
+
+  it('records project lifecycle failures and Reload performs reads without mutations', async () => {
+    const readInventory = vi.fn(async () => [{ catalog: 'one', tool: 'installed', installed: true, entries: [] }]);
+    const managed = adapter(readInventory);
+    managed.updateProject = vi.fn(async (identity, onActivity) => {
+      onActivity?.({ ...identity, stage: 'validating-checkout' });
+      throw new Error('working tree has local changes');
+    });
+    managed.pullProject = vi.fn();
+    managed.removeProject = vi.fn();
+    managed.reinstallProject = vi.fn();
+    const application = createLoadbotApplication(managed);
+    application.start();
+    await vi.waitFor(() => expect(application.getSnapshot().inventory.status).toBe('ready'));
+    expect(await application.actions.updateProject()).toBe(false);
+    expect(application.getSnapshot().activity.at(-1)).toMatchObject({
+      operation: 'project-update', stage: 'failed', status: 'error', detail: 'working tree has local changes',
+    });
+    expect(application.getSnapshot().activity).toEqual(expect.arrayContaining([
+      expect.objectContaining({ operation: 'project-update', stage: 'started', status: 'in-progress' }),
+      expect.objectContaining({ operation: 'project-update', stage: 'validating-checkout', status: 'in-progress' }),
+      expect.objectContaining({ operation: 'project-update', stage: 'authoritative-reload', status: 'in-progress' }),
+    ]));
+    const reads = readInventory.mock.calls.length;
+    application.actions.reloadInventory();
+    await vi.waitFor(() => expect(readInventory.mock.calls.length).toBe(reads + 1));
+    expect(managed.pullProject).not.toHaveBeenCalled();
+    expect(managed.removeProject).not.toHaveBeenCalled();
+    expect(managed.reinstallProject).not.toHaveBeenCalled();
+  });
+
+  it('routes management through qualified adapter operations and reloads authoritative state', async () => {
+    let projects: LoadbotProject[] = [{ catalog: 'personal', tool: 'existing', entries: [] }];
+    let catalogs = [{ name: 'personal', backend: 'git' as const, url: 'catalog', writable: true, state: 'installed' as const, default: true }];
+    const managed: LoadbotAdapter = {
+      readInventory: vi.fn(async () => structuredClone(projects)),
+      readCatalogs: vi.fn(async () => structuredClone(catalogs)),
+      openCatalogFolder: vi.fn(), openProjectFolder: vi.fn(),
+      addCatalog: vi.fn(async (input) => {
+        catalogs.push({ name: input.name, backend: 'git', url: input.url, writable: input.writable, state: 'installed', default: false });
+        return { catalog: input.name };
+      }),
+      createCatalog: vi.fn(async (input) => {
+        catalogs.push({ name: input.name, backend: input.backend, url: input.backend === 'git' ? input.url : undefined, writable: true, state: 'installed', default: false });
+        return { catalog: input.name };
+      }),
+      addProject: vi.fn(async (input) => {
+        projects.push({ catalog: input.catalog, tool: input.name, entries: [] });
+        return { catalog: input.catalog, tool: input.name };
+      }),
+      addShortcut: vi.fn(),
+      addRecipeShortcut: vi.fn(), updateRecipeShortcut: vi.fn(), chooseProjectFile: vi.fn(), viewShortcutHelp: vi.fn(),
+      chooseProjectDirectory: vi.fn(), deleteShortcuts: vi.fn(),
+      syncCatalog: vi.fn(async () => {}),
+    };
+    const application = createLoadbotApplication(managed);
+    application.start();
+    await vi.waitFor(() => expect(application.getSnapshot().inventory.status).toBe('ready'));
+
+    expect(await application.actions.addProject({ name: 'new', url: 'repo', commit: false, push: false })).toBe(true);
+    expect(managed.addProject).toHaveBeenCalledWith({ catalog: 'personal', name: 'new', url: 'repo', commit: false, push: false });
+    expect(application.getSnapshot().project?.tool).toBe('new');
+
+    expect(await application.actions.addCatalog({ name: 'other', url: 'other-repo', writable: false })).toBe(true);
+    expect(application.getSnapshot().currentCatalog).toBe('other');
+    expect(application.getSnapshot().project).toBeUndefined();
+    expect(await application.actions.createCatalog({ name: 'created', backend: 'git', url: 'empty-repo', commit: true, push: false })).toBe(true);
+    expect(managed.createCatalog).toHaveBeenCalledWith({ name: 'created', backend: 'git', url: 'empty-repo', commit: true, push: false });
+    expect(application.getSnapshot().currentCatalog).toBe('created');
+    expect(application.getSnapshot().project).toBeUndefined();
+    expect(await application.actions.syncCatalog()).toBe(true);
+    expect(managed.syncCatalog).toHaveBeenCalledWith('created', expect.any(Function));
+    expect(managed.readInventory).toHaveBeenCalledTimes(5);
+    expect(new Set(application.getSnapshot().activity.map((entry) => entry.operation))).toEqual(new Set([
+      'project-add', 'catalog-add', 'catalog-create', 'catalog-sync',
+    ]));
+  });
+
+  it('prevents duplicate catalog creation submissions and rereads authority after backend failure', async () => {
+    let finish!: () => void;
+    const pending = new Promise<void>((resolve) => { finish = resolve; });
+    const readInventory = vi.fn(async () => [] as LoadbotProject[]);
+    const readCatalogs = vi.fn(async () => []);
+    const managed = adapter(readInventory);
+    managed.readCatalogs = readCatalogs;
+    managed.createCatalog = vi.fn(async () => {
+      await pending;
+      throw new Error('catalog name already exists');
+    });
+    const application = createLoadbotApplication(managed);
+    application.start();
+    await vi.waitFor(() => expect(application.getSnapshot().inventory.status).toBe('ready'));
+
+    const first = application.actions.createCatalog({ name: 'duplicate', backend: 'git', url: 'empty-repo', commit: false, push: false });
+    expect(application.getSnapshot().management).toMatchObject({ status: 'submitting', kind: 'create-catalog' });
+    expect(await application.actions.createCatalog({ name: 'duplicate', backend: 'git', url: 'empty-repo', commit: false, push: false })).toBe(false);
+    expect(managed.createCatalog).toHaveBeenCalledOnce();
+    finish();
+    expect(await first).toBe(false);
+
+    expect(readInventory).toHaveBeenCalledTimes(2);
+    expect(readCatalogs).toHaveBeenCalledTimes(2);
+    expect(application.getSnapshot().management).toEqual({
+      status: 'error', kind: 'create-catalog', message: 'catalog name already exists',
+    });
+    expect(application.getSnapshot().activity.map((entry) => entry.stage)).toEqual([
+      'started', 'authoritative-reload', 'failed',
+    ]);
+  });
+
+  it('keeps an existing writable catalog manageable and preserves qualified selection after sync', async () => {
+    const projects: readonly LoadbotProject[] = [{ catalog: 'existing', tool: 'project', entries: [
+      { name: 'first', path: 'first.sh', source: 'catalog' },
+      { name: 'selected', path: 'selected.sh', source: 'personal' },
+    ] }];
+    const catalogs = [{ name: 'existing', backend: 'git' as const, url: 'catalog', writable: true, state: 'installed' as const, default: true }];
+    const syncCatalog: LoadbotAdapter['syncCatalog'] = vi.fn(async (_catalog, onActivity) => {
+      onActivity?.({ stage: 'validating', catalog: 'existing' });
+      onActivity?.({ stage: 'repository-checked', catalog: 'existing' });
+      onActivity?.({ stage: 'updating-repository', catalog: 'existing' });
+      onActivity?.({ stage: 'current', catalog: 'existing', detail: 'abc1234' });
+    });
+    const managed: LoadbotAdapter = {
+      ...adapter(async () => structuredClone(projects)),
+      readCatalogs: vi.fn(async () => structuredClone(catalogs)), syncCatalog,
+    };
+    const application = createLoadbotApplication(managed);
+    application.start();
+    await vi.waitFor(() => expect(application.getSnapshot().inventory.status).toBe('ready'));
+    expect(await application.actions.syncCatalog()).toBe(true);
+
+    const state = application.getSnapshot();
+    expect(state.currentCatalog).toBe('existing');
+    expect(state.project?.tool).toBe('project');
+    expect(state.catalogState.status === 'ready' && state.catalogState.catalogs[0]).toMatchObject({
+      name: 'existing', writable: true, state: 'installed',
+    });
+    expect(state.activity.map((entry) => entry.stage)).toEqual([
+      'started', 'validating', 'repository-checked', 'updating-repository', 'current',
+      'authoritative-reload', 'catalog-state', 'completed',
+    ]);
+    expect(state.bottomView).toBe('activity');
+  });
+
+  it('records sync failure and its authoritative recovery read without false success', async () => {
+    const managed = adapter(async () => [{ catalog: 'one', tool: 'project', entries: [] }]);
+    managed.syncCatalog = vi.fn(async (_catalog, onActivity) => {
+      onActivity?.({ stage: 'validating', catalog: 'one' });
+      onActivity?.({ kind: 'log', stream: 'command', text: 'git fetch origin' });
+      onActivity?.({ kind: 'log', stream: 'stderr', text: 'Permission denied (publickey).' });
+      throw new Error('Git command failed: Permission denied (publickey).');
+    });
+    const application = createLoadbotApplication(managed);
+    application.start();
+    await vi.waitFor(() => expect(application.getSnapshot().inventory.status).toBe('ready'));
+
+    expect(await application.actions.syncCatalog()).toBe(false);
+    expect(application.getSnapshot().activity.map((entry) => [entry.stage, entry.status])).toEqual([
+      ['started', 'in-progress'], ['validating', 'in-progress'],
+      ['authoritative-reload', 'in-progress'], ['failed', 'error'],
+    ]);
+    expect(application.getSnapshot().management).toEqual({
+      status: 'error', kind: 'sync-catalog', message: 'Git command failed: Permission denied (publickey).',
+    });
+    const operationId = application.getSnapshot().activity[0]!.operationId;
+    expect(application.getSnapshot().activity.every((entry) => entry.operationId === operationId)).toBe(true);
+    expect(application.getSnapshot().activityLogs).toEqual([
+      expect.objectContaining({ operationId, stream: 'command', text: 'git fetch origin' }),
+      expect.objectContaining({ operationId, stream: 'stderr', text: 'Permission denied (publickey).' }),
+    ]);
+  });
+
+  it('records cancellation as a distinct terminal outcome and keeps operation logs isolated and bounded', async () => {
+    let call = 0;
+    const managed = adapter(async () => [{ catalog: 'one', tool: 'project', entries: [] }]);
+    managed.syncCatalog = vi.fn(async (_catalog, onActivity) => {
+      call++;
+      if (call === 1) {
+        onActivity?.({ kind: 'log', stream: 'stderr', text: 'first operation' });
+        const error = Object.assign(new Error('operation cancelled'), { kind: 'cancelled' });
+        throw error;
+      }
+      for (let index = 0; index < ACTIVITY_LOG_HISTORY_LIMIT + 5; index++) {
+        onActivity?.({ kind: 'log', stream: 'stdout', text: `second operation ${index}` });
+      }
+    });
+    const application = createLoadbotApplication(managed);
+    application.start();
+    await vi.waitFor(() => expect(application.getSnapshot().inventory.status).toBe('ready'));
+
+    expect(await application.actions.syncCatalog()).toBe(false);
+    const cancelledGroup = application.getSnapshot().activity.filter((entry) => entry.operation === 'catalog-sync');
+    expect(cancelledGroup.at(-1)).toMatchObject({ stage: 'cancelled', status: 'cancelled', detail: 'operation cancelled' });
+    expect(application.getSnapshot().management).toEqual({
+      status: 'cancelled', kind: 'sync-catalog', message: 'operation cancelled',
+    });
+    const firstOperation = cancelledGroup[0]!.operationId;
+    expect(application.getSnapshot().activityLogs[0]).toMatchObject({ operationId: firstOperation, text: 'first operation' });
+
+    expect(await application.actions.syncCatalog()).toBe(true);
+    const syncStarts = application.getSnapshot().activity.filter((entry) => entry.operation === 'catalog-sync' && entry.stage === 'started');
+    const secondOperation = syncStarts.at(-1)!.operationId;
+    expect(secondOperation).not.toBe(firstOperation);
+    expect(application.getSnapshot().activityLogs).toHaveLength(ACTIVITY_LOG_HISTORY_LIMIT);
+    expect(application.getSnapshot().activityLogs.every((log) => log.operationId === secondOperation)).toBe(true);
+    expect(application.getSnapshot().activityLogs.at(-1)?.text).toBe(`second operation ${ACTIVITY_LOG_HISTORY_LIMIT + 4}`);
+  });
+
+  it('records reload and folder activity and bounds session history', async () => {
+    const managed = adapter(async () => [{ catalog: 'one', tool: 'project', entries: [] }]);
+    const application = createLoadbotApplication(managed);
+    application.start();
+    await vi.waitFor(() => expect(application.getSnapshot().inventory.status).toBe('ready'));
+    application.actions.reloadInventory();
+    await vi.waitFor(() => expect(application.getSnapshot().activity.at(-1)).toMatchObject({
+      operation: 'local-reload', status: 'success',
+    }));
+
+    for (let index = 0; index < 260; index++) application.actions.openProjectFolder(projectKey({ catalog: 'one', tool: 'project' }));
+    await vi.waitFor(() => expect(application.getSnapshot().activity.at(-1)?.status).toBe('success'));
+    expect(application.getSnapshot().activity).toHaveLength(250);
+    expect(application.getSnapshot().activity[0].id).toBeGreaterThan(1);
+  });
+
+  it('prevents duplicate submissions and never fabricates failed mutations', async () => {
+    let finish!: (value: { catalog: string; tool: string }) => void;
+    const addProject = vi.fn(() => new Promise<{ catalog: string; tool: string }>((resolve) => { finish = resolve; }));
+    const managed = adapter(async () => [{ catalog: 'one', tool: 'existing', entries: [] }]);
+    managed.addProject = addProject;
+    const application = createLoadbotApplication(managed);
+    application.start();
+    await vi.waitFor(() => expect(application.getSnapshot().inventory.status).toBe('ready'));
+    const first = application.actions.addProject({ name: 'pending', url: 'repo', commit: false, push: false });
+    const duplicate = application.actions.addProject({ name: 'pending', url: 'repo', commit: false, push: false });
+    expect(await duplicate).toBe(false);
+    expect(addProject).toHaveBeenCalledOnce();
+    finish({ catalog: 'one', tool: 'pending' });
+    await first;
+    expect(application.getSnapshot().project?.tool).toBe('existing');
+  });
+});

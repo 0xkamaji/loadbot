@@ -1,0 +1,12 @@
+{
+  "asset_masters": 35,
+  "ui_and_terminal_masters": 33,
+  "branding_pngs": 2,
+  "resizable_masters_reassembled_exactly": 14,
+  "nine_slice_piece_pngs": 126,
+  "master_sha256_matches_sources": true,
+  "master_dimensions_and_rgba_verified": true,
+  "manifest_paths_resolve": true,
+  "browser_screenshot_validation": false,
+  "scope": "Asset package integrity only. No application/backend implementation is included."
+}

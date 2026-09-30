@@ -1,0 +1,1672 @@
+use std::ffi::{OsStr, OsString};
+use std::fs;
+#[cfg(unix)]
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output, Stdio};
+
+use tempfile::TempDir;
+
+#[cfg(unix)]
+fn executable(path: &Path, script: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    fs::write(path, script).unwrap();
+    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[test]
+fn missing_normal_gui_is_actionable_and_never_falls_back() {
+    let temporary = TempDir::new().unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_loadbot"))
+        .env("LOADBOT_GUI_PATH", temporary.path().join("missing desktop"))
+        .arg("gui")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let error = stderr(&output);
+    assert!(error.contains("Loadbot GUI is not installed"), "{error}");
+    assert!(error.contains("loadbot setup"), "{error}");
+    assert!(!error.contains("fixture"));
+    assert!(!error.contains("Vite"));
+}
+
+#[cfg(unix)]
+#[test]
+fn normal_gui_launches_the_exact_native_path_with_spaces() {
+    let temporary = TempDir::new().unwrap();
+    let desktop = temporary
+        .path()
+        .join("installed path with spaces/loadbot-desktop");
+    fs::create_dir_all(desktop.parent().unwrap()).unwrap();
+    executable(
+        &desktop,
+        "#!/bin/sh\nprintf launched >\"$LOADBOT_TEST_MARKER\"\n",
+    );
+    let marker = temporary.path().join("launched");
+    let output = Command::new(env!("CARGO_BIN_EXE_loadbot"))
+        .env("LOADBOT_GUI_PATH", &desktop)
+        .env("LOADBOT_TEST_MARKER", &marker)
+        .arg("gui")
+        .output()
+        .unwrap();
+    assert_success_ref(&output);
+    for _ in 0..100 {
+        if marker.is_file() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_eq!(fs::read_to_string(marker).unwrap(), "launched");
+}
+
+#[cfg(unix)]
+#[test]
+fn development_gui_repairs_lockfile_state_then_uses_tauri_dev() {
+    let temporary = TempDir::new().unwrap();
+    let source = temporary.path().join("source with spaces");
+    let gui = source.join("src/gui");
+    let fake_bin = temporary.path().join("fake bin");
+    fs::create_dir_all(&gui).unwrap();
+    fs::create_dir_all(&fake_bin).unwrap();
+    fs::write(
+        source.join("Cargo.toml"),
+        "[package]\nname='fake'\nversion='0.0.0'\n",
+    )
+    .unwrap();
+    fs::write(gui.join("package.json"), "{}\n").unwrap();
+    fs::write(gui.join("package-lock.json"), "lock-v2\n").unwrap();
+    fs::create_dir_all(gui.join("src-tauri")).unwrap();
+    fs::write(gui.join("src-tauri/Cargo.toml"), "[workspace]\n").unwrap();
+    executable(&fake_bin.join("cargo"), "#!/bin/sh\nexit 0\n");
+    executable(&fake_bin.join("node"), "#!/bin/sh\nprintf 'v22.12.0\n'\n");
+    executable(&fake_bin.join("pkg-config"), "#!/bin/sh\nexit 0\n");
+    executable(
+        &fake_bin.join("npm"),
+        r#"#!/bin/sh
+if [ "$1" = --version ]; then exit 0; fi
+printf '%s\n' "$*" >>"$LOADBOT_TEST_LOG"
+case " $*" in
+  *" ci") /bin/mkdir -p "$LOADBOT_TEST_GUI/node_modules/@tauri-apps/api"; printf '{}\n' >"$LOADBOT_TEST_GUI/node_modules/@tauri-apps/api/package.json" ;;
+esac
+exit 0
+"#,
+    );
+    let log = temporary.path().join("commands");
+    let output = Command::new(env!("CARGO_BIN_EXE_loadbot"))
+        .env("LOADBOT_SOURCE", &source)
+        .env("LOADBOT_TEST_GUI", &gui)
+        .env("LOADBOT_TEST_LOG", &log)
+        .env("PATH", &fake_bin)
+        .args(["gui", "--dev"])
+        .output()
+        .unwrap();
+    assert_success_ref(&output);
+    let commands = fs::read_to_string(&log).unwrap();
+    assert!(commands.lines().any(|line| line == "ci"), "{commands}");
+    assert!(commands.contains("run desktop"), "{commands}");
+    assert!(!commands.contains("fixture"));
+    assert_eq!(
+        fs::read(gui.join("node_modules/.loadbot-package-lock.json")).unwrap(),
+        fs::read(gui.join("package-lock.json")).unwrap()
+    );
+
+    fs::write(&log, "").unwrap();
+    let repeated = Command::new(env!("CARGO_BIN_EXE_loadbot"))
+        .env("LOADBOT_SOURCE", &source)
+        .env("LOADBOT_TEST_GUI", &gui)
+        .env("LOADBOT_TEST_LOG", &log)
+        .env("PATH", &fake_bin)
+        .args(["gui", "--dev"])
+        .output()
+        .unwrap();
+    assert_success_ref(&repeated);
+    let repeated_commands = fs::read_to_string(log).unwrap();
+    assert!(
+        !repeated_commands.lines().any(|line| line == "ci"),
+        "{repeated_commands}"
+    );
+    assert!(
+        repeated_commands.contains("run desktop"),
+        "{repeated_commands}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn setup_command_delegates_one_explicit_mode_to_the_source_bootstrap() {
+    let temporary = TempDir::new().unwrap();
+    let source = temporary.path().join("setup source with spaces");
+    fs::create_dir_all(source.join("src/gui")).unwrap();
+    fs::write(source.join("Cargo.toml"), "[workspace]\n").unwrap();
+    fs::write(source.join("src/gui/package.json"), "{}\n").unwrap();
+    executable(
+        &source.join("setup.sh"),
+        "#!/bin/sh\nprintf '%s' \"$1\" >\"$LOADBOT_TEST_MARKER\"\n",
+    );
+    let marker = temporary.path().join("setup mode");
+    let output = Command::new(env!("CARGO_BIN_EXE_loadbot"))
+        .env("LOADBOT_SOURCE", &source)
+        .env("LOADBOT_TEST_MARKER", &marker)
+        .args(["setup", "--gui"])
+        .output()
+        .unwrap();
+    assert_success_ref(&output);
+    assert_eq!(fs::read_to_string(marker).unwrap(), "--gui");
+}
+
+#[test]
+fn development_gui_reports_missing_tooling_without_starting_a_preview() {
+    let temporary = TempDir::new().unwrap();
+    let source = temporary.path().join("source");
+    fs::create_dir_all(source.join("src/gui")).unwrap();
+    fs::write(source.join("Cargo.toml"), "[workspace]\n").unwrap();
+    fs::write(source.join("src/gui/package.json"), "{}\n").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_loadbot"))
+        .env("LOADBOT_SOURCE", &source)
+        .env("PATH", temporary.path().join("empty path"))
+        .args(["gui", "--dev"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let error = stderr(&output);
+    assert!(
+        error.contains("GUI development requires Cargo/Rust"),
+        "{error}"
+    );
+    assert!(!error.contains("fixture"));
+}
+
+struct Repository {
+    source: PathBuf,
+    remote: PathBuf,
+}
+
+struct Fixture {
+    _temporary: TempDir,
+    home: PathBuf,
+    config_home: PathBuf,
+    catalog: Repository,
+    tool: Repository,
+}
+
+impl Fixture {
+    fn new() -> Option<Self> {
+        if !git_available() {
+            eprintln!("skipping integration test: Git is not available");
+            return None;
+        }
+        let temporary = TempDir::new().unwrap();
+        let catalog = create_repository(
+            temporary.path(),
+            "catalog",
+            Some("version = 1\n\n[tools]\n"),
+        );
+        let tool = create_repository(temporary.path(), "tool", Some("initial\n"));
+        Some(Self {
+            home: temporary.path().join("loadbot-home"),
+            config_home: temporary.path().join("config-home"),
+            _temporary: temporary,
+            catalog,
+            tool,
+        })
+    }
+
+    fn loadbot<I, S>(&self, arguments: I) -> Output
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        Command::new(env!("CARGO_BIN_EXE_loadbot"))
+            .env("LOADBOT_HOME", &self.home)
+            .env("XDG_CONFIG_HOME", &self.config_home)
+            .env("APPDATA", &self.config_home)
+            .env("LOADBOT_CONFIG_HOME", self.config_home.join("loadbot"))
+            .args(arguments)
+            .output()
+            .unwrap()
+    }
+
+    fn add_catalog(&self, name: &str, writable: bool) -> Output {
+        let mut arguments = vec![
+            OsString::from("catalog"),
+            OsString::from("add"),
+            OsString::from(name),
+            self.catalog.remote.as_os_str().to_owned(),
+        ];
+        if writable {
+            arguments.push(OsString::from("--writable"));
+        }
+        self.loadbot(arguments)
+    }
+
+    fn add_tool(&self, name: &str, catalog: &str, extra: &[&str]) -> Output {
+        let mut arguments = vec![
+            OsString::from("add"),
+            OsString::from(name),
+            self.tool.remote.as_os_str().to_owned(),
+            OsString::from("--revision"),
+            OsString::from("main"),
+            OsString::from("--catalog"),
+            OsString::from(catalog),
+        ];
+        arguments.extend(extra.iter().map(OsString::from));
+        self.loadbot(arguments)
+    }
+
+    fn configure_catalog_identity(&self, name: &str) {
+        let directory = self.home.join("catalogs").join(name);
+        git(["config", "user.name", "Loadbot Tests"], Some(&directory));
+        git(
+            ["config", "user.email", "loadbot@example.test"],
+            Some(&directory),
+        );
+    }
+
+    fn save_shortcut(&self, name: &str, catalog: &str, tool: &str, path: &str) {
+        let destination = self.config_home.join("loadbot/shortcuts.toml");
+        fs::create_dir_all(destination.parent().unwrap()).unwrap();
+        fs::write(
+            destination,
+            format!(
+                "version = 1\n\n[shortcuts.{name}]\ncatalog = {catalog:?}\ntool = {tool:?}\npath = {path:?}\n"
+            ),
+        )
+        .unwrap();
+    }
+}
+
+#[test]
+fn catalog_registration_clones_and_sets_the_first_default() {
+    let Some(fixture) = Fixture::new() else {
+        return;
+    };
+    let output = fixture.add_catalog("personal", true);
+    assert_success_ref(&output);
+
+    let config = fs::read_to_string(fixture.home.join("config.toml")).unwrap();
+    let config: toml::Value = toml::from_str(&config).unwrap();
+    assert_eq!(config["default_catalog"].as_str(), Some("personal"));
+    assert_eq!(
+        config["catalogs"]["personal"]["writable"].as_bool(),
+        Some(true)
+    );
+    assert!(fixture.home.join("catalogs/personal/.git").is_dir());
+    assert!(!config.as_table().unwrap().contains_key("tools"));
+
+    let list = fixture.loadbot(["catalog", "list"]);
+    assert_success_ref(&list);
+    assert!(
+        stdout(&list).contains("personal\tinstalled\twritable\tyes"),
+        "{}",
+        stdout(&list)
+    );
+    let path = fixture.loadbot(["catalog", "path", "personal"]);
+    assert_success_ref(&path);
+    assert_eq!(
+        stdout(&path),
+        fixture
+            .home
+            .join("catalogs")
+            .join("personal")
+            .display()
+            .to_string()
+    );
+    let status = fixture.loadbot(["catalog", "status", "personal"]);
+    assert_success_ref(&status);
+    assert!(stdout(&status).contains("Catalog file: valid"));
+}
+
+#[test]
+fn catalog_sync_fast_forwards_and_refuses_dirty_worktrees() {
+    let Some(fixture) = Fixture::new() else {
+        return;
+    };
+    assert_success(fixture.add_catalog("personal", true));
+    fs::write(
+        fixture.catalog.source.join("catalog.toml"),
+        "version = 1\nnote = \"updated\"\n\n[tools]\n",
+    )
+    .unwrap();
+    commit_and_push(&fixture.catalog.source, "catalog update");
+
+    let sync = fixture.loadbot(["catalog", "sync", "personal"]);
+    assert_success_ref(&sync);
+    assert!(stdout(&sync).contains("synchronized catalog 'personal'"));
+
+    fs::write(
+        fixture.home.join("catalogs/personal/local.txt"),
+        "do not remove\n",
+    )
+    .unwrap();
+    let dirty = fixture.loadbot(["catalog", "sync", "personal"]);
+    assert!(!dirty.status.success());
+    assert!(stderr(&dirty).contains("working tree has local changes"));
+    assert!(fixture.home.join("catalogs/personal/local.txt").is_file());
+}
+
+#[test]
+fn catalog_url_mismatch_is_refused() {
+    let Some(fixture) = Fixture::new() else {
+        return;
+    };
+    assert_success(fixture.add_catalog("personal", false));
+    let installed = fixture.home.join("catalogs/personal");
+    git(
+        [
+            "remote",
+            "set-url",
+            "origin",
+            "https://example.test/other.git",
+        ],
+        Some(&installed),
+    );
+
+    let output = fixture.loadbot(["catalog", "sync", "personal"]);
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("not the configured Git repository"));
+}
+
+#[test]
+fn correctly_registered_personal_catalog_retries_idempotently_and_refuses_origin_mismatch() {
+    let Some(fixture) = Fixture::new() else {
+        return;
+    };
+    assert_success(fixture.add_catalog("personal", true));
+    let repeated = fixture.add_catalog("personal", true);
+    assert_success_ref(&repeated);
+    assert!(stdout(&repeated).contains("already registered"));
+    assert!(stdout(&repeated).contains("already installed"));
+
+    let installed = fixture.home.join("catalogs/personal");
+    git(
+        [
+            "remote",
+            "set-url",
+            "origin",
+            "https://example.test/unrelated.git",
+        ],
+        Some(&installed),
+    );
+    let mismatched = fixture.add_catalog("personal", true);
+    assert!(!mismatched.status.success());
+    assert!(stderr(&mismatched).contains("not the configured Git repository"));
+}
+
+#[test]
+fn failed_first_catalog_clone_is_transactional_and_can_be_retried() {
+    let Some(fixture) = Fixture::new() else {
+        return;
+    };
+    assert_success(fixture.add_catalog("personal", true));
+    assert_success(fixture.add_tool("demo", "personal", &[]));
+    let config_before = fs::read(fixture.home.join("config.toml")).unwrap();
+    fs::write(fixture.home.join("catalogs/keep.txt"), "keep\n").unwrap();
+    let missing_remote = fixture._temporary.path().join("missing.git");
+    let failed = fixture.loadbot([
+        OsStr::new("catalog"),
+        OsStr::new("add"),
+        OsStr::new("broken"),
+        missing_remote.as_os_str(),
+    ]);
+    assert!(!failed.status.success());
+    let failure = stderr(&failed);
+    assert!(failure.contains("could not install catalog 'broken'"));
+    assert_eq!(
+        fs::read(fixture.home.join("config.toml")).unwrap(),
+        config_before
+    );
+    assert!(!fixture.home.join("catalogs/broken").exists());
+    assert_eq!(
+        fs::read_to_string(fixture.home.join("catalogs/keep.txt")).unwrap(),
+        "keep\n"
+    );
+
+    let list = fixture.loadbot(["list"]);
+    assert_success_ref(&list);
+    assert!(stdout(&list).contains("demo\n  catalog  personal"));
+    let qualified = fixture.loadbot(["pull", "demo", "--catalog", "broken"]);
+    assert!(!qualified.status.success());
+    assert!(stderr(&qualified).contains("catalog 'broken' is not configured"));
+
+    let repaired_remote =
+        create_repository(fixture._temporary.path(), "missing", Some("temporary\n"));
+    fs::write(
+        repaired_remote.source.join("catalog.toml"),
+        "version = 1\n\n[tools]\n",
+    )
+    .unwrap();
+    commit_and_push(&repaired_remote.source, "add catalog metadata");
+    let repaired = fixture.loadbot([
+        OsStr::new("catalog"),
+        OsStr::new("add"),
+        OsStr::new("broken"),
+        missing_remote.as_os_str(),
+    ]);
+    assert_success_ref(&repaired);
+    assert!(fixture.home.join("catalogs/broken/.git").is_dir());
+    let local = fs::read_to_string(fixture.home.join("config.toml")).unwrap();
+    assert!(local.contains("[catalogs.broken]"));
+}
+
+#[test]
+fn successful_registration_survives_sync_network_failure() {
+    let Some(fixture) = Fixture::new() else {
+        return;
+    };
+    // Exercise Git's transport rather than its local-clone hardlink optimization.
+    // WSL1 cannot rename a directory with files hard-linked outside that directory.
+    // A file URL works on Unix and Git for Windows, including paths with spaces.
+    let remote_path = fixture.catalog.remote.to_str().unwrap().replace('\\', "/");
+    let remote_url = format!("file:///{}", remote_path.trim_start_matches('/'));
+    assert_success(fixture.loadbot(["catalog", "add", "personal", &remote_url, "--writable"]));
+    let config_before = fs::read(fixture.home.join("config.toml")).unwrap();
+    let unavailable = fixture.catalog.remote.with_extension("git.offline");
+    fs::rename(&fixture.catalog.remote, &unavailable).unwrap();
+
+    let failed = fixture.loadbot(["catalog", "sync", "personal"]);
+
+    assert!(!failed.status.success());
+    assert_eq!(
+        fs::read(fixture.home.join("config.toml")).unwrap(),
+        config_before
+    );
+    assert!(fixture.home.join("catalogs/personal/.git").is_dir());
+    let listed = fixture.loadbot(["catalog", "list"]);
+    assert_success_ref(&listed);
+    assert!(stdout(&listed).contains("personal\tinstalled"));
+}
+
+#[test]
+fn unrelated_catalog_destination_is_never_overwritten() {
+    let Some(fixture) = Fixture::new() else {
+        return;
+    };
+    let destination = fixture.home.join("catalogs/personal");
+    fs::create_dir_all(&destination).unwrap();
+    fs::write(destination.join("keep.txt"), "keep\n").unwrap();
+
+    let output = fixture.add_catalog("personal", true);
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("not a Git repository"));
+    assert_eq!(
+        fs::read_to_string(destination.join("keep.txt")).unwrap(),
+        "keep\n"
+    );
+    assert!(!fixture.home.join("config.toml").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn catalog_symlink_destination_is_not_followed() {
+    use std::os::unix::fs::symlink;
+
+    let Some(fixture) = Fixture::new() else {
+        return;
+    };
+    assert_success(fixture.add_catalog("personal", true));
+    let destination = fixture.home.join("catalogs/personal");
+    fs::remove_dir_all(&destination).unwrap();
+    symlink(&fixture.catalog.source, &destination).unwrap();
+
+    let sync = fixture.loadbot(["catalog", "sync", "personal"]);
+    assert!(!sync.status.success());
+    assert!(stderr(&sync).contains("not a Git repository"));
+    let status = fixture.loadbot(["catalog", "status", "personal"]);
+    assert_success_ref(&status);
+    assert!(
+        stdout(&status).contains("Catalog file: unavailable"),
+        "{}",
+        stdout(&status)
+    );
+}
+
+#[test]
+fn tool_add_writes_only_writable_catalogs_and_never_pushes_implicitly() {
+    let Some(fixture) = Fixture::new() else {
+        return;
+    };
+    assert_success(fixture.add_catalog("personal", true));
+    let remote_before = bare_main_commit(&fixture.catalog.remote);
+
+    let added = fixture.add_tool("demo", "personal", &[]);
+    assert_success_ref(&added);
+    let catalog = fs::read_to_string(fixture.home.join("catalogs/personal/catalog.toml")).unwrap();
+    assert!(catalog.contains("[tools.demo]"));
+    assert_eq!(bare_main_commit(&fixture.catalog.remote), remote_before);
+
+    fixture.configure_catalog_identity("personal");
+    let retry = fixture.add_tool("demo", "personal", &["--commit", "--push"]);
+    assert_success_ref(&retry);
+    assert_ne!(bare_main_commit(&fixture.catalog.remote), remote_before);
+
+    let readonly_fixture = Fixture::new().unwrap();
+    assert_success(readonly_fixture.add_catalog("public", false));
+    let refused = readonly_fixture.add_tool("demo", "public", &[]);
+    assert!(!refused.status.success());
+    assert!(stderr(&refused).contains("read-only"));
+}
+
+#[test]
+fn preexisting_catalog_file_changes_refuse_new_definition_without_modifying_bytes() {
+    let Some(fixture) = Fixture::new() else {
+        return;
+    };
+    assert_success(fixture.add_catalog("personal", true));
+    fixture.configure_catalog_identity("personal");
+    let catalog_path = fixture.home.join("catalogs/personal/catalog.toml");
+    let mut contents = fs::read(&catalog_path).unwrap();
+    contents.extend_from_slice(b"\n# local work that Loadbot must preserve\n");
+    fs::write(&catalog_path, &contents).unwrap();
+    let before = fs::read(&catalog_path).unwrap();
+
+    let output = fixture.add_tool("demo", "personal", &["--commit"]);
+    assert!(!output.status.success());
+    let error = stderr(&output);
+    assert!(error.contains("catalog.toml already has uncommitted changes"));
+    assert!(error.contains("handle those changes manually before retrying"));
+    assert_eq!(fs::read(&catalog_path).unwrap(), before);
+    assert!(
+        !before
+            .windows(b"[tools.demo]".len())
+            .any(|window| window == b"[tools.demo]")
+    );
+}
+
+#[test]
+fn explicit_commit_and_push_use_the_catalog_repository() {
+    let Some(fixture) = Fixture::new() else {
+        return;
+    };
+    assert_success(fixture.add_catalog("personal", true));
+    fixture.configure_catalog_identity("personal");
+    let remote_before = bare_main_commit(&fixture.catalog.remote);
+    let catalog_directory = fixture.home.join("catalogs/personal");
+    fs::write(
+        catalog_directory.join("unrelated.txt"),
+        "staged user work\n",
+    )
+    .unwrap();
+    git(["add", "unrelated.txt"], Some(&catalog_directory));
+
+    let output = fixture.add_tool("demo", "personal", &["--commit", "--push"]);
+    assert_success_ref(&output);
+    assert!(stdout(&output).contains("committed catalog change"));
+    assert!(stdout(&output).contains("pushed catalog 'personal'"));
+    assert_ne!(bare_main_commit(&fixture.catalog.remote), remote_before);
+    let message = git_text(["log", "-1", "--pretty=%s"], Some(&catalog_directory));
+    assert_eq!(message, "Add demo to Loadbot catalog");
+    let committed_files = git_text(
+        ["show", "--pretty=", "--name-only", "HEAD"],
+        Some(&catalog_directory),
+    );
+    assert_eq!(committed_files, "catalog.toml");
+    let staged_files = git_text(
+        ["diff", "--cached", "--name-only"],
+        Some(&catalog_directory),
+    );
+    assert_eq!(staged_files, "unrelated.txt");
+}
+
+#[test]
+fn direct_tool_add_uses_a_writable_default_catalog() {
+    let Some(fixture) = Fixture::new() else {
+        return;
+    };
+    assert_success(fixture.add_catalog("personal", true));
+    let output = fixture.loadbot([
+        OsStr::new("add"),
+        OsStr::new("demo"),
+        fixture.tool.remote.as_os_str(),
+        OsStr::new("--revision"),
+        OsStr::new("main"),
+    ]);
+    assert_success_ref(&output);
+    assert!(
+        fs::read_to_string(fixture.home.join("catalogs/personal/catalog.toml"))
+            .unwrap()
+            .contains("[tools.demo]")
+    );
+}
+
+#[test]
+fn personal_catalog_tools_resolve_immediately_into_personal_namespace() {
+    let Some(fixture) = Fixture::new() else {
+        return;
+    };
+    fs::write(
+        fixture.catalog.source.join("catalog.toml"),
+        format!(
+            "version = 1\n\n[tools.rot-tools]\ntype = \"git\"\nurl = {:?}\nrevision = \"main\"\n",
+            fixture.tool.remote.display().to_string()
+        ),
+    )
+    .unwrap();
+    commit_and_push(&fixture.catalog.source, "add rot-tools");
+
+    assert_success(fixture.add_catalog("personal", true));
+    let pulled = fixture.loadbot(["pull", "rot-tools"]);
+    assert_success_ref(&pulled);
+    assert!(fixture.home.join("tools/personal/rot-tools/.git").is_dir());
+}
+
+#[test]
+fn tool_listing_aggregates_catalogs_and_requires_qualification_for_duplicates() {
+    let Some(fixture) = Fixture::new() else {
+        return;
+    };
+    assert_success(fixture.add_catalog("personal", true));
+    assert_success(fixture.add_tool("demo", "personal", &[]));
+
+    let second = create_repository(
+        fixture._temporary.path(),
+        "second-catalog",
+        Some(&format!(
+            "version = 1\n\n[tools.demo]\ntype = \"git\"\nurl = {:?}\nrevision = \"main\"\n",
+            fixture.tool.remote.display().to_string()
+        )),
+    );
+    let add_second = fixture.loadbot([
+        OsStr::new("catalog"),
+        OsStr::new("add"),
+        OsStr::new("public"),
+        second.remote.as_os_str(),
+    ]);
+    assert_success(add_second);
+
+    let list = fixture.loadbot(["list"]);
+    assert_success_ref(&list);
+    assert_eq!(
+        stdout(&list).lines().filter(|line| *line == "demo").count(),
+        2
+    );
+    assert!(
+        stdout(&list).contains("demo\n  catalog  personal\n  type     git\n  state    missing")
+    );
+    assert!(stdout(&list).contains("demo\n  catalog  public\n  type     git\n  state    missing"));
+    assert!(!stdout(&list).contains('\t'));
+    assert!(!stdout(&list).contains("revision"));
+    assert!(!stdout(&list).contains("ambiguous"));
+
+    let ambiguous = fixture.loadbot(["path", "demo"]);
+    assert!(!ambiguous.status.success());
+    assert!(stderr(&ambiguous).contains("ambiguous across catalogs"));
+    let qualified = fixture.loadbot(["path", "demo", "--catalog", "personal"]);
+    assert_success_ref(&qualified);
+    assert_eq!(
+        stdout(&qualified),
+        fixture
+            .home
+            .join("tools")
+            .join("personal")
+            .join("demo")
+            .display()
+            .to_string()
+    );
+}
+
+#[test]
+fn duplicate_tools_install_and_operate_independently_by_catalog() {
+    let Some(fixture) = Fixture::new() else {
+        return;
+    };
+    assert_success(fixture.add_catalog("personal", true));
+    assert_success(fixture.add_tool("demo", "personal", &[]));
+
+    let public_tool = create_repository(fixture._temporary.path(), "public-tool", Some("public\n"));
+    git(["checkout", "-b", "release"], Some(&public_tool.source));
+    git(
+        ["push", "-u", "origin", "release"],
+        Some(&public_tool.source),
+    );
+    let public_catalog = create_repository(
+        fixture._temporary.path(),
+        "public-catalog",
+        Some(&format!(
+            "version = 1\n\n[tools.demo]\ntype = \"git\"\nurl = {:?}\nrevision = \"release\"\n",
+            public_tool.remote.display().to_string()
+        )),
+    );
+    assert_success(fixture.loadbot([
+        OsStr::new("catalog"),
+        OsStr::new("add"),
+        OsStr::new("public"),
+        public_catalog.remote.as_os_str(),
+    ]));
+
+    assert_success(fixture.loadbot(["pull", "demo", "--catalog", "personal"]));
+    assert_success(fixture.loadbot(["pull", "demo", "--catalog", "public"]));
+    let personal = fixture.home.join("tools").join("personal").join("demo");
+    let public = fixture.home.join("tools").join("public").join("demo");
+    assert!(personal.join("README.md").is_file());
+    assert!(public.join("README.md").is_file());
+    let list = fixture.loadbot(["list"]);
+    assert_success_ref(&list);
+    assert_eq!(stdout(&list).matches("  state    installed").count(), 2);
+    assert_eq!(
+        git_text(["remote", "get-url", "origin"], Some(&personal)),
+        fixture.tool.remote.display().to_string()
+    );
+    assert_eq!(
+        git_text(["remote", "get-url", "origin"], Some(&public)),
+        public_tool.remote.display().to_string()
+    );
+    assert_eq!(
+        git_text(["branch", "--show-current"], Some(&personal)),
+        "main"
+    );
+    assert_eq!(
+        git_text(["branch", "--show-current"], Some(&public)),
+        "release"
+    );
+
+    let personal_path = fixture.loadbot(["path", "demo", "--catalog", "personal"]);
+    assert_success_ref(&personal_path);
+    assert_eq!(stdout(&personal_path), personal.display().to_string());
+    let public_path = fixture.loadbot(["path", "demo", "--catalog", "public"]);
+    assert_success_ref(&public_path);
+    assert_eq!(stdout(&public_path), public.display().to_string());
+
+    fs::write(personal.join("local.txt"), "keep personal changes\n").unwrap();
+    fs::write(public_tool.source.join("public-update.txt"), "updated\n").unwrap();
+    git(["add", "."], Some(&public_tool.source));
+    git(["commit", "-m", "public update"], Some(&public_tool.source));
+    git(["push", "origin", "release"], Some(&public_tool.source));
+    let update_public = fixture.loadbot(["update", "demo", "--catalog", "public"]);
+    assert_success_ref(&update_public);
+    assert!(public.join("public-update.txt").is_file());
+    assert!(personal.join("local.txt").is_file());
+
+    git(
+        [
+            "remote",
+            "set-url",
+            "origin",
+            public_tool.remote.to_str().unwrap(),
+        ],
+        Some(&personal),
+    );
+    let mismatched = fixture.loadbot(["update", "demo", "--catalog", "personal"]);
+    assert!(!mismatched.status.success());
+    assert!(stderr(&mismatched).contains("not the configured Git repository"));
+    let public_status = fixture.loadbot(["status", "demo", "--catalog", "public"]);
+    assert_success_ref(&public_status);
+    assert!(stdout(&public_status).contains("Installed: yes"));
+}
+
+#[test]
+fn tool_clone_status_update_and_dirty_refusal_remain_safe() {
+    let Some(fixture) = Fixture::new() else {
+        return;
+    };
+    assert_success(fixture.add_catalog("personal", true));
+    assert_success(fixture.add_tool("demo", "personal", &[]));
+    assert_success(fixture.loadbot(["pull", "demo"]));
+
+    let status = fixture.loadbot(["status", "demo"]);
+    assert_success_ref(&status);
+    assert!(stdout(&status).contains("Catalog: personal"));
+    assert!(stdout(&status).contains("Working tree: clean"));
+    assert!(stdout(&status).contains("Fetch URL:"));
+    assert!(stdout(&status).contains("Push URL:"));
+    assert!(stdout(&status).contains("(uses fetch URL)"));
+
+    let installed = fixture.home.join("tools/personal/demo");
+    git(
+        [
+            "config",
+            "remote.origin.pushurl",
+            "git@example.test:owner/demo.git",
+        ],
+        Some(&installed),
+    );
+    let push_status = fixture.loadbot(["status", "demo"]);
+    assert_success_ref(&push_status);
+    assert!(stdout(&push_status).contains("Push URL: git@example.test:owner/demo.git"));
+
+    fs::write(fixture.tool.source.join("update.txt"), "update\n").unwrap();
+    commit_and_push(&fixture.tool.source, "tool update");
+    let update = fixture.loadbot(["update", "demo"]);
+    assert_success_ref(&update);
+    assert!(
+        fixture
+            .home
+            .join("tools/personal/demo/update.txt")
+            .is_file()
+    );
+
+    let local = fixture.home.join("tools/personal/demo/local.txt");
+    fs::write(&local, "keep\n").unwrap();
+    let dirty = fixture.loadbot(["update", "demo"]);
+    assert!(!dirty.status.success());
+    assert!(stderr(&dirty).contains("working tree has local changes"));
+    assert!(local.is_file());
+}
+
+#[test]
+fn direct_reinstall_and_remove_commands_use_managed_project_lifecycle() {
+    let Some(fixture) = Fixture::new() else {
+        return;
+    };
+    assert_success(fixture.add_catalog("personal", true));
+    assert_success(fixture.add_tool("demo", "personal", &[]));
+    assert_success(fixture.loadbot(["pull", "demo", "--catalog", "personal"]));
+    let installed = fixture.home.join("tools/personal/demo");
+
+    assert_success(fixture.loadbot(["reinstall", "demo", "--catalog", "personal"]));
+    assert!(installed.join(".git").is_dir());
+    assert_success(fixture.loadbot(["remove", "demo", "--catalog", "personal"]));
+    assert!(!installed.exists());
+    assert!(
+        fs::read_to_string(fixture.home.join("catalogs/personal/catalog.toml"))
+            .unwrap()
+            .contains("[tools.demo]")
+    );
+}
+
+#[test]
+fn unrelated_tool_destination_is_never_overwritten() {
+    let Some(fixture) = Fixture::new() else {
+        return;
+    };
+    assert_success(fixture.add_catalog("personal", true));
+    assert_success(fixture.add_tool("demo", "personal", &[]));
+    let destination = fixture.home.join("tools/personal/demo");
+    fs::create_dir_all(&destination).unwrap();
+    fs::write(destination.join("keep.txt"), "keep\n").unwrap();
+
+    let output = fixture.loadbot(["pull", "demo"]);
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("not a Git repository"));
+    assert_eq!(
+        fs::read_to_string(destination.join("keep.txt")).unwrap(),
+        "keep\n"
+    );
+}
+
+#[test]
+fn unsafe_catalog_and_tool_names_cannot_escape_loadbot_home() {
+    let Some(fixture) = Fixture::new() else {
+        return;
+    };
+    let escaped_catalog = fixture.home.join("escape-catalog");
+    let catalog = fixture.loadbot([
+        OsStr::new("catalog"),
+        OsStr::new("add"),
+        OsStr::new("../escape-catalog"),
+        fixture.catalog.remote.as_os_str(),
+    ]);
+    assert!(!catalog.status.success());
+    assert!(!escaped_catalog.exists());
+
+    assert_success(fixture.add_catalog("personal", true));
+    let escaped_tool = fixture.home.join("tools/escape-tool");
+    let tool = fixture.loadbot(["pull", "../escape-tool", "--catalog", "personal"]);
+    assert!(!tool.status.success());
+    assert!(!escaped_tool.exists());
+
+    let unsafe_catalog = fixture.loadbot(["path", "demo", "--catalog", "../escape-catalog"]);
+    assert!(!unsafe_catalog.status.success());
+    assert!(!escaped_catalog.exists());
+
+    fs::write(
+        fixture.home.join("config.toml"),
+        format!(
+            "version = 1\n\n[catalogs.\"../escape-catalog\"]\nurl = {:?}\n",
+            fixture.catalog.remote.display().to_string()
+        ),
+    )
+    .unwrap();
+    let unsafe_configuration = fixture.loadbot(["catalog", "list"]);
+    assert!(!unsafe_configuration.status.success());
+    assert!(stderr(&unsafe_configuration).contains("unsafe catalog name"));
+    assert!(!escaped_catalog.exists());
+}
+
+#[test]
+fn run_shortcut_launches_from_the_current_catalog_scoped_tool_path() {
+    let Some(fixture) = Fixture::new() else {
+        return;
+    };
+    fs::create_dir(fixture.tool.source.join("recipes")).unwrap();
+    fs::write(
+        fixture.tool.source.join("recipes/launch.sh"),
+        "printf 'launched-personal\\n'\n",
+    )
+    .unwrap();
+    fs::write(fixture.tool.source.join("recipes/fail.sh"), "exit 7\n").unwrap();
+    commit_and_push(&fixture.tool.source, "add launcher script");
+    assert_success(fixture.add_catalog("personal", true));
+    assert_success(fixture.add_tool("demo", "personal", &[]));
+    assert_success(fixture.loadbot(["pull", "demo", "--catalog", "personal"]));
+
+    let second = create_repository(
+        fixture._temporary.path(),
+        "run-catalog",
+        Some(&format!(
+            "version = 1\n\n[tools.demo]\ntype = \"git\"\nurl = {:?}\nrevision = \"main\"\n",
+            fixture.tool.remote.display().to_string()
+        )),
+    );
+    assert_success(fixture.loadbot([
+        OsStr::new("catalog"),
+        OsStr::new("add"),
+        OsStr::new("public"),
+        second.remote.as_os_str(),
+    ]));
+    fixture.save_shortcut("launch-demo", "personal", "demo", "recipes/launch.sh");
+
+    let output = fixture.loadbot(["run", "launch-demo"]);
+    assert_success_ref(&output);
+    assert_eq!(stdout(&output), "launched-personal");
+    let shortcut = fs::read_to_string(fixture.config_home.join("loadbot/shortcuts.toml")).unwrap();
+    assert!(!shortcut.contains(fixture.home.to_str().unwrap()));
+
+    fixture.save_shortcut("failing-demo", "personal", "demo", "recipes/fail.sh");
+    let failed = fixture.loadbot(["run", "failing-demo"]);
+    assert_eq!(failed.status.code(), Some(7));
+    assert!(stderr(&failed).contains("exited with status 7"));
+}
+
+#[cfg(unix)]
+#[test]
+fn catalog_sync_exposes_new_interactive_command_with_inherited_terminal_io() {
+    let Some(fixture) = Fixture::new() else {
+        return;
+    };
+    if !Command::new("script")
+        .arg("--version")
+        .output()
+        .is_ok_and(|output| output.status.success())
+    {
+        eprintln!("skipping integration test: script is not available");
+        return;
+    }
+    fs::create_dir(fixture.tool.source.join("scripts")).unwrap();
+    fs::write(
+        fixture.tool.source.join("scripts/ask.sh"),
+        "printf 'Question: '; read -r answer; printf 'Answer: %s; shell: %s; cwd: %s\\n' \"$answer\" \"${BASH_VERSION:+bash}\" \"$(basename \"$PWD\")\"\n",
+    )
+    .unwrap();
+    commit_and_push(&fixture.tool.source, "add interactive script");
+    assert_success(fixture.add_catalog("personal", true));
+    assert_success(fixture.add_tool("demo", "personal", &["--commit", "--push"]));
+    assert_success(fixture.loadbot(["pull", "demo", "--catalog", "personal"]));
+
+    git(
+        ["pull", "--ff-only", "origin", "main"],
+        Some(&fixture.catalog.source),
+    );
+    let catalog_path = fixture.catalog.source.join("catalog.toml");
+    let mut catalog = fs::read_to_string(&catalog_path).unwrap();
+    catalog.push_str(
+        "\n[tools.demo.commands.ask]\npath = \"scripts/ask.sh\"\ndescription = \"Ask interactively\"\nrunner = \"bash\"\n",
+    );
+    fs::write(&catalog_path, catalog).unwrap();
+    commit_and_push(&fixture.catalog.source, "add shared command");
+    assert_success(fixture.loadbot(["catalog", "sync", "personal"]));
+
+    let executable = env!("CARGO_BIN_EXE_loadbot");
+    let mut child = Command::new("script")
+        .args(["-q", "-e", "-c", &format!("{executable} run"), "/dev/null"])
+        .env("LOADBOT_HOME", &fixture.home)
+        .env("XDG_CONFIG_HOME", &fixture.config_home)
+        .env("APPDATA", &fixture.config_home)
+        .env("LOADBOT_CONFIG_HOME", fixture.config_home.join("loadbot"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"1\n1\nvisible-input\n")
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert_success_ref(&output);
+    let terminal = String::from_utf8_lossy(&output.stdout);
+    assert!(terminal.contains("Select project:"), "{terminal}");
+    assert!(terminal.contains("ask - Ask interactively"), "{terminal}");
+    assert!(terminal.contains("Question:"), "{terminal}");
+    assert!(
+        terminal.contains("Answer: visible-input; shell: bash; cwd: demo"),
+        "{terminal}"
+    );
+    assert!(!fixture.config_home.join("loadbot/shortcuts.toml").exists());
+}
+
+#[test]
+fn run_shortcut_reports_missing_shortcuts_tools_and_files() {
+    let Some(fixture) = Fixture::new() else {
+        return;
+    };
+    let missing = fixture.loadbot(["run", "unknown"]);
+    assert!(!missing.status.success());
+    assert!(stderr(&missing).contains("shortcut 'unknown' does not exist"));
+
+    assert_success(fixture.add_catalog("personal", true));
+    assert_success(fixture.add_tool("demo", "personal", &[]));
+    fixture.save_shortcut("missing-tool", "personal", "demo", "README.md");
+    let missing_tool = fixture.loadbot(["run", "missing-tool"]);
+    assert!(!missing_tool.status.success());
+    assert!(stderr(&missing_tool).contains("shortcut 'missing-tool' is broken"));
+    assert!(stderr(&missing_tool).contains("is not installed"));
+
+    assert_success(fixture.loadbot(["pull", "demo", "--catalog", "personal"]));
+    fixture.save_shortcut("missing-file", "personal", "demo", "removed.sh");
+    let missing_file = fixture.loadbot(["run", "missing-file"]);
+    assert!(!missing_file.status.success());
+    assert!(stderr(&missing_file).contains("shortcut 'missing-file' is broken"));
+    assert!(stderr(&missing_file).contains("missing or is not a file"));
+    assert!(stderr(&missing_file).contains("path: removed.sh"));
+}
+
+#[test]
+fn run_shortcut_rejects_traversal_and_run_without_a_tty_requires_a_name() {
+    let Some(fixture) = Fixture::new() else {
+        return;
+    };
+    fixture.save_shortcut("escape", "personal", "demo", "../../outside.sh");
+    let traversal = fixture.loadbot(["run", "escape"]);
+    assert!(!traversal.status.success());
+    assert!(stderr(&traversal).contains("unsafe path"));
+
+    let interactive = fixture.loadbot(["run"]);
+    assert!(!interactive.status.success());
+    assert!(stderr(&interactive).contains("interactive terminal"));
+
+    let shortcut_add = fixture.loadbot(["shortcut", "add"]);
+    assert!(!shortcut_add.status.success());
+    assert!(stderr(&shortcut_add).contains("interactive terminal"));
+}
+
+#[test]
+fn run_completion_only_returns_matching_shortcut_names() {
+    let Some(fixture) = Fixture::new() else {
+        return;
+    };
+    fixture.save_shortcut(
+        "print-strings",
+        "personal",
+        "demo-tool",
+        "recipes/arbitrary-file.py",
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_loadbot"))
+        .env("LOADBOT_HOME", &fixture.home)
+        .env("XDG_CONFIG_HOME", &fixture.config_home)
+        .env("APPDATA", &fixture.config_home)
+        .env("LOADBOT_CONFIG_HOME", fixture.config_home.join("loadbot"))
+        .env("COMPLETE", "bash")
+        .env("_CLAP_IFS", "\u{b}")
+        .env("_CLAP_COMPLETE_INDEX", "2")
+        .env("_CLAP_COMPLETE_COMP_TYPE", "9")
+        .env("_CLAP_COMPLETE_SPACE", "false")
+        .args(["--", "loadbot", "run", "pri"])
+        .output()
+        .unwrap();
+    assert_success_ref(&output);
+    assert_eq!(stdout(&output), "print-strings");
+    assert!(!stdout(&output).contains("demo-tool"));
+    assert!(!stdout(&output).contains("arbitrary-file.py"));
+}
+
+#[test]
+fn rot_completion_is_parseable_deterministic_and_context_aware() {
+    let temporary = TempDir::new().unwrap();
+    let home = temporary.path().join("loadbot-home");
+    let config_home = temporary.path().join("config-home");
+    let shortcuts = config_home.join("loadbot/shortcuts.toml");
+    fs::write(
+        temporary.path().join("print-filesystem-decoy"),
+        "not a command",
+    )
+    .unwrap();
+    fs::create_dir_all(shortcuts.parent().unwrap()).unwrap();
+    fs::write(
+        shortcuts,
+        r#"version = 1
+
+[shortcuts.print-strings]
+catalog = "personal"
+tool = "demo"
+path = "print.py"
+
+[shortcuts.bn-triage]
+catalog = "personal"
+tool = "demo"
+path = "triage.py"
+"#,
+    )
+    .unwrap();
+    let complete = |words: &[&str]| {
+        let output = Command::new(env!("CARGO_BIN_EXE_loadbot"))
+            .current_dir(temporary.path())
+            .env("LOADBOT_HOME", &home)
+            .env("XDG_CONFIG_HOME", &config_home)
+            .env("APPDATA", &config_home)
+            .env("LOADBOT_CONFIG_HOME", config_home.join("loadbot"))
+            .args(["rot", "complete"])
+            .args(words)
+            .output()
+            .unwrap();
+        assert_success_ref(&output);
+        assert!(stderr(&output).is_empty());
+        serde_json::from_slice::<Vec<String>>(&output.stdout).unwrap()
+    };
+
+    let root = complete(&[""]);
+    assert_eq!(
+        root,
+        [
+            "add",
+            "catalog",
+            "gui",
+            "list",
+            "path",
+            "pull",
+            "push",
+            "reinstall",
+            "remove",
+            "run",
+            "setup",
+            "shortcut",
+            "status",
+            "update"
+        ]
+    );
+    assert_eq!(complete(&["p"]), ["path", "pull", "push"]);
+    assert_eq!(
+        complete(&["catalog", ""]),
+        ["add", "list", "migrate", "path", "status", "sync"]
+    );
+    assert_eq!(complete(&["run", ""]), ["bn-triage", "print-strings"]);
+    assert_eq!(complete(&["run", "pri"]), ["print-strings"]);
+    assert_eq!(
+        complete(&["shortcut", "remove", ""]),
+        ["bn-triage", "print-strings"]
+    );
+    assert_eq!(complete(&["shortcut", ""]), ["add", "list", "remove"]);
+    assert_eq!(complete(&["shortcut", "r"]), ["remove"]);
+    assert_eq!(complete(&["shortcut", "remove", "pri"]), ["print-strings"]);
+    assert_eq!(complete(&["catalog", "s"]), ["status", "sync"]);
+    for words in [
+        vec![],
+        vec!["unknown"],
+        vec!["run", "missing"],
+        vec!["run", "print-filesystem"],
+        vec!["shortcut", "add", ""],
+        vec!["catalog", "status", ""],
+        vec!["shortcut", "remove", "print-strings", ""],
+        vec!["unknown", ""],
+    ] {
+        assert!(complete(&words).is_empty(), "{words:?}");
+    }
+    assert!(!home.exists());
+    assert_eq!(complete(&[""]), root);
+}
+
+#[test]
+fn legacy_configuration_is_detected_and_explicitly_migrated() {
+    let Some(fixture) = Fixture::new() else {
+        return;
+    };
+    fs::create_dir_all(&fixture.home).unwrap();
+    fs::write(
+        fixture.home.join("config.toml"),
+        format!(
+            "version = 1\n\n[tools.demo]\ntype = \"git\"\nurl = {:?}\nrevision = \"main\"\n",
+            fixture.tool.remote.display().to_string()
+        ),
+    )
+    .unwrap();
+    let detected = fixture.loadbot(["list"]);
+    assert!(!detected.status.success());
+    assert!(stderr(&detected).contains("catalog migrate"));
+
+    let empty_catalog = create_repository(fixture._temporary.path(), "migration", None);
+    let migrated = fixture.loadbot([
+        OsStr::new("catalog"),
+        OsStr::new("migrate"),
+        OsStr::new("personal"),
+        empty_catalog.remote.as_os_str(),
+    ]);
+    assert_success_ref(&migrated);
+    let local = fs::read_to_string(fixture.home.join("config.toml")).unwrap();
+    assert!(local.contains("[catalogs.personal]"));
+    assert!(!local.contains("[tools.demo]"));
+    let portable = fs::read_to_string(fixture.home.join("catalogs/personal/catalog.toml")).unwrap();
+    assert!(portable.contains("[tools.demo]"));
+}
+
+#[test]
+fn migration_refuses_existing_catalog_file_and_cleans_its_new_clone() {
+    let Some(fixture) = Fixture::new() else {
+        return;
+    };
+    fs::create_dir_all(&fixture.home).unwrap();
+    let legacy = format!(
+        "version = 1\n\n[tools.demo]\ntype = \"git\"\nurl = {:?}\n",
+        fixture.tool.remote.display().to_string()
+    );
+    fs::write(fixture.home.join("config.toml"), &legacy).unwrap();
+
+    let output = fixture.loadbot([
+        OsStr::new("catalog"),
+        OsStr::new("migrate"),
+        OsStr::new("personal"),
+        fixture.catalog.remote.as_os_str(),
+    ]);
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("already exists"));
+    assert!(!fixture.home.join("catalogs/personal").exists());
+    assert_eq!(
+        fs::read_to_string(fixture.home.join("config.toml")).unwrap(),
+        legacy
+    );
+}
+
+#[test]
+fn incomplete_noninteractive_commands_fail_without_waiting() {
+    let Some(fixture) = Fixture::new() else {
+        return;
+    };
+    for arguments in [
+        vec!["catalog", "add"],
+        vec!["catalog"],
+        vec!["catalog", "sync"],
+        vec!["catalog", "status"],
+        vec!["catalog", "path"],
+        vec!["add"],
+        vec!["pull"],
+        vec!["update"],
+        vec!["status"],
+        vec!["path"],
+        vec!["run"],
+    ] {
+        let output = fixture.loadbot(arguments);
+        assert!(!output.status.success());
+        assert!(stderr(&output).contains("interactive terminal"));
+    }
+}
+
+#[test]
+fn read_only_commands_do_not_create_loadbot_home() {
+    let temporary = TempDir::new().unwrap();
+    let home = temporary.path().join("missing-home");
+    for arguments in [["catalog", "list"].as_slice(), ["list"].as_slice()] {
+        let output = Command::new(env!("CARGO_BIN_EXE_loadbot"))
+            .env("LOADBOT_HOME", &home)
+            .env(
+                "LOADBOT_CONFIG_HOME",
+                temporary.path().join("configuration"),
+            )
+            .args(arguments)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}", stderr(&output));
+        assert!(!home.exists());
+    }
+}
+
+fn create_repository(base: &Path, name: &str, initial: Option<&str>) -> Repository {
+    let source = base.join(format!("{name}-source"));
+    let remote = base.join(format!("{name}.git"));
+    fs::create_dir(&source).unwrap();
+    git(["init", "--initial-branch", "main"], Some(&source));
+    git(["config", "user.name", "Loadbot Tests"], Some(&source));
+    git(
+        ["config", "user.email", "loadbot@example.test"],
+        Some(&source),
+    );
+    if let Some(contents) = initial {
+        let file = if name.contains("catalog") {
+            "catalog.toml"
+        } else {
+            "README.md"
+        };
+        fs::write(source.join(file), contents).unwrap();
+        git(["add", file], Some(&source));
+        git(["commit", "-m", "initial"], Some(&source));
+    } else {
+        git(["commit", "--allow-empty", "-m", "initial"], Some(&source));
+    }
+    git(
+        [
+            OsStr::new("init"),
+            OsStr::new("--bare"),
+            OsStr::new("--initial-branch"),
+            OsStr::new("main"),
+            remote.as_os_str(),
+        ],
+        None,
+    );
+    git(
+        [
+            OsStr::new("remote"),
+            OsStr::new("add"),
+            OsStr::new("origin"),
+            remote.as_os_str(),
+        ],
+        Some(&source),
+    );
+    git(["push", "-u", "origin", "main"], Some(&source));
+    Repository { source, remote }
+}
+
+fn commit_and_push(source: &Path, message: &str) {
+    git(["add", "."], Some(source));
+    git(["commit", "-m", message], Some(source));
+    git(["push", "origin", "main"], Some(source));
+}
+
+fn bare_main_commit(remote: &Path) -> String {
+    git_text(["rev-parse", "refs/heads/main"], Some(remote))
+}
+
+fn git_available() -> bool {
+    Command::new("git")
+        .arg("--version")
+        .output()
+        .is_ok_and(|output| output.status.success())
+}
+
+fn git<I, S>(arguments: I, directory: Option<&Path>)
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    let output = git_output(arguments, directory);
+    assert!(
+        output.status.success(),
+        "Git failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn git_text<I, S>(arguments: I, directory: Option<&Path>) -> String
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    let output = git_output(arguments, directory);
+    assert!(output.status.success(), "Git failed: {}", stderr(&output));
+    stdout(&output)
+}
+
+fn git_output<I, S>(arguments: I, directory: Option<&Path>) -> Output
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    let mut command = Command::new("git");
+    command.args(arguments);
+    if let Some(directory) = directory {
+        command.current_dir(directory);
+    }
+    command.output().unwrap()
+}
+
+fn assert_success(output: Output) {
+    assert_success_ref(&output);
+}
+
+fn assert_success_ref(output: &Output) {
+    assert!(output.status.success(), "{}", stderr(output));
+}
+
+fn stdout(output: &Output) -> String {
+    String::from_utf8_lossy(&output.stdout).trim().to_owned()
+}
+
+fn stderr(output: &Output) -> String {
+    String::from_utf8_lossy(&output.stderr).trim().to_owned()
+}
+
+#[test]
+fn bare_loadbot_requires_a_terminal_without_creating_home() {
+    let temporary = TempDir::new().unwrap();
+    let home = temporary.path().join("missing");
+    let output = Command::new(env!("CARGO_BIN_EXE_loadbot"))
+        .env("LOADBOT_HOME", &home)
+        .env(
+            "LOADBOT_CONFIG_HOME",
+            temporary.path().join("configuration"),
+        )
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("'loadbot' requires an interactive terminal"));
+    assert!(!home.exists());
+}
+
+#[test]
+fn dynamic_completion_preserves_root_and_nested_commands() {
+    let temporary = TempDir::new().unwrap();
+    for (words, expected) in [
+        (
+            vec![""],
+            vec![
+                "add",
+                "catalog",
+                "gui",
+                "list",
+                "path",
+                "pull",
+                "push",
+                "reinstall",
+                "remove",
+                "run",
+                "setup",
+                "shortcut",
+                "status",
+                "update",
+            ],
+        ),
+        (vec!["shortcut", ""], vec!["add", "list", "remove"]),
+        (
+            vec!["catalog", ""],
+            vec!["add", "list", "migrate", "path", "status", "sync"],
+        ),
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_loadbot"))
+            .env(
+                "LOADBOT_CONFIG_HOME",
+                temporary.path().join("configuration"),
+            )
+            .env("COMPLETE", "bash")
+            .env("_CLAP_IFS", "\n")
+            .env("_CLAP_COMPLETE_INDEX", words.len().to_string())
+            .env("_CLAP_COMPLETE_COMP_TYPE", "9")
+            .env("_CLAP_COMPLETE_SPACE", "false")
+            .args(["--", "loadbot"])
+            .args(words)
+            .output()
+            .unwrap();
+        assert_success_ref(&output);
+        let result = stdout(&output);
+        let mut commands: Vec<_> = result
+            .lines()
+            .filter(|value| !value.starts_with('-') && *value != "help")
+            .collect();
+        commands.sort();
+        assert_eq!(commands, expected);
+    }
+}
+
+#[test]
+fn bare_shortcut_without_tty_does_not_create_or_modify_state() {
+    let temporary = TempDir::new().unwrap();
+    let home = temporary.path().join("home");
+    let config = temporary.path().join("config");
+    for existing in [false, true] {
+        let shortcuts = config.join("loadbot/shortcuts.toml");
+        if existing {
+            fs::create_dir_all(shortcuts.parent().unwrap()).unwrap();
+            fs::write(&shortcuts, "version = 1\n").unwrap();
+        }
+        let output = Command::new(env!("CARGO_BIN_EXE_loadbot"))
+            .env("LOADBOT_HOME", &home)
+            .env("XDG_CONFIG_HOME", &config)
+            .env("APPDATA", &config)
+            .env("LOADBOT_CONFIG_HOME", config.join("loadbot"))
+            .args(["shortcut"])
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(stderr(&output).contains("'shortcut' requires an interactive terminal"));
+        assert!(!home.exists());
+        if existing {
+            assert_eq!(fs::read_to_string(&shortcuts).unwrap(), "version = 1\n");
+        } else {
+            assert!(!config.exists());
+        }
+    }
+}
+
+#[test]
+fn shortcut_list_remove_and_completion_work_without_installed_tools() {
+    let temp = TempDir::new().unwrap();
+    let home = temp.path().join("home");
+    let config = temp.path().join("config");
+    let file = config.join("loadbot/shortcuts.toml");
+    let invoke = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_loadbot"))
+            .env("LOADBOT_HOME", &home)
+            .env("XDG_CONFIG_HOME", &config)
+            .env("APPDATA", &config)
+            .env("LOADBOT_CONFIG_HOME", config.join("loadbot"))
+            .args(args)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap()
+    };
+    let empty = invoke(&["shortcut", "list"]);
+    assert_success_ref(&empty);
+    assert!(stdout(&empty).contains("No shortcuts"));
+    assert!(!config.exists());
+    fs::create_dir_all(file.parent().unwrap()).unwrap();
+    let contents = r#"version = 1
+future = "preserved"
+[shortcuts.zebra]
+catalog = "missing"
+tool = "missing"
+path = "missing.py"
+[shortcuts.alpha]
+catalog = "personal"
+tool = "demo"
+path = "alpha.sh"
+description = "My alpha"
+runner = "bash"
+future = "entry"
+"#;
+    fs::write(&file, contents).unwrap();
+    let listed = invoke(&["shortcut", "list"]);
+    assert_success_ref(&listed);
+    let text = stdout(&listed);
+    assert!(text.find("Name: alpha").unwrap() < text.find("Name: zebra").unwrap());
+    assert!(text.contains("Description: My alpha\nRunner: bash"));
+    assert_eq!(fs::read_to_string(&file).unwrap(), contents);
+    for args in [
+        vec!["shortcut", "remove"],
+        vec!["shortcut", "remove", "alpha"],
+        vec!["shortcut", "remove", "--yes"],
+        vec!["shortcut", "remove", "absent", "--yes"],
+        vec!["shortcut", "remove", "../invalid", "--yes"],
+    ] {
+        let output = invoke(&args);
+        assert!(!output.status.success());
+        assert_eq!(fs::read_to_string(&file).unwrap(), contents);
+    }
+    assert!(stderr(&invoke(&["shortcut", "remove", "alpha"])).contains("interactive terminal"));
+    assert!(stderr(&invoke(&["shortcut", "remove", "absent", "--yes"])).contains("does not exist"));
+    let rot = invoke(&["rot", "complete", "shortcut", "remove", ""]);
+    assert_eq!(
+        serde_json::from_slice::<Vec<String>>(&rot.stdout).unwrap(),
+        ["alpha", "zebra"]
+    );
+    let shell = Command::new(env!("CARGO_BIN_EXE_loadbot"))
+        .env("XDG_CONFIG_HOME", &config)
+        .env("APPDATA", &config)
+        .env("LOADBOT_CONFIG_HOME", config.join("loadbot"))
+        .env("COMPLETE", "bash")
+        .env("_CLAP_IFS", "\n")
+        .env("_CLAP_COMPLETE_INDEX", "3")
+        .env("_CLAP_COMPLETE_COMP_TYPE", "9")
+        .env("_CLAP_COMPLETE_SPACE", "false")
+        .args(["--", "loadbot", "shortcut", "remove", "al"])
+        .output()
+        .unwrap();
+    assert_success_ref(&shell);
+    assert_eq!(stdout(&shell), "alpha");
+    let removed = invoke(&["shortcut", "remove", "zebra", "--yes"]);
+    assert_success_ref(&removed);
+    assert_eq!(stdout(&removed), "removed shortcut 'zebra'");
+    let parsed: toml::Value = toml::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
+    assert_eq!(parsed["future"].as_str(), Some("preserved"));
+    assert_eq!(
+        parsed["shortcuts"]["alpha"]["future"].as_str(),
+        Some("entry")
+    );
+    assert_success(invoke(&["shortcut", "remove", "alpha", "--yes"]));
+    assert!(file.is_file());
+    assert!(stdout(&invoke(&["shortcut", "list"])).contains("No shortcuts"));
+    assert!(!home.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn shortcut_menu_list_remove_and_cancel_use_existing_flows() {
+    if !Command::new("script")
+        .arg("--version")
+        .output()
+        .is_ok_and(|output| output.status.success())
+    {
+        eprintln!("skipping terminal test: script is unavailable");
+        return;
+    }
+    let temp = TempDir::new().unwrap();
+    let config = temp.path().join("config");
+    let file = config.join("loadbot/shortcuts.toml");
+    fs::create_dir_all(file.parent().unwrap()).unwrap();
+    let contents = "version = 1\n[shortcuts.demo]\ncatalog = 'personal'\ntool = 'missing'\npath = 'missing.sh'\n";
+    fs::write(&file, contents).unwrap();
+    let terminal = |input: &[u8]| {
+        let executable = env!("CARGO_BIN_EXE_loadbot");
+        let mut child = Command::new("script")
+            .args([
+                "-q",
+                "-e",
+                "-c",
+                &format!("{executable} shortcut"),
+                "/dev/null",
+            ])
+            .env("LOADBOT_HOME", temp.path().join("home"))
+            .env("XDG_CONFIG_HOME", &config)
+            .env("APPDATA", &config)
+            .env("LOADBOT_CONFIG_HOME", config.join("loadbot"))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(input).unwrap();
+        child.wait_with_output().unwrap()
+    };
+    for input in [b"4\n".as_slice(), b"q\n", b"\x04", b"3\nq\n", b"3\n1\nn\n"] {
+        assert_success(terminal(input));
+        assert_eq!(fs::read_to_string(&file).unwrap(), contents);
+    }
+    let listed = terminal(b"2\n");
+    assert_success_ref(&listed);
+    assert!(stdout(&listed).contains("Name: demo"));
+    assert_eq!(fs::read_to_string(&file).unwrap(), contents);
+    let removed = terminal(b"3\n1\ny\n");
+    assert_success_ref(&removed);
+    assert!(stdout(&removed).contains("removed shortcut 'demo'"));
+    let saved: toml::Value = toml::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
+    assert!(saved["shortcuts"].as_table().unwrap().is_empty());
+}

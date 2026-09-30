@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "workspace-layout"
+description = "Read and write the opaque GUI-local workspace layout document."
+commands.allow = ["read_loadbot_workspace_layout", "write_loadbot_workspace_layout"]

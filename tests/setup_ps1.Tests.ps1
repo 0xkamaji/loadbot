@@ -1,0 +1,430 @@
+Describe "Loadbot PowerShell setup" {
+    BeforeAll {
+        $script:scriptPath = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..\setup.ps1")).Path
+        $env:LOADBOT_SETUP_TESTING = "1"
+        . $script:scriptPath
+    }
+
+    BeforeEach {
+        $script:testRoot = Join-Path $TestDrive "home with spaces $([guid]::NewGuid().ToString('N'))"
+        $script:project = Split-Path -Parent $script:scriptPath
+        $script:testProfile = Join-Path $script:testRoot "Documents\PowerShell\Microsoft.PowerShell_profile.ps1"
+        $script:installRoot = Join-Path $script:testRoot ".cargo"
+        $script:installBin = Join-Path $script:installRoot "bin"
+        $script:loadbot = Join-Path $installBin "loadbot.exe"
+        $env:CARGO_HOME = $script:installRoot
+        $env:PATH = "C:\Windows\System32"
+        New-Item -ItemType Directory -Force $script:installBin | Out-Null
+        Set-Content -LiteralPath $loadbot -Value "fake"
+        Mock Get-LoadbotProfilePath { $script:testProfile }
+        Mock Get-LoadbotUserPath { "C:\Existing" }
+        Mock Get-LoadbotMachinePath { "C:\Windows\System32" }
+        Mock Set-LoadbotUserPath { }
+        Mock Test-LoadbotInteractive { $true }
+        Mock Read-Host { "y" }
+        Mock Get-ExecutionPolicy { "RemoteSigned" }
+        Mock Invoke-LoadbotCargoInstall { }
+        Mock Invoke-LoadbotExecutable {
+            if ($Capture) { "Register-ArgumentCompleter -Native -CommandName loadbot -ScriptBlock {}" }
+        }
+        Mock Get-LoadbotCommand {
+            param($Name)
+            if ($Name -in @("git", "cargo", "rustc", "winget")) {
+                [pscustomobject]@{ Source = "C:\fake\$Name.exe" }
+            }
+        }
+    }
+
+    It "recognizes ready prerequisites and verifies the absolute executable" {
+        Invoke-LoadbotSetup
+        Assert-MockCalled Invoke-LoadbotCargoInstall -Times 1 -ParameterFilter { $InstallRoot -eq $script:installRoot }
+        Assert-MockCalled Invoke-LoadbotExecutable -Times 1 -ParameterFilter { $Executable -eq $script:loadbot -and $Arguments[0] -eq "--version" }
+        Assert-MockCalled Invoke-LoadbotExecutable -Times 1 -ParameterFilter { $Executable -eq $script:loadbot -and $Arguments[0] -eq "--help" }
+    }
+
+    It "proposes only Git.Git when Git is missing and requires approval" {
+        Mock Get-LoadbotCommand {
+            param($Name)
+            if ($Name -in @("cargo", "rustc", "winget")) { [pscustomobject]@{ Source = "C:\fake\$Name.exe" } }
+            elseif ($Name -eq "git" -and $script:gitInstalled) { [pscustomobject]@{ Source = "C:\fake\git.exe" } }
+        }
+        Mock Invoke-LoadbotWinget { $script:gitInstalled = $true }
+        Invoke-LoadbotSetup
+        Assert-MockCalled Invoke-LoadbotWinget -Times 1 -ParameterFilter {
+            $Arguments -contains "Git.Git" -and $Arguments -contains "--exact" -and
+                $Arguments -contains "--source" -and $Arguments -contains "winget" -and
+                $Arguments -contains "--scope" -and $Arguments -contains "user"
+        }
+        Assert-MockCalled Read-Host -Times 1 -ParameterFilter { $prompt -eq "Install these prerequisites? [y/N]" }
+    }
+
+    It "installs Rustlang.Rustup once and initializes stable for missing Cargo and rustc" {
+        $rustup = Join-Path $testRoot ".cargo\bin\rustup.exe"
+        Set-Content $rustup fake
+        Mock Get-LoadbotCommand {
+            param($Name)
+            if ($Name -in @("git", "winget")) { [pscustomobject]@{ Source = "C:\fake\$Name.exe" } }
+            if ($Name -in @("cargo", "rustc") -and $script:rustInstalled) { [pscustomobject]@{ Source = "C:\fake\$Name.exe" } }
+        }
+        Mock Invoke-LoadbotWinget { $script:rustInstalled = $true }
+        Mock Invoke-LoadbotRustup { }
+        Invoke-LoadbotSetup
+        Assert-MockCalled Invoke-LoadbotWinget -Times 1 -ParameterFilter { $Arguments -contains "Rustlang.Rustup" }
+        Assert-MockCalled Invoke-LoadbotRustup -Times 1 -ParameterFilter { $Arguments -contains "install" -and $Arguments -contains "stable" }
+        Assert-MockCalled Invoke-LoadbotRustup -Times 1 -ParameterFilter { $Arguments -contains "default" -and $Arguments -contains "stable" }
+    }
+
+    It "declines without invoking Winget, Cargo, PATH, or profile changes" {
+        Mock Get-LoadbotCommand { param($Name) if ($Name -eq "winget") { [pscustomobject]@{ Source = "winget.exe" } } }
+        Mock Invoke-LoadbotWinget { }
+        Mock Read-Host { "n" }
+        { Invoke-LoadbotSetup } | Should -Throw "*cancelled*"
+        Assert-MockCalled Invoke-LoadbotWinget -Times 0
+        Assert-MockCalled Invoke-LoadbotCargoInstall -Times 0
+        Assert-MockCalled Set-LoadbotUserPath -Times 0
+        Test-Path $script:testProfile | Should -BeFalse
+    }
+
+    It "fails safely when Winget is unavailable" {
+        Mock Get-LoadbotCommand { $null }
+        Mock Invoke-LoadbotWinget { }
+        { Invoke-LoadbotSetup } | Should -Throw "*without Winget*"
+        Assert-MockCalled Invoke-LoadbotWinget -Times 0
+    }
+
+    It "stops when Winget fails" {
+        Mock Get-LoadbotCommand { param($Name) if ($Name -eq "winget") { [pscustomobject]@{ Source = "winget.exe" } } }
+        Mock Invoke-LoadbotWinget { throw "winget failed" }
+        { Invoke-LoadbotSetup } | Should -Throw "winget failed"
+        Assert-MockCalled Invoke-LoadbotCargoInstall -Times 0
+    }
+
+    It "adds user PATH once case-insensitively and never requests Machine scope" {
+        Mock Get-LoadbotUserPath { "C:\Existing;$($script:installBin.ToUpperInvariant())\" }
+        Add-LoadbotUserPath $script:installBin
+        Assert-MockCalled Set-LoadbotUserPath -Times 0
+        Test-LoadbotPathContains $env:PATH $script:installBin | Should -BeTrue
+        (Get-Content -Raw $script:scriptPath) | Should -Not -Match 'SetEnvironmentVariable\([^\r\n]+"Machine"'
+    }
+
+    It "preserves unrelated user PATH entries when adding Cargo bin" {
+        $script:setPath = $null
+        Mock Get-LoadbotUserPath { "C:\One;C:\Two" }
+        Mock Set-LoadbotUserPath { param($Value) $script:setPath = $Value }
+        Add-LoadbotUserPath $script:installBin
+        Assert-MockCalled Set-LoadbotUserPath -Times 1
+        $script:setPath | Should -Match ([regex]::Escape("C:\One;C:\Two"))
+        Test-LoadbotPathContains $script:setPath $script:installBin | Should -BeTrue
+    }
+
+    It "preserves process-only PATH entries while refreshing persistent PATH" {
+        $env:PATH = "C:\SessionOnly"
+        Sync-LoadbotProcessPath
+        Test-LoadbotPathContains $env:PATH "C:\SessionOnly" | Should -BeTrue
+        Test-LoadbotPathContains $env:PATH "C:\Existing" | Should -BeTrue
+        Test-LoadbotPathContains $env:PATH "C:\Windows\System32" | Should -BeTrue
+    }
+
+    It "accepts only the planned Cargo-bin user PATH transition" {
+        Test-LoadbotExpectedPathTransition "C:\One;C:\Two" "C:\One;C:\Two;$script:installBin" @($script:installBin) | Should -BeTrue
+        Test-LoadbotExpectedPathTransition "C:\One" "C:\Changed;$script:installBin" @($script:installBin) | Should -BeFalse
+    }
+
+    It "preserves an existing profile, backs it up, and is idempotent" {
+        New-Item -ItemType Directory -Force (Split-Path $script:testProfile) | Out-Null
+        $original = "# existing`r`n"
+        [IO.File]::WriteAllText($script:testProfile, $original, [Text.UTF8Encoding]::new($false))
+        $block = (Get-LoadbotManagedBlock) -replace '\r?\n', "`r`n"
+        (Get-LoadbotProfilePlan $script:testProfile $block) | Should -Be "append"
+        Update-LoadbotProfile $script:testProfile $block append
+        $updated = [IO.File]::ReadAllText($script:testProfile)
+        $backups = @(Get-ChildItem "$script:testProfile.loadbot-backup.*")
+        $updated | Should -Match "# existing"
+        $updated | Should -Not -Match "`r`r`n"
+        ([regex]::Matches($updated, [regex]::Escape("# >>> loadbot >>>"))).Count | Should -Be 1
+        ([regex]::Matches($updated, [regex]::Escape("# <<< loadbot <<<"))).Count | Should -Be 1
+        $backups.Count | Should -Be 1
+        [IO.File]::ReadAllText($backups[0].FullName) | Should -BeExactly $original
+        (Get-LoadbotProfilePlan $script:testProfile $block) | Should -Be "unchanged"
+        @(Get-ChildItem "$script:testProfile.loadbot-backup.*").Count | Should -Be 1
+    }
+
+    It "replaces only an existing managed block" {
+        New-Item -ItemType Directory -Force (Split-Path $script:testProfile) | Out-Null
+        Set-Content $script:testProfile "before`n# >>> loadbot >>>`nold`n# <<< loadbot <<<`nafter"
+        $block = Get-LoadbotManagedBlock
+        (Get-LoadbotProfilePlan $script:testProfile $block) | Should -Be "replace"
+        Update-LoadbotProfile $script:testProfile $block replace
+        $updated = Get-Content -Raw $script:testProfile
+        $updated | Should -Match "before"
+        $updated | Should -Match "after"
+        ([regex]::Matches($updated, [regex]::Escape("# >>> loadbot >>>"))).Count | Should -Be 1
+    }
+
+    It "preserves UTF-16 profile encoding" {
+        New-Item -ItemType Directory -Force (Split-Path $script:testProfile) | Out-Null
+        [IO.File]::WriteAllText($script:testProfile, "# existing", [Text.UnicodeEncoding]::new($false, $true))
+        Update-LoadbotProfile $script:testProfile (Get-LoadbotManagedBlock) append
+        $bytes = [IO.File]::ReadAllBytes($script:testProfile)
+        $bytes[0] | Should -Be 0xFF
+        $bytes[1] | Should -Be 0xFE
+    }
+
+    It "uses a custom Cargo home in the completion block" {
+        $customRoot = Join-Path $testRoot "custom cargo"
+        Get-LoadbotManagedBlock $customRoot | Should -Match ([regex]::Escape($customRoot))
+    }
+
+    It "refuses malformed and duplicate managed markers" {
+        New-Item -ItemType Directory -Force (Split-Path $script:testProfile) | Out-Null
+        Set-Content $script:testProfile "# >>> loadbot >>>"
+        { Get-LoadbotProfilePlan $script:testProfile (Get-LoadbotManagedBlock) } | Should -Throw "*Malformed*"
+        Set-Content $script:testProfile "# >>> loadbot >>>`n# <<< loadbot <<<`n# >>> loadbot >>>`n# <<< loadbot <<<"
+        { Get-LoadbotProfilePlan $script:testProfile (Get-LoadbotManagedBlock) } | Should -Throw "*duplicate*"
+    }
+
+    It "refuses a reparse-point profile" -Skip:(-not $IsWindows) {
+        New-Item -ItemType Directory -Force (Split-Path $script:testProfile) | Out-Null
+        $target = Join-Path $testRoot "target.ps1"
+        Set-Content $target untouched
+        New-Item -ItemType SymbolicLink -Path $script:testProfile -Target $target | Out-Null
+        { Get-LoadbotProfilePlan $script:testProfile (Get-LoadbotManagedBlock) } | Should -Throw "*reparse-point*"
+    }
+
+    It "writes completion configuration and never changes execution policy" {
+        Mock Set-ExecutionPolicy { }
+        Invoke-LoadbotSetup
+        Get-Content -Raw (Join-Path $installRoot "completions\loadbot.ps1") | Should -Match "Register-ArgumentCompleter"
+        $profileText = (Get-Content -Raw $script:testProfile) -replace '\r?\n', "`n"
+        $expectedBlock = (Get-LoadbotManagedBlock -InstallRoot $installRoot) -replace '\r?\n', "`n"
+        $profileText | Should -Match ([regex]::Escape($expectedBlock))
+        Assert-MockCalled Get-ExecutionPolicy -Times 1
+        Assert-MockCalled Set-ExecutionPolicy -Times 0
+    }
+
+    It "refuses noninteractive prerequisite installation before any mutation" {
+        Mock Get-LoadbotCommand { param($Name) if ($Name -eq "winget") { [pscustomobject]@{ Source = "winget.exe" } } }
+        Mock Invoke-LoadbotWinget { }
+        Mock Test-LoadbotInteractive { $false }
+        { Invoke-LoadbotSetup } | Should -Throw "*interactive terminal*"
+        Assert-MockCalled Invoke-LoadbotWinget -Times 0
+        Assert-MockCalled Invoke-LoadbotCargoInstall -Times 0
+        Assert-MockCalled Set-LoadbotUserPath -Times 0
+    }
+
+    It "stops profile and PATH configuration when Cargo fails" {
+        Mock Invoke-LoadbotCargoInstall { throw "Cargo failed" }
+        { Invoke-LoadbotSetup } | Should -Throw "Cargo failed"
+        Assert-MockCalled Set-LoadbotUserPath -Times 0
+        Test-Path $script:testProfile | Should -BeFalse
+    }
+
+    It "offers all setup modes and supports cancellation" {
+        Mock Read-Host { "5" }
+        Select-LoadbotSetupMode | Should -BeNullOrEmpty
+        Assert-MockCalled Invoke-LoadbotCargoInstall -Times 0
+    }
+
+    It "reports each missing Windows GUI development prerequisite" {
+        Mock Test-LoadbotNodeSupported { $false }
+        Mock Test-LoadbotWindowsBuildTools { $false }
+        Mock Test-LoadbotWebView2 { $false }
+        Mock Get-LoadbotCommand {
+            param($Name)
+            if ($Name -in @("git", "cargo", "rustc", "winget")) {
+                [pscustomobject]@{ Source = "C:\fake\$Name.exe" }
+            }
+        }
+        $missing = @(Get-MissingLoadbotPrerequisites -IncludeGui)
+        $missing | Should -Contain "node"
+        $missing | Should -Contain "npm"
+        $missing | Should -Contain "webview2"
+        $missing | Should -Contain "msvc-build-tools"
+    }
+
+    It "installs GUI-only beside the launcher without generating completion" {
+        $script:guiRoot = Join-Path $script:project "src\gui"
+        $script:builtGui = Join-Path $script:guiRoot "src-tauri\target\release\loadbot-desktop.exe"
+        $script:installedGui = Join-Path $script:installBin "loadbot-desktop.exe"
+        $script:dependencyMarker = Join-Path $script:guiRoot "node_modules\.loadbot-package-lock.json"
+        Mock Test-Path { $true } -ParameterFilter { $LiteralPath -eq $script:builtGui }
+        Mock Copy-Item { }
+        Mock Test-LoadbotNodeSupported { $true }
+        Mock Test-LoadbotWindowsBuildTools { $true }
+        Mock Test-LoadbotWebView2 { $true }
+        Mock Test-LoadbotFrontendDependencies { $false }
+        Mock Get-LoadbotCommand {
+            param($Name)
+            if ($Name -in @("git", "cargo", "rustc", "winget", "node", "npm")) {
+                [pscustomobject]@{ Source = "C:\fake\$Name.exe" }
+            }
+        }
+
+        Invoke-LoadbotSetup -Mode gui
+
+        Test-Path (Join-Path $script:installRoot "completions\loadbot.ps1") | Should -BeFalse
+        Assert-MockCalled Invoke-LoadbotExecutable -Times 1 -ParameterFilter {
+            $Executable -eq "C:\fake\npm.exe" -and $Arguments -contains "ci"
+        }
+        Assert-MockCalled Invoke-LoadbotExecutable -Times 1 -ParameterFilter {
+            $Executable -eq "C:\fake\npm.exe" -and $Arguments -contains "desktop:build"
+        }
+        Assert-MockCalled Copy-Item -Times 1 -Exactly -ParameterFilter {
+            $LiteralPath -eq (Join-Path $script:guiRoot "package-lock.json") -and
+                $Destination -eq $script:dependencyMarker
+        }
+        Assert-MockCalled Copy-Item -Times 1 -Exactly -ParameterFilter {
+            $LiteralPath -eq $script:builtGui -and $Destination -eq $script:installedGui
+        }
+        Assert-MockCalled Copy-Item -Times 2 -Exactly
+    }
+
+    It "repair uses the recorded component selection" {
+        Set-Content -LiteralPath (Join-Path $installRoot "loadbot-install-mode") -Value "cli"
+        Invoke-LoadbotSetup -Mode repair
+        Assert-MockCalled Invoke-LoadbotCargoInstall -Times 1
+        Assert-MockCalled Invoke-LoadbotExecutable -Times 0 -ParameterFilter { $Arguments -contains "desktop:build" }
+    }
+
+    It "adopts and records a legacy CLI installation" {
+        Invoke-LoadbotSetup -Mode repair
+        Get-Content -Raw (Join-Path $installRoot "loadbot-install-mode") | Should -Match '^cli'
+        Assert-MockCalled Invoke-LoadbotCargoInstall -Times 1
+
+        Invoke-LoadbotSetup -Mode repair
+        Assert-MockCalled Invoke-LoadbotCargoInstall -Times 2
+        ([regex]::Matches((Get-Content -Raw $script:testProfile), [regex]::Escape("# >>> loadbot >>>"))).Count | Should -Be 1
+    }
+
+    It "adopts and records a legacy CLI and GUI installation when completion proves complete mode" {
+        $gui = Join-Path $installBin "loadbot-desktop.exe"
+        $completion = Join-Path $installRoot "completions\loadbot.ps1"
+        New-Item -ItemType Directory -Force (Split-Path $completion) | Out-Null
+        Set-Content -LiteralPath $gui -Value "fake"
+        Set-Content -LiteralPath $completion -Value "completion"
+        New-Item -ItemType Directory -Force (Split-Path $script:testProfile) | Out-Null
+        Set-Content -LiteralPath $script:testProfile -Value (Get-LoadbotManagedBlock -InstallRoot $installRoot)
+        Mock Get-LoadbotUserPath { $script:installBin }
+        Mock Test-LoadbotNodeSupported { $true }
+        Mock Test-LoadbotWindowsBuildTools { $true }
+        Mock Test-LoadbotWebView2 { $true }
+        Mock Test-LoadbotFrontendDependencies { $true }
+        Mock Get-LoadbotCommand {
+            param($Name)
+            if ($Name -in @("git", "cargo", "rustc", "winget", "node", "npm")) {
+                [pscustomobject]@{ Source = "C:\fake\$Name.exe" }
+            }
+        }
+        $guiRoot = Join-Path $script:project "src\gui"
+        $builtGui = Join-Path $guiRoot "src-tauri\target\release\loadbot-desktop.exe"
+        Mock Test-Path { $true } -ParameterFilter { $LiteralPath -eq $builtGui }
+        Mock Copy-Item { }
+
+        Invoke-LoadbotSetup -Mode repair
+
+        Get-Content -Raw (Join-Path $installRoot "loadbot-install-mode") | Should -Match '^all'
+        Assert-MockCalled Invoke-LoadbotExecutable -Times 1 -ParameterFilter { $Arguments -contains "desktop:build" }
+    }
+
+    It "adopts and records a legacy GUI-only installation when PATH has no completion state" {
+        $gui = Join-Path $installBin "loadbot-desktop.exe"
+        Set-Content -LiteralPath $gui -Value "fake"
+        Mock Get-LoadbotUserPath { $script:installBin }
+        Mock Test-LoadbotNodeSupported { $true }
+        Mock Test-LoadbotWindowsBuildTools { $true }
+        Mock Test-LoadbotWebView2 { $true }
+        Mock Test-LoadbotFrontendDependencies { $true }
+        Mock Get-LoadbotCommand {
+            param($Name)
+            if ($Name -in @("git", "cargo", "rustc", "winget", "node", "npm")) {
+                [pscustomobject]@{ Source = "C:\fake\$Name.exe" }
+            }
+        }
+        $guiRoot = Join-Path $script:project "src\gui"
+        $builtGui = Join-Path $guiRoot "src-tauri\target\release\loadbot-desktop.exe"
+        Mock Test-Path { $true } -ParameterFilter { $LiteralPath -eq $builtGui }
+        Mock Copy-Item { }
+
+        Invoke-LoadbotSetup -Mode repair
+
+        Get-Content -Raw (Join-Path $installRoot "loadbot-install-mode") | Should -Match '^gui'
+        Test-Path (Join-Path $installRoot "completions\loadbot.ps1") | Should -BeFalse
+    }
+
+    It "reports a fresh machine and creates no record when repair is cancelled" {
+        Remove-Item -LiteralPath $loadbot
+        Mock Read-Host { "4" }
+        { Invoke-LoadbotSetup -Mode repair } | Should -Throw "*cancelled*"
+        Test-Path (Join-Path $installRoot "loadbot-install-mode") | Should -BeFalse
+        Assert-MockCalled Invoke-LoadbotCargoInstall -Times 0
+    }
+
+    It "asks for an explicit mode for ambiguous legacy files and records the choice" {
+        Set-Content -LiteralPath (Join-Path $installBin "loadbot-desktop.exe") -Value "fake"
+        $script:repairPrompt = 0
+        Mock Read-Host {
+            $script:repairPrompt++
+            if ($script:repairPrompt -eq 1) { "1" } else { "y" }
+        }
+
+        Invoke-LoadbotSetup -Mode repair
+
+        Get-Content -Raw (Join-Path $installRoot "loadbot-install-mode") | Should -Match '^cli'
+        Assert-MockCalled Invoke-LoadbotCargoInstall -Times 1
+    }
+
+    It "cancels ambiguous adoption without changing existing files or creating a record" {
+        $gui = Join-Path $installBin "loadbot-desktop.exe"
+        Set-Content -LiteralPath $gui -Value "legacy gui"
+        $cliBefore = Get-FileHash -LiteralPath $loadbot
+        $guiBefore = Get-FileHash -LiteralPath $gui
+        Mock Read-Host { "4" }
+
+        { Invoke-LoadbotSetup -Mode repair } | Should -Throw "*cancelled*"
+
+        (Get-FileHash -LiteralPath $loadbot).Hash | Should -Be $cliBefore.Hash
+        (Get-FileHash -LiteralPath $gui).Hash | Should -Be $guiBefore.Hash
+        Test-Path (Join-Path $installRoot "loadbot-install-mode") | Should -BeFalse
+        Assert-MockCalled Invoke-LoadbotCargoInstall -Times 0
+    }
+
+    It "adopts an unambiguous legacy CLI noninteractively when no other approval is needed" {
+        New-Item -ItemType Directory -Force (Split-Path $script:testProfile) | Out-Null
+        Set-Content -LiteralPath $script:testProfile -Value (Get-LoadbotManagedBlock -InstallRoot $installRoot)
+        New-Item -ItemType Directory -Force (Join-Path $installRoot "completions") | Out-Null
+        Set-Content -LiteralPath (Join-Path $installRoot "completions\loadbot.ps1") -Value "completion"
+        Mock Get-LoadbotUserPath { $script:installBin }
+        Mock Test-LoadbotInteractive { $false }
+
+        Invoke-LoadbotSetup -Mode repair
+
+        Get-Content -Raw (Join-Path $installRoot "loadbot-install-mode") | Should -Match '^cli'
+        Assert-MockCalled Read-Host -Times 0 -Exactly
+    }
+
+    It "fails noninteractive ambiguous and fresh repair without creating a record" {
+        Mock Test-LoadbotInteractive { $false }
+        Set-Content -LiteralPath (Join-Path $installBin "loadbot-desktop.exe") -Value "fake"
+        { Invoke-LoadbotSetup -Mode repair } | Should -Throw "*ambiguous*use -Cli, -Gui, or -All*"
+        Test-Path (Join-Path $installRoot "loadbot-install-mode") | Should -BeFalse
+
+        Remove-Item -LiteralPath $loadbot
+        Remove-Item -LiteralPath (Join-Path $installBin "loadbot-desktop.exe")
+        { Invoke-LoadbotSetup -Mode repair } | Should -Throw "*No existing Loadbot installation*use -Cli, -Gui, or -All*"
+        Test-Path (Join-Path $installRoot "loadbot-install-mode") | Should -BeFalse
+        Assert-MockCalled Read-Host -Times 0
+    }
+
+    It "does not infer an installation from configuration data alone" {
+        Remove-Item -LiteralPath $loadbot
+        $env:LOADBOT_HOME = Join-Path $testRoot "existing loadbot data"
+        New-Item -ItemType Directory -Force $env:LOADBOT_HOME | Out-Null
+        Mock Read-Host { "4" }
+        try {
+            { Invoke-LoadbotSetup -Mode repair } | Should -Throw "*cancelled*"
+            Test-Path (Join-Path $installRoot "loadbot-install-mode") | Should -BeFalse
+        } finally {
+            Remove-Item Env:LOADBOT_HOME
+        }
+    }
+}

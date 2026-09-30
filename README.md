@@ -60,11 +60,9 @@ Windows config: %APPDATA%\loadbot\
 
 `LOADBOT_HOME` overrides the data root, and `LOADBOT_CONFIG_HOME` overrides the directory containing `shortcuts.toml`.
 
-## Development
-
+## 🤖 AI-assisted development
 See [`docs/`](docs/) for implementation details, architecture notes, setup instructions, and GUI development documentation.
 
-## 🤖 AI-assisted development
 This project was built with substantial AI coding assistance. I defined the architecture, constraints, workflows, interfaces, safety boundaries, and acceptance criteria.\
 The robots supplied a lot of the typing. 🛠️\
 Use accordingly.
